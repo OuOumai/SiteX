@@ -180,7 +180,49 @@ export default function EquipeTerrainScreen() {
       fetchData();
     } catch (err: any) {
       console.error('Erreur affectation agent:', err.message);
-      Alert.alert('Erreur', err.message || 'Impossible d\'affecter cet agent.');
+      const errMsg = err.message || '';
+      if (
+        err.conflict === 'AGENT_ALREADY_ASSIGNED' ||
+        err.conflict === 'TRONCON_ALREADY_ASSIGNED' ||
+        errMsg.includes('déjà affecté') ||
+        errMsg.includes('réaffectation') ||
+        errMsg.includes('remplacement')
+      ) {
+        Alert.alert(
+          'Confirmation de Réaffectation',
+          `${errMsg}\n\nSouhaitez-vous confirmer le transfert vers ce nouveau tronçon ?`,
+          [
+            { text: 'Annuler', style: 'cancel' },
+            {
+              text: 'Confirmer la réaffectation',
+              style: 'default',
+              onPress: async () => {
+                try {
+                  setIsSubmittingAssign(true);
+                  const res = await api.createAffectation(token, {
+                    agent_id: targetAgent.id,
+                    projet_id: selectedProjectId,
+                    chantier_id: selectedChantierId,
+                    troncon_id: selectedTronconId,
+                    notes: assignNotes.trim() || undefined,
+                    reassign: true,
+                    replace_current: true,
+                  });
+                  Alert.alert('Succès ! 🎉', res.message);
+                  setIsAssignModalOpen(false);
+                  fetchData();
+                } catch (reassignErr: any) {
+                  Alert.alert('Erreur', reassignErr.message || 'Impossible de réaffecter cet agent.');
+                } finally {
+                  setIsSubmittingAssign(false);
+                }
+              },
+            },
+          ]
+        );
+      } else {
+        Alert.alert('Erreur', errMsg || 'Impossible d\'affecter cet agent.');
+      }
     } finally {
       setIsSubmittingAssign(false);
     }

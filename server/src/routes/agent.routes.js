@@ -20,5 +20,6 @@ router.get('/dashboard',                            authenticateToken, requireAg
 router.get('/troncon/:id',                          authenticateToken, requireAgentOrAdmin, agentController.getAgentTronconDetails);
 router.post('/troncon/:id/calculate-projection',    authenticateToken, requireAgentOrAdmin, agentController.calculateProjection);
 router.post('/troncon/:id/observations',            authenticateToken, requireAgentOrAdmin, observationUpload.array('photos', 10), agentController.createObservation);
+router.get('/troncon/:id/observations',             authenticateToken, requireAgentOrAdmin, agentController.getObservationHistory);
 
 module.exports = router;

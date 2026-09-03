@@ -20,6 +20,8 @@ import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { DeleteConfirmationModal } from '@/components/ui/delete-confirmation-modal';
 import { Palette } from '@/constants/theme';
+import { NotificationBell } from '@/components/notifications/NotificationBell';
+import { GlobalAppDrawer } from '@/components/navigation/GlobalAppDrawer';
 import { api, ResponsableDashboardData } from '@/services/api';
 import { InteractiveGisMap } from '@/components/gis/InteractiveGisMap';
 
@@ -30,6 +32,7 @@ export default function ResponsableDashboardScreen() {
   const [data, setData] = useState<ResponsableDashboardData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<'projets' | 'chantiers' | 'observations' | 'reclamations'>('projets');
 
   // ── Bulk-delete state ──
@@ -169,6 +172,15 @@ export default function ResponsableDashboardScreen() {
       />
       {/* Header */}
       <View style={styles.header}>
+        <TouchableOpacity
+          style={styles.menuBtn}
+          onPress={() => setDrawerOpen(true)}
+          activeOpacity={0.75}
+          accessibilityLabel="Ouvrir le menu de navigation"
+        >
+          <Ionicons name="menu-outline" size={24} color={Palette.text} />
+        </TouchableOpacity>
+
         <View style={styles.headerLeft}>
           <View style={styles.roleBadge}>
             <Ionicons name="briefcase" size={12} color="#FFFFFF" />
@@ -182,9 +194,26 @@ export default function ResponsableDashboardScreen() {
           </Text>
         </View>
 
-        <TouchableOpacity style={styles.logoutBtn} onPress={logout}>
-          <Ionicons name="log-out-outline" size={20} color={Palette.textMuted} />
-        </TouchableOpacity>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+          <NotificationBell />
+          <TouchableOpacity
+            style={styles.avatarBtn}
+            onPress={() => router.push('/(tabs)/profile')}
+            activeOpacity={0.8}
+            accessibilityLabel="Mon profil"
+          >
+            {user?.photo_url ? (
+              <Image source={{ uri: user.photo_url }} style={styles.avatarImg} />
+            ) : (
+              <View style={styles.avatarFallback}>
+                <Text style={styles.avatarFallbackText} weight="bold">
+                  {user?.prenom?.[0] || 'R'}
+                  {user?.nom?.[0] || ''}
+                </Text>
+              </View>
+            )}
+          </TouchableOpacity>
+        </View>
       </View>
 
       <ScrollView
@@ -583,6 +612,19 @@ export default function ResponsableDashboardScreen() {
                               size="sm"
                               onPress={() => router.push(`/responsable/projet/${proj.id}` as any)}
                             />
+                            <Button
+                              title="🗺️ Carte"
+                              variant="outline"
+                              size="sm"
+                              onPress={() =>
+                                router.push({
+                                  pathname: '/(tabs)/map',
+                                  params: {
+                                    projectId: String(proj.id),
+                                  },
+                                } as any)
+                              }
+                            />
                           </View>
                         </View>
                       )}
@@ -693,16 +735,30 @@ export default function ResponsableDashboardScreen() {
 
                     <View style={styles.itemActions}>
                       <Button
-                        title={isGisReady ? 'Modifier GIS / Tronçons' : '⚙️ Configurer GIS'}
+                        title={isGisReady ? 'Modifier GIS' : '⚙️ Configurer GIS'}
                         variant={isGisReady ? 'secondary' : 'primary'}
                         size="sm"
                         onPress={() => router.push(`/responsable/chantier/${ch.id}/gis` as any)}
                       />
                       <Button
-                        title="Détails Chantier"
+                        title="Détails"
                         variant="secondary"
                         size="sm"
                         onPress={() => router.push(`/responsable/chantier/${ch.id}` as any)}
+                      />
+                      <Button
+                        title="🗺️ Carte"
+                        variant="outline"
+                        size="sm"
+                        onPress={() =>
+                          router.push({
+                            pathname: '/(tabs)/map',
+                            params: {
+                              chantierId: String(ch.id),
+                              projectId: ch.projet_id ? String(ch.projet_id) : undefined,
+                            },
+                          } as any)
+                        }
                       />
                     </View>
                   </Card>
@@ -798,6 +854,11 @@ export default function ResponsableDashboardScreen() {
           </View>
         )}
       </ScrollView>
+      {/* ── Global Navigation Drawer ── */}
+      <GlobalAppDrawer
+        visible={drawerOpen}
+        onClose={() => setDrawerOpen(false)}
+      />
     </SafeAreaView>
   );
 }
@@ -821,14 +882,29 @@ const styles = StyleSheet.create({
   },
   header: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    paddingHorizontal: 20,
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 16,
     paddingTop: 12,
     paddingBottom: 16,
     borderBottomWidth: 1,
     borderBottomColor: Palette.border,
     backgroundColor: '#FFFFFF',
+  },
+  menuBtn: {
+    width: 42,
+    height: 42,
+    borderRadius: 12,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#0F172A',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 3,
+    elevation: 2,
   },
   headerLeft: {
     flex: 1,
@@ -852,12 +928,35 @@ const styles = StyleSheet.create({
   },
   headerTitle: {
     color: Palette.text,
-    fontSize: 22,
+    fontSize: 20,
   },
   headerSubtitle: {
     marginTop: 2,
     color: Palette.textMuted,
-    fontSize: 13,
+    fontSize: 12,
+  },
+  avatarBtn: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    overflow: 'hidden',
+    borderWidth: 2,
+    borderColor: Palette.primary,
+  },
+  avatarImg: {
+    width: '100%',
+    height: '100%',
+  },
+  avatarFallback: {
+    width: '100%',
+    height: '100%',
+    backgroundColor: 'rgba(23, 107, 91, 0.12)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  avatarFallbackText: {
+    color: Palette.primary,
+    fontSize: 14,
   },
   logoutBtn: {
     padding: 8,

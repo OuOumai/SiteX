@@ -1,6 +1,7 @@
 import { Tabs } from 'expo-router';
 import React from 'react';
 import { Ionicons } from '@expo/vector-icons';
+import { useWindowDimensions } from 'react-native';
 
 import { HapticTab } from '@/components/haptic-tab';
 import { Colors } from '@/constants/theme';
@@ -9,6 +10,8 @@ import { useColorScheme } from '@/hooks/use-color-scheme';
 export default function TabLayout() {
   const colorScheme = useColorScheme();
   const colors = Colors[colorScheme ?? 'light'];
+  const { width } = useWindowDimensions();
+  const showLeftSidebar = width >= 768;
 
   return (
     <Tabs
@@ -19,20 +22,41 @@ export default function TabLayout() {
         tabBarButton: HapticTab,
         tabBarStyle: {
           backgroundColor: colorScheme === 'dark' ? '#0F1715' : '#FFFFFF',
-          borderTopColor: colorScheme === 'dark' ? '#1E2E2A' : '#DCE4E1',
-          borderTopWidth: 1,
+          borderTopColor: showLeftSidebar
+            ? 'transparent'
+            : colorScheme === 'dark'
+              ? '#1E2E2A'
+              : '#DCE4E1',
+          borderTopWidth: showLeftSidebar ? 0 : 1,
+          borderRightColor: showLeftSidebar
+            ? colorScheme === 'dark'
+              ? '#1E2E2A'
+              : '#DCE4E1'
+            : 'transparent',
+          borderRightWidth: showLeftSidebar ? 1 : 0,
           elevation: 8,
           shadowOpacity: 0.06,
           shadowRadius: 8,
-          height: 60,
-          paddingBottom: 8,
-          paddingTop: 4,
+          height: showLeftSidebar ? '100%' : 60,
+          width: showLeftSidebar ? 240 : undefined,
+          paddingHorizontal: showLeftSidebar ? 12 : 0,
+          paddingBottom: showLeftSidebar ? 20 : 8,
+          paddingTop: showLeftSidebar ? 24 : 4,
         },
         tabBarLabelStyle: {
-          fontSize: 11,
+          fontSize: showLeftSidebar ? 14 : 11,
           fontWeight: '600',
           letterSpacing: 0.3,
         },
+        tabBarItemStyle: showLeftSidebar
+          ? {
+              maxHeight: 54,
+              marginVertical: 3,
+              borderRadius: 12,
+            }
+          : undefined,
+        tabBarPosition: showLeftSidebar ? 'left' : 'bottom',
+        tabBarLabelPosition: showLeftSidebar ? 'beside-icon' : 'below-icon',
       }}
     >
       <Tabs.Screen

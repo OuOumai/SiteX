@@ -101,6 +101,112 @@ async function runMigration() {
     `);
     console.log('  └─ Columns for GPS projection, phase & progress in public.observation_terrain ready');
 
+    // 6. Chantier proximity policy and observation validation audit
+    await client.query(`
+      ALTER TABLE public.chantier
+      ADD COLUMN IF NOT EXISTS d_max_position_meters NUMERIC(10, 2) NOT NULL DEFAULT 50;
+
+      ALTER TABLE public.chantier DROP CONSTRAINT IF EXISTS chantier_d_max_position_meters_check;
+      ALTER TABLE public.chantier
+      ADD CONSTRAINT chantier_d_max_position_meters_check
+      CHECK (d_max_position_meters > 0);
+
+      ALTER TABLE public.observation_terrain
+      ADD COLUMN IF NOT EXISTS validation_status VARCHAR(20) NOT NULL DEFAULT 'normal';
+
+      ALTER TABLE public.observation_terrain DROP CONSTRAINT IF EXISTS observation_validation_status_check;
+      ALTER TABLE public.observation_terrain
+      ADD CONSTRAINT observation_validation_status_check
+      CHECK (validation_status IN ('normal', 'exceptional'));
+    `);
+    console.log('  └─ D_max and observation validation status ready');
+
+    // 7. A live operational assignment is one-to-one in both directions.
+    await client.query(`
+      WITH ranked AS (
+        SELECT id, ROW_NUMBER() OVER (PARTITION BY agent_id ORDER BY date_affectation DESC, id DESC) AS rn
+        FROM public.affectation_troncon WHERE statut = 'ACTIF'
+      )
+      UPDATE public.affectation_troncon a SET statut = 'INACTIF'
+      FROM ranked r WHERE a.id = r.id AND r.rn > 1;
+
+      WITH ranked AS (
+        SELECT id, ROW_NUMBER() OVER (PARTITION BY troncon_id ORDER BY date_affectation DESC, id DESC) AS rn
+        FROM public.affectation_troncon WHERE statut = 'ACTIF'
+      )
+      UPDATE public.affectation_troncon a SET statut = 'INACTIF'
+      FROM ranked r WHERE a.id = r.id AND r.rn > 1;
+
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_active_affectation_per_troncon
+      ON public.affectation_troncon(troncon_id)
+      WHERE statut = 'ACTIF';
+
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_active_affectation_per_agent
+      ON public.affectation_troncon(agent_id)
+      WHERE statut = 'ACTIF';
+    `);
+    console.log('  └─ One active tronçon per Agent de Terrain enforced');
+
+    // 8. Persistent in-app notifications (extends the legacy role notification table).
+    await client.query(`
+      ALTER TABLE public.notification
+      ADD COLUMN IF NOT EXISTS titre VARCHAR(160),
+      ADD COLUMN IF NOT EXISTS related_entity_type VARCHAR(40),
+      ADD COLUMN IF NOT EXISTS related_entity_id INTEGER,
+      ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+      UPDATE public.notification SET titre = COALESCE(titre, 'Notification SiteX') WHERE titre IS NULL;
+      ALTER TABLE public.notification ALTER COLUMN titre SET NOT NULL;
+      ALTER TABLE public.notification ALTER COLUMN lu SET DEFAULT false;
+      CREATE INDEX IF NOT EXISTS idx_notification_user_date ON public.notification(utilisateur_id, date_envoi DESC);
+      CREATE INDEX IF NOT EXISTS idx_notification_user_unread ON public.notification(utilisateur_id) WHERE lu = false;
+
+      CREATE OR REPLACE FUNCTION public.notify_assignment_event() RETURNS trigger AS $$
+      DECLARE t_nom text; c_nom text;
+      BEGIN
+        IF NEW.statut = 'ACTIF' THEN
+          SELECT t.nom, c.nom INTO t_nom, c_nom FROM public.troncon t JOIN public.chantier c ON c.id = t.chantier_id WHERE t.id = NEW.troncon_id;
+          INSERT INTO public.notification(utilisateur_id, titre, message, type, related_entity_type, related_entity_id, metadata, date_envoi, lu)
+          VALUES (NEW.agent_id, 'Nouvelle affectation', 'Vous avez été affecté au tronçon ' || COALESCE(t_nom, '') || ' du chantier ' || COALESCE(c_nom, '') || '.',
+                  'AFFECTATION_AGENT', 'troncon', NEW.troncon_id, jsonb_build_object('affectation_id', NEW.id), NOW(), false);
+        END IF;
+        RETURN NEW;
+      END; $$ LANGUAGE plpgsql;
+      DROP TRIGGER IF EXISTS trg_notify_assignment ON public.affectation_troncon;
+      CREATE TRIGGER trg_notify_assignment AFTER INSERT ON public.affectation_troncon FOR EACH ROW EXECUTE FUNCTION public.notify_assignment_event();
+
+      CREATE OR REPLACE FUNCTION public.notify_chantier_event() RETURNS trigger AS $$
+      DECLARE recipient integer; c_nom text; event_title text; event_type text; entity_type text;
+      BEGIN
+        SELECT nom INTO c_nom FROM public.chantier WHERE id = NEW.chantier_id;
+        event_title := CASE WHEN TG_TABLE_NAME = 'rapport' THEN 'Nouveau rapport' ELSE 'Nouvelle réclamation' END;
+        event_type := CASE WHEN TG_TABLE_NAME = 'rapport' THEN 'NOUVEAU_RAPPORT' ELSE 'NOUVELLE_RECLAMATION' END;
+        entity_type := TG_TABLE_NAME;
+        FOR recipient IN
+          SELECT responsable_id FROM public.chantier WHERE id = NEW.chantier_id AND responsable_id IS NOT NULL
+          UNION
+          SELECT a.agent_id FROM public.affectation_troncon a JOIN public.troncon t ON t.id = a.troncon_id
+          WHERE t.chantier_id = NEW.chantier_id AND a.statut = 'ACTIF'
+        LOOP
+          IF TG_TABLE_NAME = 'rapport' THEN
+            INSERT INTO public.notification(utilisateur_id, titre, message, type, related_entity_type, related_entity_id, metadata, date_envoi, lu)
+            VALUES (recipient, event_title, event_title || ' pour le chantier ' || COALESCE(c_nom, '') || '.', event_type,
+                    entity_type, NEW.id, jsonb_build_object('chantier_id', NEW.chantier_id), NOW(), false);
+          ELSIF recipient <> NEW.utilisateur_id THEN
+            INSERT INTO public.notification(utilisateur_id, titre, message, type, related_entity_type, related_entity_id, metadata, date_envoi, lu)
+            VALUES (recipient, event_title, event_title || ' pour le chantier ' || COALESCE(c_nom, '') || '.', event_type,
+                    entity_type, NEW.id, jsonb_build_object('chantier_id', NEW.chantier_id), NOW(), false);
+          END IF;
+        END LOOP;
+        RETURN NEW;
+      END; $$ LANGUAGE plpgsql;
+      DROP TRIGGER IF EXISTS trg_notify_rapport ON public.rapport;
+      CREATE TRIGGER trg_notify_rapport AFTER INSERT ON public.rapport FOR EACH ROW EXECUTE FUNCTION public.notify_chantier_event();
+      DROP TRIGGER IF EXISTS trg_notify_reclamation ON public.reclamation;
+      CREATE TRIGGER trg_notify_reclamation AFTER INSERT ON public.reclamation FOR EACH ROW EXECUTE FUNCTION public.notify_chantier_event();
+    `);
+    console.log('  └─ Persistent notifications and server-side event triggers ready');
+
     await client.query('COMMIT');
     console.log('✅ Database migration completed successfully!');
   } catch (err) {

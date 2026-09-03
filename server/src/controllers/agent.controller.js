@@ -58,6 +58,7 @@ async function getAgentDashboard(req, res) {
         ST_AsGeoJSON(t.geometry)::json AS geometry,
         c.id AS chantier_id,
         c.nom AS chantier_nom,
+        c.d_max_position_meters,
         p.id AS projet_id,
         p.nom AS projet_nom,
         p.type_projet,
@@ -139,6 +140,7 @@ async function getAgentTronconDetails(req, res) {
         ST_X(ST_EndPoint(t.geometry)) AS end_lng,
         t.date_creation,
         c.nom AS chantier_nom,
+        c.d_max_position_meters,
         c.projet_id,
         p.nom AS projet_nom,
         p.type_projet,
@@ -156,7 +158,7 @@ async function getAgentTronconDetails(req, res) {
       JOIN public.projet p ON p.id = c.projet_id
       LEFT JOIN public.reference_alignment ra ON ra.id = t.reference_alignment_id
       LEFT JOIN public.utilisateur resp ON c.responsable_id = resp.id
-      LEFT JOIN public.affectation_troncon a ON a.troncon_id = t.id AND a.agent_id = $2
+      LEFT JOIN public.affectation_troncon a ON a.troncon_id = t.id AND a.agent_id = $2 AND a.statut = 'ACTIF'
       WHERE t.id = $1 AND (a.agent_id = $2 OR $3 = true);
     `;
 
@@ -203,6 +205,7 @@ async function getAgentTronconDetails(req, res) {
         ot.chainage,
         ot.accuracy,
         ot.distance_offset,
+        ot.validation_status,
         ot.statut,
         ot.type_observation,
         COALESCE(ot.phase, 'Terrassement') AS phase,
@@ -241,6 +244,7 @@ async function getAgentTronconDetails(req, res) {
         nom: troncon.nom,
         chantier_id: troncon.chantier_id,
         chantier_nom: troncon.chantier_nom,
+        d_max_position_meters: parseFloat(troncon.d_max_position_meters),
         projet_id: troncon.projet_id,
         projet_nom: troncon.projet_nom,
         type_projet: troncon.type_projet,
@@ -286,8 +290,10 @@ async function performTronconProjection(tronconId, agentLat, agentLng, accuracy 
   // 1. Fetch troncon geometry and metadata
   const tronconRes = await db.query(
     `SELECT t.id, t.chantier_id, t.nom, t.pk_debut, t.pk_fin, t.geometry,
+            c.d_max_position_meters,
             ST_AsGeoJSON(t.geometry)::json AS geojson
      FROM public.troncon t
+     JOIN public.chantier c ON c.id = t.chantier_id
      WHERE t.id = $1`,
     [tronconId]
   );
@@ -393,6 +399,12 @@ async function performTronconProjection(tronconId, agentLat, agentLng, accuracy 
     progress_percentage: Number(progressPercentage.toFixed(2)),
     calculated_pk: parseFloat(row.calculated_pk) || 0,
     offset_distance_meters: parseFloat(row.offset_distance_meters) || 0,
+    d_max_position_meters: parseFloat(troncon.d_max_position_meters),
+    proximity_status: (parseFloat(row.offset_distance_meters) || 0) <= parseFloat(troncon.d_max_position_meters)
+      ? 'normal'
+      : 'exceptional_confirmation_required',
+    requires_exceptional_confirmation:
+      (parseFloat(row.offset_distance_meters) || 0) > parseFloat(troncon.d_max_position_meters),
   };
 }
 
@@ -422,7 +434,7 @@ async function calculateProjection(req, res) {
     const checkRes = await db.query(
       `SELECT t.id, a.id AS affectation_id
        FROM public.troncon t
-       LEFT JOIN public.affectation_troncon a ON a.troncon_id = t.id AND a.agent_id = $2
+       LEFT JOIN public.affectation_troncon a ON a.troncon_id = t.id AND a.agent_id = $2 AND a.statut = 'ACTIF'
        WHERE t.id = $1 AND (a.agent_id = $2 OR $3 = true);`,
       [id, agentId, isAdmin]
     );
@@ -459,6 +471,7 @@ async function createObservation(req, res) {
     const { id } = req.params;
     const body = req.body || {};
     const { latitude, longitude, accuracy, phase, phase_statut, commentaire, type_observation } = body;
+    const exceptionalConfirmed = body.exceptional_confirmation === true || body.exceptional_confirmation === 'true';
     const agentId = req.user.id;
     const isAdmin = req.user.role_nom === 'Administrateur' || req.user.role_id === 1;
 
@@ -492,7 +505,7 @@ async function createObservation(req, res) {
     const checkRes = await db.query(
       `SELECT t.id, t.chantier_id, a.id AS affectation_id
        FROM public.troncon t
-       LEFT JOIN public.affectation_troncon a ON a.troncon_id = t.id AND a.agent_id = $2
+       LEFT JOIN public.affectation_troncon a ON a.troncon_id = t.id AND a.agent_id = $2 AND a.statut = 'ACTIF'
        WHERE t.id = $1 AND (a.agent_id = $2 OR $3 = true);`,
       [id, agentId, isAdmin]
     );
@@ -507,6 +520,14 @@ async function createObservation(req, res) {
 
     // 4. Compute spatial projection
     const proj = await performTronconProjection(id, lat, lng, accuracy);
+    const validationStatus = proj.requires_exceptional_confirmation ? 'exceptional' : 'normal';
+    if (proj.requires_exceptional_confirmation && !exceptionalConfirmed) {
+      return res.status(409).json({
+        message: `Vous êtes à ${proj.offset_distance_meters} m de l'infrastructure. La distance maximale recommandée pour ce chantier est de ${proj.d_max_position_meters} m. Une validation exceptionnelle explicite est requise.`,
+        code: 'EXCEPTIONAL_CONFIRMATION_REQUIRED',
+        projection: proj,
+      });
+    }
 
     // 5. Insert into public.observation_terrain (Historical Timeline)
     const insertQuery = `
@@ -530,7 +551,8 @@ async function createObservation(req, res) {
         phase_statut,
         statut,
         type_observation,
-        commentaire
+        commentaire,
+        validation_status
       )
       VALUES (
         $1, $2, $3, NOW(),
@@ -541,7 +563,8 @@ async function createObservation(req, res) {
         $11, $12, $13, $14,
         'EN_COURS',
         COALESCE($15, 'OBSERVATION_PROGRESSION'),
-        $16
+        $16,
+        $17
       )
       RETURNING 
         id,
@@ -562,7 +585,8 @@ async function createObservation(req, res) {
         phase_statut,
         statut,
         type_observation,
-        commentaire;
+        commentaire,
+        validation_status;
     `;
 
     const insertRes = await db.query(insertQuery, [
@@ -582,6 +606,7 @@ async function createObservation(req, res) {
       selectedPhaseStatut,
       type_observation || 'OBSERVATION_PROGRESSION',
       commentaire || null,
+      validationStatus,
     ]);
 
     const createdObs = insertRes.rows[0];
@@ -656,6 +681,46 @@ async function createObservation(req, res) {
   }
 }
 
+async function getObservationHistory(req, res) {
+  try {
+    const { id } = req.params;
+    const agentId = req.user.id;
+    const isAdmin = req.user.role_nom === 'Administrateur' || req.user.role_id === 1;
+    const month = /^\d{4}-\d{2}$/.test(String(req.query.month || '')) ? String(req.query.month) : null;
+    const access = await db.query(
+      `SELECT 1 FROM public.troncon t
+       LEFT JOIN public.affectation_troncon a ON a.troncon_id = t.id AND a.agent_id = $2 AND a.statut = 'ACTIF'
+       WHERE t.id = $1 AND (a.agent_id = $2 OR $3 = true)`, [id, agentId, isAdmin]
+    );
+    if (!access.rows.length) return res.status(403).json({ message: 'Accès non autorisé à cet historique.' });
+
+    const result = await db.query(
+      `SELECT ot.id, ot.chantier_id, ot.troncon_id, ot.agent_id,
+              TO_CHAR(ot.date_heure, 'YYYY-MM-DD HH24:MI:SS') AS date_heure,
+              ot.agent_lat, ot.agent_lng, ot.projected_lat, ot.projected_lng,
+              ot.distance_from_start, ot.progress_percentage, ot.chainage, ot.accuracy,
+              ot.distance_offset, ot.validation_status, ot.statut, ot.type_observation,
+              COALESCE(ot.phase, 'Terrassement') AS phase,
+              COALESCE(ot.phase_statut, 'En cours') AS phase_statut, ot.commentaire,
+              TRIM(CONCAT(u.prenom, ' ', u.nom)) AS agent_nom,
+              COALESCE(JSON_AGG(JSON_BUILD_OBJECT('id', pt.id, 'url', pt.fichier,
+                'date_prise', TO_CHAR(pt.date_prise, 'YYYY-MM-DD HH24:MI'), 'description', pt.description))
+                FILTER (WHERE pt.id IS NOT NULL), '[]'::json) AS photos
+       FROM public.observation_terrain ot
+       JOIN public.utilisateur u ON u.id = ot.agent_id
+       LEFT JOIN public.photo_terrain pt ON pt.observation_id = ot.id
+       WHERE ot.troncon_id = $1
+         AND ($2::text IS NULL OR TO_CHAR(ot.date_heure, 'YYYY-MM') = $2)
+       GROUP BY ot.id, u.nom, u.prenom
+       ORDER BY ot.date_heure DESC, ot.id DESC`, [id, month]
+    );
+    return res.json({ month, observations: result.rows });
+  } catch (error) {
+    console.error('❌ GetObservationHistory error:', error.message);
+    return res.status(500).json({ message: 'Impossible de charger l’historique des observations.' });
+  }
+}
+
 module.exports = {
   ALLOWED_PHASES,
   ALLOWED_PHASE_STATUSES,
@@ -663,4 +728,5 @@ module.exports = {
   getAgentTronconDetails,
   calculateProjection,
   createObservation,
+  getObservationHistory,
 };

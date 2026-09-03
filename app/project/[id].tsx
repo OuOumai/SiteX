@@ -159,7 +159,18 @@ export default function ProjectDetailsScreen() {
   };
 
   const handleOpenMap = () => {
-    router.push('/(tabs)/map');
+    if (!project) return;
+    const projectChantiers = project.chantiers || [];
+    const firstChantierWithGis =
+      projectChantiers.find((c: any) => c.gis_status !== 'NON_CONFIGURE') ||
+      projectChantiers[0];
+    router.push({
+      pathname: '/(tabs)/map',
+      params: {
+        projectId: String(project.id),
+        chantierId: firstChantierWithGis ? String(firstChantierWithGis.id) : undefined,
+      },
+    });
   };
 
   if (isLoading) {

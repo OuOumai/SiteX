@@ -14,6 +14,8 @@ import { Text } from '@/components/ui/text';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Palette } from '@/constants/theme';
+import { NotificationBell } from '@/components/notifications/NotificationBell';
+import { GlobalAppDrawer } from '@/components/navigation/GlobalAppDrawer';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   api,
@@ -29,6 +31,7 @@ export default function HomeScreen() {
   const [agentDashboardData, setAgentDashboardData] = useState<AgentDashboardResponse | null>(null);
   const [isLoadingData, setIsLoadingData] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
 
   const isPendingRole = user?.role_request?.statut === 'PENDING';
   const isAdmin = user?.role_nom === 'Administrateur' || user?.role_id === 1;
@@ -136,6 +139,16 @@ export default function HomeScreen() {
         {/* ── 1. Top Management Header ── */}
         <View style={styles.header}>
           <View style={styles.headerTopRow}>
+            {/* Left Global Navigation Menu Button */}
+            <TouchableOpacity
+              style={styles.menuBtn}
+              onPress={() => setDrawerOpen(true)}
+              activeOpacity={0.75}
+              accessibilityLabel="Ouvrir le menu de navigation"
+            >
+              <Ionicons name="menu-outline" size={24} color={Palette.text} />
+            </TouchableOpacity>
+
             <View style={{ flex: 1 }}>
               <View style={[styles.roleBadge, { backgroundColor: badgeBg }]}>
                 <Ionicons name={badgeIcon} size={12} color="#FFFFFF" />
@@ -155,24 +168,27 @@ export default function HomeScreen() {
               </Text>
             </View>
 
-            {/* Profile Avatar / Quick Link */}
-            <TouchableOpacity
-              style={[styles.avatarButton, isPendingRole && { borderColor: '#D97706' }]}
-              activeOpacity={0.8}
-              onPress={() => router.push('/(tabs)/profile')}
-              accessibilityLabel="Mon profil"
-            >
-              {user?.photo_url ? (
-                <Image source={{ uri: user.photo_url }} style={styles.avatarImage} />
-              ) : (
-                <View style={styles.avatarFallback}>
-                  <Text style={styles.avatarFallbackText} weight="bold">
-                    {user?.prenom?.[0] || 'U'}
-                    {user?.nom?.[0] || ''}
-                  </Text>
-                </View>
-              )}
-            </TouchableOpacity>
+            <View style={styles.headerRightActions}>
+              <NotificationBell />
+              {/* Profile Avatar / Quick Link */}
+              <TouchableOpacity
+                style={[styles.avatarButton, isPendingRole && { borderColor: '#D97706' }]}
+                activeOpacity={0.8}
+                onPress={() => router.push('/(tabs)/profile')}
+                accessibilityLabel="Mon profil"
+              >
+                {user?.photo_url ? (
+                  <Image source={{ uri: user.photo_url }} style={styles.avatarImage} />
+                ) : (
+                  <View style={styles.avatarFallback}>
+                    <Text style={styles.avatarFallbackText} weight="bold">
+                      {user?.prenom?.[0] || 'U'}
+                      {user?.nom?.[0] || ''}
+                    </Text>
+                  </View>
+                )}
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
 
@@ -211,7 +227,7 @@ export default function HomeScreen() {
             <View style={styles.actionBar}>
               <View style={{ flex: 1 }}>
                 <Text style={styles.actionBarTitle} weight="bold">
-                  Missions & Affectations
+                  Missions & Linéaires Opérationnels
                 </Text>
                 <Text style={styles.actionBarSubtitle}>
                   {agentStats.totalAssignments} tronçon{agentStats.totalAssignments > 1 ? 's' : ''} assigné{agentStats.totalAssignments > 1 ? 's' : ''} • {agentStats.totalProjects} projet{agentStats.totalProjects > 1 ? 's' : ''}
@@ -266,10 +282,10 @@ export default function HomeScreen() {
               </Card>
             </View>
 
-            {/* ── "Mes affectations" Section Header ── */}
+            {/* ── Missions Section Header ── */}
             <View style={styles.sectionHeaderRow}>
               <Text variant="h2" style={styles.sectionTitle}>
-                Mes affectations ({agentAssignments.length})
+                Missions d'inspection assignées ({agentAssignments.length})
               </Text>
             </View>
 
@@ -758,6 +774,13 @@ export default function HomeScreen() {
           </>
         )}
       </ScrollView>
+
+      {/* ── Global Role-Aware Sliding Drawer ── */}
+      <GlobalAppDrawer
+        visible={drawerOpen}
+        onClose={() => setDrawerOpen(false)}
+        activeTronconId={agentAssignments[0]?.troncon_id}
+      />
     </SafeAreaView>
   );
 }
@@ -777,8 +800,28 @@ const styles = StyleSheet.create({
   },
   headerTopRow: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 12,
+  },
+  menuBtn: {
+    width: 42,
+    height: 42,
+    borderRadius: 12,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#0F172A',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 3,
+    elevation: 2,
+  },
+  headerRightActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
   },
   roleBadge: {
     flexDirection: 'row',

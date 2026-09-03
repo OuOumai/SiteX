@@ -194,15 +194,27 @@ async function runTests() {
     assert(duplicateCaught, 'Duplicate assignment blocked by unique constraint');
 
     // ------------------------------------------------------------------------
-    // TEST 4: Assign Agent A to second Tronçon T02 (1 A.T. -> Multiple Tronçons)
+    // TEST 4: Single Active Assignment per Agent Guard (uq_active_affectation_per_agent)
     // ------------------------------------------------------------------------
-    console.log('\n📌 TEST 4: Multi-Tronçon Assignment (1 A.T. -> Multiple Tronçons)');
+    console.log('\n📌 TEST 4: Guard Against Multiple Active Assignments for Same Agent');
+    let multiActiveCaught = false;
+    try {
+      await db.query(`
+        INSERT INTO public.affectation_troncon (troncon_id, agent_id, affecte_par, statut)
+        VALUES ($1, $2, $3, 'ACTIF');
+      `, [t2Id, agent1Id, resp1Id]);
+    } catch (e) {
+      multiActiveCaught = e.code === '23505' && e.constraint === 'uq_active_affectation_per_agent';
+    }
+    assert(multiActiveCaught, 'Duplicate active assignment across tronçons blocked by uq_active_affectation_per_agent');
+
+    // Assign Agent 2 to Tronçon 2
     const assign2 = await db.query(`
-      INSERT INTO public.affectation_troncon (troncon_id, agent_id, affecte_par)
-      VALUES ($1, $2, $3)
+      INSERT INTO public.affectation_troncon (troncon_id, agent_id, affecte_par, statut)
+      VALUES ($1, $2, $3, 'ACTIF')
       RETURNING id;
-    `, [t2Id, agent1Id, resp1Id]);
-    assert(assign2.rows.length === 1, 'Agent A assigned to second tronçon T02 successfully');
+    `, [t2Id, agent2Id, resp1Id]);
+    assert(assign2.rows.length === 1, 'Agent 2 assigned to tronçon T02 successfully');
 
     // ------------------------------------------------------------------------
     // TEST 5: Equipe Terrain Query with Assignments & Stats
@@ -242,8 +254,8 @@ async function runTests() {
     const agentARow = eqRes.rows.find(r => r.id === agent1Id);
     const agentBRow = eqRes.rows.find(r => r.id === agent2Id);
 
-    assert(agentARow && agentARow.affectations.length === 2, `Agent A has 2 active assignments under Resp 1 (got ${agentARow?.affectations?.length})`);
-    assert(agentBRow && agentBRow.affectations.length === 0, `Agent B has 0 active assignments under Resp 1 (got ${agentBRow?.affectations?.length})`);
+    assert(agentARow && agentARow.affectations.length === 1, `Agent A has 1 active assignment under Resp 1 (got ${agentARow?.affectations?.length})`);
+    assert(agentBRow && agentBRow.affectations.length === 1, `Agent B has 1 active assignment under Resp 1 (got ${agentBRow?.affectations?.length})`);
 
     // ------------------------------------------------------------------------
     // TEST 6: Ownership Check - Responsable 1 cannot assign to Tronçon T03 (Resp 2)

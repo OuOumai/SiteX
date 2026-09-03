@@ -89,6 +89,7 @@ async function getChantierDetails(req, res) {
         c.statut,
         c.surface,
         c.surface_reference,
+        c.d_max_position_meters,
         TO_CHAR(c.date_debut, 'YYYY-MM-DD') AS date_debut,
         TO_CHAR(c.date_fin_prevue, 'YYYY-MM-DD') AS date_fin_prevue,
         c.date_creation,
@@ -240,7 +241,7 @@ async function getChantierDetails(req, res) {
 async function createChantier(req, res) {
   try {
     const projectId = req.params.projectId || req.body.projet_id;
-    const { nom, surface_reference, surface, date_debut, date_fin_prevue, statut, localisation } = req.body;
+    const { nom, surface_reference, surface, date_debut, date_fin_prevue, statut, localisation, d_max_position_meters } = req.body;
     const responsableId = req.user.id;
 
     if (!projectId) {
@@ -248,6 +249,10 @@ async function createChantier(req, res) {
     }
     if (!nom || !nom.trim()) {
       return res.status(400).json({ message: 'Le nom du chantier est obligatoire.' });
+    }
+    const dMax = d_max_position_meters === undefined ? 50 : Number(d_max_position_meters);
+    if (!Number.isFinite(dMax) || dMax <= 0) {
+      return res.status(400).json({ message: 'La distance maximale recommandée doit être un nombre strictement positif.' });
     }
 
     // Verify project exists
@@ -291,9 +296,10 @@ async function createChantier(req, res) {
         date_creation, 
         date_debut, 
         date_fin_prevue, 
-        statut
+        statut,
+        d_max_position_meters
       )
-      VALUES ($1, $2, $3, $4, $5, CASE WHEN $6::text IS NOT NULL THEN ST_SetSRID(ST_GeomFromGeoJSON($6), 4326) ELSE NULL END, NOW(), $7, $8, $9)
+      VALUES ($1, $2, $3, $4, $5, CASE WHEN $6::text IS NOT NULL THEN ST_SetSRID(ST_GeomFromGeoJSON($6), 4326) ELSE NULL END, NOW(), $7, $8, $9, $10)
       RETURNING 
         id, 
         projet_id, 
@@ -304,7 +310,8 @@ async function createChantier(req, res) {
         date_creation, 
         TO_CHAR(date_debut, 'YYYY-MM-DD') AS date_debut, 
         TO_CHAR(date_fin_prevue, 'YYYY-MM-DD') AS date_fin_prevue, 
-        statut;
+        statut,
+        d_max_position_meters;
     `;
 
     const values = [
@@ -317,6 +324,7 @@ async function createChantier(req, res) {
       date_debut || null,
       date_fin_prevue || null,
       statut || 'En attente',
+      dMax,
     ];
 
     const result = await db.query(insertQuery, values);
@@ -331,6 +339,32 @@ async function createChantier(req, res) {
     return res.status(500).json({
       message: 'Erreur lors de la création du chantier: ' + error.message,
     });
+  }
+}
+
+async function updateChantierConfiguration(req, res) {
+  try {
+    const { id } = req.params;
+    const userId = req.user.id;
+    const isAdmin = req.user.role_nom === 'Administrateur' || req.user.role_id === 1;
+    const dMax = Number(req.body.d_max_position_meters);
+    if (!Number.isFinite(dMax) || dMax <= 0) {
+      return res.status(400).json({ message: 'La distance maximale recommandée doit être un nombre strictement positif.' });
+    }
+    const result = await db.query(
+      `UPDATE public.chantier
+       SET d_max_position_meters = $1
+       WHERE id = $2 AND (responsable_id = $3 OR $4 = true)
+       RETURNING id, d_max_position_meters`,
+      [dMax, id, userId, isAdmin]
+    );
+    if (result.rows.length === 0) {
+      return res.status(403).json({ message: 'Chantier introuvable ou modification non autorisée.' });
+    }
+    return res.status(200).json({ message: 'Distance maximale recommandée mise à jour.', chantier: result.rows[0] });
+  } catch (error) {
+    console.error('❌ UpdateChantierConfiguration error:', error.message);
+    return res.status(500).json({ message: 'Erreur lors de la mise à jour de la configuration du chantier.' });
   }
 }
 
@@ -1537,7 +1571,7 @@ async function saveTroncons(req, res) {
           geometry,
           date_creation
         )
-        VALUES (
+        SELECT
           $1,
           $2,
           $3,
@@ -1545,9 +1579,15 @@ async function saveTroncons(req, res) {
           $5,
           $6,
           $7,
-          ST_SetSRID(ST_GeomFromGeoJSON($8), 4326),
+          CASE
+            WHEN ST_LineLocatePoint(ra.geometry, ST_StartPoint(ST_SetSRID(ST_GeomFromGeoJSON($8), 4326)))
+               <= ST_LineLocatePoint(ra.geometry, ST_EndPoint(ST_SetSRID(ST_GeomFromGeoJSON($8), 4326)))
+            THEN ST_SetSRID(ST_GeomFromGeoJSON($8), 4326)
+            ELSE ST_Reverse(ST_SetSRID(ST_GeomFromGeoJSON($8), 4326))
+          END,
           NOW()
-        )
+        FROM public.reference_alignment ra
+        WHERE ra.id = $2
         RETURNING 
           id, 
           chantier_id, 
@@ -1628,6 +1668,7 @@ async function getChantierTroncons(req, res) {
 module.exports = {
   getChantierDetails,
   createChantier,
+  updateChantierConfiguration,
   saveChantierAoi,
   detectSourceCrs,
   analyzeGeoJSONSource,

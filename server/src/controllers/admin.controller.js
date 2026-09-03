@@ -198,11 +198,13 @@ async function acceptRoleRequest(req, res) {
     // 5. Create in-app notification
     try {
       await client.query(
-        `INSERT INTO public.notification (utilisateur_id, message, type, date_envoi, lu)
-         VALUES ($1, $2, 'ROLE_APPROVED', NOW(), false)`,
+        `INSERT INTO public.notification (utilisateur_id, titre, message, type, related_entity_type, related_entity_id, date_envoi, lu)
+         VALUES ($1, $2, $3, 'ROLE_APPROVED', 'ROLE', $4, NOW(), false)`,
         [
           roleRequest.utilisateur_id,
-          `Félicitations ! Votre demande pour le rôle "${targetRole.nom}" a été validée par l'administrateur.`,
+          'Profil validé',
+          `Félicitations ! Votre demande pour le rôle « ${targetRole.nom} » a été validée par l'administrateur.`,
+          targetRole.id,
         ]
       );
     } catch (notifErr) {
@@ -278,11 +280,13 @@ async function rejectRoleRequest(req, res) {
     // 3. Create in-app notification
     try {
       await client.query(
-        `INSERT INTO public.notification (utilisateur_id, message, type, date_envoi, lu)
-         VALUES ($1, $2, 'ROLE_REJECTED', NOW(), false)`,
+        `INSERT INTO public.notification (utilisateur_id, titre, message, type, related_entity_type, related_entity_id, date_envoi, lu)
+         VALUES ($1, $2, $3, 'ROLE_REJECTED', 'ROLE', $4, NOW(), false)`,
         [
           roleRequest.utilisateur_id,
-          `Votre demande pour le rôle "${roleRequest.requested_role_nom}" a été refusée par l'administrateur.`,
+          'Demande de profil non retenue',
+          `Votre demande pour le rôle « ${roleRequest.requested_role_nom} » a été refusée par l'administrateur.`,
+          roleRequest.requested_role_id,
         ]
       );
     } catch (notifErr) {

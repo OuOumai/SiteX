@@ -1878,13 +1878,28 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
             <Text style={styles.successSubtitle}>
               Le chantier "{chantier?.nom}" dispose maintenant de son emprise spatiale (AOI), de son axe de référence et de ses {editableTroncons.length} tronçons calibrés.
             </Text>
-            <Button
-              title="Consulter le Chantier →"
-              variant="primary"
-              size="md"
-              onPress={() => router.replace(`/responsable/chantier/${chantierId}` as any)}
-              style={{ marginTop: 16 }}
-            />
+            <View style={{ gap: 10, marginTop: 16 }}>
+              <Button
+                title="🗺️ Visualiser sur la carte →"
+                variant="primary"
+                size="md"
+                onPress={() =>
+                  router.replace({
+                    pathname: '/(tabs)/map',
+                    params: {
+                      chantierId: String(chantierId),
+                      projectId: chantier?.projet_id ? String(chantier.projet_id) : undefined,
+                    },
+                  } as any)
+                }
+              />
+              <Button
+                title="Consulter les détails du Chantier"
+                variant="secondary"
+                size="md"
+                onPress={() => router.replace(`/responsable/chantier/${chantierId}` as any)}
+              />
+            </View>
           </Card>
         )}
       </ScrollView>

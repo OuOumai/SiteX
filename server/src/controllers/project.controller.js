@@ -21,6 +21,8 @@ const db = require('../db');
  */
 async function getAllProjects(req, res) {
   try {
+    const isAgent = req.user.role_nom === 'AgentTerrain' || req.user.role_id === 3;
+    const agentId = req.user.id;
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
     const limit = Math.max(1, Math.min(100, parseInt(req.query.limit, 10) || 6));
     const offset = (page - 1) * limit;
@@ -28,15 +30,27 @@ async function getAllProjects(req, res) {
     const statut = req.query.statut ? String(req.query.statut).trim() : '';
 
     // 1. Compute global status counts across the whole database
+    const agentAccessSql = isAgent ? `
+      EXISTS (
+        SELECT 1
+        FROM public.chantier assigned_c
+        JOIN public.troncon assigned_t ON assigned_t.chantier_id = assigned_c.id
+        JOIN public.affectation_troncon assigned_a ON assigned_a.troncon_id = assigned_t.id
+        WHERE assigned_c.projet_id = p.id
+          AND assigned_a.agent_id = $1
+          AND assigned_a.statut = 'ACTIF'
+      )
+    ` : 'TRUE';
     const statusCountsQuery = `
       SELECT 
         COUNT(*)::int AS total_all,
         COUNT(CASE WHEN LOWER(COALESCE(statut, 'En cours')) LIKE '%cours%' THEN 1 END)::int AS count_cours,
         COUNT(CASE WHEN LOWER(COALESCE(statut, '')) LIKE '%termin%' THEN 1 END)::int AS count_termines,
         COUNT(CASE WHEN LOWER(COALESCE(statut, '')) LIKE '%retard%' THEN 1 END)::int AS count_retard
-      FROM public.projet;
+      FROM public.projet p
+      WHERE ${agentAccessSql};
     `;
-    const statusCountsRes = await db.query(statusCountsQuery);
+    const statusCountsRes = await db.query(statusCountsQuery, isAgent ? [agentId] : []);
     const countsRow = statusCountsRes.rows[0] || {};
     const statusCounts = {
       'Tous': countsRow.total_all || 0,
@@ -47,7 +61,8 @@ async function getAllProjects(req, res) {
 
     // 2. Build dynamic filtering where clauses
     const whereClauses = [];
-    const params = [];
+    const params = isAgent ? [agentId] : [];
+    if (isAgent) whereClauses.push(agentAccessSql);
 
     if (search) {
       params.push(`%${search}%`);
@@ -130,6 +145,8 @@ async function getAllProjects(req, res) {
 async function getProjectDetails(req, res) {
   try {
     const { id } = req.params;
+    const isAgent = req.user.role_nom === 'AgentTerrain' || req.user.role_id === 3;
+    const agentId = req.user.id;
 
     // 1. Fetch project info
     const projectQuery = `
@@ -142,9 +159,18 @@ async function getProjectDetails(req, res) {
         TO_CHAR(date_fin, 'YYYY-MM-DD') AS date_fin,
         COALESCE(statut, 'En cours') AS statut
       FROM public.projet
-      WHERE id = $1;
+      WHERE id = $1
+        AND ($2 = false OR EXISTS (
+          SELECT 1
+          FROM public.chantier assigned_c
+          JOIN public.troncon assigned_t ON assigned_t.chantier_id = assigned_c.id
+          JOIN public.affectation_troncon assigned_a ON assigned_a.troncon_id = assigned_t.id
+          WHERE assigned_c.projet_id = public.projet.id
+            AND assigned_a.agent_id = $3
+            AND assigned_a.statut = 'ACTIF'
+        ));
     `;
-    const projectRes = await db.query(projectQuery, [id]);
+    const projectRes = await db.query(projectQuery, [id, isAgent, agentId]);
 
     if (projectRes.rows.length === 0) {
       return res.status(404).json({ message: 'Projet introuvable.' });
@@ -196,10 +222,17 @@ async function getProjectDetails(req, res) {
       ) ref ON true
       LEFT JOIN public.troncon t ON t.chantier_id = c.id
       WHERE c.projet_id = $1
+        AND ($2 = false OR EXISTS (
+          SELECT 1 FROM public.troncon assigned_t
+          JOIN public.affectation_troncon assigned_a ON assigned_a.troncon_id = assigned_t.id
+          WHERE assigned_t.chantier_id = c.id
+            AND assigned_a.agent_id = $3
+            AND assigned_a.statut = 'ACTIF'
+        ))
       GROUP BY c.id, latest_avancement.pourcentage, latest_avancement.date, latest_avancement.commentaire, u.prenom, u.nom, ref.id, ref.nom, ref.geometry, ref.direction_reversed
       ORDER BY c.id ASC;
     `;
-    const chantiersRes = await db.query(chantiersQuery, [id]);
+    const chantiersRes = await db.query(chantiersQuery, [id, isAgent, agentId]);
     const chantiers = chantiersRes.rows;
 
     // 3. Aggregate indicators across related tables
@@ -216,9 +249,16 @@ async function getProjectDetails(req, res) {
       FROM public.chantier c
       LEFT JOIN public.image_satellite img ON img.chantier_id = c.id
       LEFT JOIN public.reclamation rec ON rec.chantier_id = c.id
-      WHERE c.projet_id = $1;
+      WHERE c.projet_id = $1
+        AND ($3 = false OR EXISTS (
+          SELECT 1 FROM public.troncon assigned_t
+          JOIN public.affectation_troncon assigned_a ON assigned_a.troncon_id = assigned_t.id
+          WHERE assigned_t.chantier_id = c.id
+            AND assigned_a.agent_id = $4
+            AND assigned_a.statut = 'ACTIF'
+        ));
     `;
-    const indicatorsRes = await db.query(indicatorsQuery, [id, project.date_debut || '2026-01-01']);
+    const indicatorsRes = await db.query(indicatorsQuery, [id, project.date_debut || '2026-01-01', isAgent, agentId]);
     const ind = indicatorsRes.rows[0] || {};
 
     const nombreChantiers = chantiers.length;
@@ -567,4 +607,3 @@ module.exports = {
   deleteProject,
   bulkDeleteProjects,
 };
-

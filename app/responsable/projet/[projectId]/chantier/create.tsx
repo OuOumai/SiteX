@@ -31,13 +31,14 @@ export default function CreateChantierScreen() {
 
   const [nom, setNom] = useState('');
   const [surface, setSurface] = useState('');
+  const [dMaxPosition, setDMaxPosition] = useState('50');
   const [dateDebut, setDateDebut] = useState(new Date().toISOString().split('T')[0]);
   const [dateFinPrevue, setDateFinPrevue] = useState('');
   const [showPickerDebut, setShowPickerDebut] = useState(false);
   const [showPickerFin, setShowPickerFin] = useState(false);
   const [statut, setStatut] = useState('En attente');
   const [isLoading, setIsLoading] = useState(false);
-  const [errors, setErrors] = useState<{ nom?: string; surface?: string; general?: string }>({});
+  const [errors, setErrors] = useState<{ nom?: string; surface?: string; dMaxPosition?: string; general?: string }>({});
 
   useEffect(() => {
     async function loadProject() {
@@ -55,12 +56,15 @@ export default function CreateChantierScreen() {
   }, [token, projectId]);
 
   const validate = () => {
-    const newErrors: { nom?: string; surface?: string } = {};
+    const newErrors: { nom?: string; surface?: string; dMaxPosition?: string } = {};
     if (!nom.trim()) {
       newErrors.nom = 'Le nom du chantier est obligatoire.';
     }
     if (surface && (isNaN(Number(surface)) || Number(surface) <= 0)) {
       newErrors.surface = 'La surface doit être un nombre positif.';
+    }
+    if (!dMaxPosition || !Number.isFinite(Number(dMaxPosition)) || Number(dMaxPosition) <= 0) {
+      newErrors.dMaxPosition = 'La distance maximale doit être un nombre strictement positif.';
     }
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
@@ -79,6 +83,7 @@ export default function CreateChantierScreen() {
         date_debut: dateDebut || undefined,
         date_fin_prevue: dateFinPrevue || undefined,
         statut,
+        d_max_position_meters: Number(dMaxPosition),
       });
 
       const newChantierId = res.chantier.id;
@@ -174,7 +179,20 @@ export default function CreateChantierScreen() {
               leftIcon={<Ionicons name="cube-outline" size={20} color={Palette.textMuted} />}
             />
             <Text style={{ fontSize: 11, color: Palette.textMuted, marginTop: -6, marginBottom: 8, lineHeight: 16 }}>
-              ℹ️ Note : La surface réelle d'un tracé linéaire n'est pas extrapolée arbitrairement. Cette valeur optionnelle correspond à la surface d'étude déclarée.
+              {"ℹ️ Note : La surface réelle d'un tracé linéaire n'est pas extrapolée arbitrairement. Cette valeur optionnelle correspond à la surface d'étude déclarée."}
+            </Text>
+
+            <Input
+              label="Distance maximale recommandée par rapport à l'infrastructure (m)"
+              placeholder="ex: 50"
+              value={dMaxPosition}
+              onChangeText={setDMaxPosition}
+              keyboardType="numeric"
+              error={errors.dMaxPosition}
+              leftIcon={<Ionicons name="resize-outline" size={20} color={Palette.textMuted} />}
+            />
+            <Text style={{ fontSize: 11, color: Palette.textMuted, marginTop: -6, marginBottom: 8, lineHeight: 16 }}>
+              {"Distance maximale recommandée entre la position GPS réelle de l'Agent de Terrain et l'infrastructure."}
             </Text>
 
             <View style={styles.row}>
@@ -260,7 +278,7 @@ export default function CreateChantierScreen() {
             <View style={styles.gisNoticeBox}>
               <Ionicons name="map-outline" size={20} color={Palette.primary} />
               <Text style={styles.gisNoticeText}>
-                Importez votre tracé pour délimiter la zone d'étude et générer les tronçons.
+                {"Importez votre tracé pour délimiter la zone d'étude et générer les tronçons."}
               </Text>
             </View>
 

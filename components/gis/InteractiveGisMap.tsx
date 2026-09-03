@@ -66,6 +66,13 @@ export interface InteractiveGisMapProps {
     color?: string;
     iconName?: string;
   }[] | null;
+  customLines?: {
+    start: { lat: number; lng: number };
+    end: { lat: number; lng: number };
+    label?: string;
+    color?: string;
+  }[] | null;
+  onInteractionChange?: (interacting: boolean) => void;
 }
 
 const TRONCON_COLORS = [
@@ -100,6 +107,8 @@ export function InteractiveGisMap({
   fitPaddingBottom = 35,
   optimizePkLabels = false,
   customMarkers = null,
+  customLines = null,
+  onInteractionChange,
 }: InteractiveGisMapProps) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
 
@@ -114,12 +123,13 @@ export function InteractiveGisMap({
         if (event.data.type === 'SELECT_CORRIDOR' && event.data.corridorId !== undefined) {
           if (onSelectCorridor) onSelectCorridor(event.data.corridorId);
         }
+        if (event.data.type === 'MAP_INTERACTION') onInteractionChange?.(!!event.data.active);
       };
 
       window.addEventListener('message', handleMessage);
       return () => window.removeEventListener('message', handleMessage);
     }
-  }, [onAoiChange, onSelectCorridor]);
+  }, [onAoiChange, onSelectCorridor, onInteractionChange]);
 
   // Handle messages on React Native Mobile WebView
   const handleWebViewMessage = (event: any) => {
@@ -130,6 +140,9 @@ export function InteractiveGisMap({
       }
       if (data.type === 'SELECT_CORRIDOR' && data.corridorId !== undefined) {
         if (onSelectCorridor) onSelectCorridor(data.corridorId);
+      }
+      if (data.type === 'MAP_INTERACTION') {
+        onInteractionChange?.(!!data.active);
       }
       if (data.type === 'MAP_ERROR') {
         console.warn('GIS Map Warning:', data.error);
@@ -149,6 +162,7 @@ export function InteractiveGisMap({
       rawAoi: aoiGeometry || null,
       enableDrawing: !!enableAoiDrawing,
       customMarkers: customMarkers && customMarkers.length > 0 ? customMarkers : [],
+      customLines: customLines && customLines.length > 0 ? customLines : [],
       selectedId: selectedTronconId || null,
       center: center || [34.12, -6.70],
       zoom: zoom || 11,
@@ -181,6 +195,9 @@ export function InteractiveGisMap({
       height: 100%;
       position: absolute;
       top: 0; left: 0; right: 0; bottom: 0;
+      touch-action: none;
+      -webkit-user-select: none;
+      user-select: none;
       background-color: #0F172A;
       background-image: 
         radial-gradient(circle at 50% 50%, rgba(23, 107, 91, 0.18) 0%, transparent 80%),
@@ -457,6 +474,7 @@ export function InteractiveGisMap({
       var rawSearchLoc = config.rawSearchLoc;
       var rawTroncons = config.rawTroncons || [];
       var rawCustomMarkers = config.customMarkers || [];
+      var rawCustomLines = config.customLines || [];
       var rawCorridors = config.rawCorridors || [];
       var selectedCorridorId = config.selectedCorridorId;
       var rawAoi = config.rawAoi;
@@ -465,6 +483,24 @@ export function InteractiveGisMap({
       var colors = config.colors || ["#0EA5E9", "#10B981", "#F59E0B"];
       var optimizePkLabels = !!config.optimizePkLabels;
       var fitPaddingBottom = config.fitPaddingBottom || 35;
+      var mapContainer = document.getElementById('map');
+      if (mapContainer) {
+        function startInteracting() {
+          sendToParent({ type: 'MAP_INTERACTION', active: true });
+        }
+        function stopInteracting() {
+          sendToParent({ type: 'MAP_INTERACTION', active: false });
+        }
+        mapContainer.addEventListener('pointerdown', startInteracting, { passive: true });
+        mapContainer.addEventListener('touchstart', startInteracting, { passive: true });
+        mapContainer.addEventListener('pointermove', function(e) {
+          if (e.buttons > 0) startInteracting();
+        }, { passive: true });
+        window.addEventListener('pointerup', stopInteracting, { passive: true });
+        window.addEventListener('touchend', stopInteracting, { passive: true });
+        window.addEventListener('pointercancel', stopInteracting, { passive: true });
+        window.addEventListener('touchcancel', stopInteracting, { passive: true });
+      }
 
       // Register Morocco Projected Coordinate Systems
       if (typeof proj4 !== 'undefined') {
@@ -1150,6 +1186,16 @@ export function InteractiveGisMap({
         }
       }
 
+      // Render real-to-projected offset lines before their markers.
+      rawCustomLines.forEach(function(line) {
+        if (!line || !line.start || !line.end) return;
+        var offsetLine = L.polyline(
+          [[line.start.lat, line.start.lng], [line.end.lat, line.end.lng]],
+          { color: line.color || "#F59E0B", weight: 2, dashArray: "5, 5", opacity: 0.9 }
+        ).addTo(featureGroup);
+        if (line.label) offsetLine.bindTooltip(line.label, { sticky: true });
+      });
+
       // Render Custom / GPS Observation Markers
       if (rawCustomMarkers && rawCustomMarkers.length > 0) {
         rawCustomMarkers.forEach(function(m) {
@@ -1203,11 +1249,19 @@ export function InteractiveGisMap({
     fitPaddingBottom,
     optimizePkLabels,
     customMarkers,
+    customLines,
   ]);
 
   if (Platform.OS === 'web') {
     return (
-      <View style={[styles.container, { height }, style]}>
+      <View
+        style={[styles.container, { height }, style]}
+        onTouchStart={() => onInteractionChange?.(true)}
+        onTouchEnd={() => onInteractionChange?.(false)}
+        onTouchCancel={() => onInteractionChange?.(false)}
+        onResponderGrant={() => onInteractionChange?.(true)}
+        onResponderRelease={() => onInteractionChange?.(false)}
+      >
         <iframe
           ref={iframeRef}
           srcDoc={leafletHtml}
@@ -1224,7 +1278,14 @@ export function InteractiveGisMap({
   }
 
   return (
-    <View style={[styles.container, { height }, style]}>
+    <View
+      style={[styles.container, { height }, style]}
+      onTouchStart={() => onInteractionChange?.(true)}
+      onTouchEnd={() => onInteractionChange?.(false)}
+      onTouchCancel={() => onInteractionChange?.(false)}
+      onResponderGrant={() => onInteractionChange?.(true)}
+      onResponderRelease={() => onInteractionChange?.(false)}
+    >
       <WebView
         originWhitelist={['*']}
         source={{

@@ -25,6 +25,7 @@ const chantierRoutes  = require('./routes/chantier.routes');
 const responsableRoutes = require('./routes/responsable.routes');
 const adminRoutes       = require('./routes/admin.routes');
 const agentRoutes       = require('./routes/agent.routes');
+const notificationRoutes = require('./routes/notification.routes');
 const db                = require('./db');
 
 const app  = express();
@@ -52,6 +53,7 @@ app.use('/chantiers',   chantierRoutes);
 app.use('/responsable', responsableRoutes);
 app.use('/admin',       adminRoutes);
 app.use('/agent',       agentRoutes);
+app.use('/notifications', notificationRoutes);
 
 
 // Health check — useful for deployment/monitoring

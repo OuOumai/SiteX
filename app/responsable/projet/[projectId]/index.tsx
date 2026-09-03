@@ -146,6 +146,29 @@ export default function ProjectDetailResponsableScreen() {
           </View>
         </Card>
 
+        {/* Project-level Map Visualizer Button */}
+        <TouchableOpacity
+          style={styles.mapButton}
+          activeOpacity={0.85}
+          onPress={() => {
+            const firstChantierWithGis =
+              chantiers.find((c: ProjectChantier) => c.gis_status !== 'NON_CONFIGURE') ||
+              chantiers[0];
+            router.push({
+              pathname: '/(tabs)/map',
+              params: {
+                projectId: String(projectId),
+                chantierId: firstChantierWithGis ? String(firstChantierWithGis.id) : undefined,
+              },
+            } as any);
+          }}
+        >
+          <Ionicons name="map-outline" size={18} color="#FFFFFF" />
+          <Text style={styles.mapButtonText} weight="bold">
+            Visualiser le projet sur la carte
+          </Text>
+        </TouchableOpacity>
+
         {/* Chantiers List */}
         <View style={styles.sectionHeaderRow}>
           <Text variant="h2" style={styles.sectionTitle}>
@@ -234,14 +257,28 @@ export default function ProjectDetailResponsableScreen() {
 
                   <View style={styles.chantierActions}>
                     <Button
-                      title="Détails du Chantier →"
+                      title="Détails →"
                       variant="primary"
                       size="sm"
                       onPress={() => router.push(`/responsable/chantier/${ch.id}` as any)}
                     />
+                    <Button
+                      title="🗺️ Carte"
+                      variant="secondary"
+                      size="sm"
+                      onPress={() =>
+                        router.push({
+                          pathname: '/(tabs)/map',
+                          params: {
+                            projectId: String(projectId),
+                            chantierId: String(ch.id),
+                          },
+                        } as any)
+                      }
+                    />
                     {!isOpenedFromDashboard && (
                       <Button
-                        title={isGisReady ? '⚙️ Reconfigurer GIS' : '⚙️ Configurer GIS'}
+                        title={isGisReady ? '⚙️ Reconfigurer' : '⚙️ Configurer'}
                         variant="secondary"
                         size="sm"
                         onPress={() => router.push(`/responsable/chantier/${ch.id}/gis` as any)}
@@ -335,7 +372,27 @@ const styles = StyleSheet.create({
     padding: 16,
     borderRadius: 14,
     backgroundColor: '#FFFFFF',
-    marginBottom: 18,
+    marginBottom: 12,
+  },
+  mapButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: Palette.primary,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    marginBottom: 20,
+    shadowColor: Palette.primary,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  mapButtonText: {
+    color: '#FFFFFF',
+    fontSize: 14,
   },
   sectionLabel: {
     fontSize: 12,

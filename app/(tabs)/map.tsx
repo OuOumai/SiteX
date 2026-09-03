@@ -18,6 +18,7 @@ import { Palette } from '@/constants/theme';
 import { useAuth } from '@/hooks/useAuth';
 import {
   api,
+  AgentAssignmentItem,
   ReferenceAlignment,
   ResponsableChantierItem,
   ResponsableDashboardData,
@@ -35,13 +36,14 @@ function chooseDefaultChantier(chantiers: ResponsableChantierItem[]) {
 }
 
 export default function MapScreen() {
-  const params = useLocalSearchParams<{ chantierId?: string; tronconId?: string }>();
+  const params = useLocalSearchParams<{ chantierId?: string; tronconId?: string; projectId?: string }>();
   const router = useRouter();
-  const { token } = useAuth();
+  const { token, user } = useAuth();
   const { width, height } = useWindowDimensions();
   const isDesktop = width >= 900;
 
   const [dashboardData, setDashboardData] = useState<ResponsableDashboardData | null>(null);
+  const [agentAssignments, setAgentAssignments] = useState<AgentAssignmentItem[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null);
   const [selectedChantierId, setSelectedChantierId] = useState<number | null>(null);
   const [activeReference, setActiveReference] = useState<ReferenceAlignment | null>(null);
@@ -50,6 +52,52 @@ export default function MapScreen() {
   const [isLoadingGis, setIsLoadingGis] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isSheetExpanded, setIsSheetExpanded] = useState(false);
+
+  // Helper to apply navigation params to project/chantier selection
+  const applyRequestedSelection = useCallback((data: ResponsableDashboardData) => {
+    const requestedChantierId = params.chantierId ? Number(params.chantierId) : null;
+    const requestedProjectId = params.projectId ? Number(params.projectId) : null;
+
+    // 1. Explicit Chantier ID requested
+    if (requestedChantierId) {
+      const requestedChantier = data.chantiers.find((item) => item.id === requestedChantierId);
+      if (requestedChantier) {
+        setSelectedProjectId(requestedChantier.projet_id);
+        setSelectedChantierId(requestedChantier.id);
+        return;
+      }
+    }
+
+    // 2. Explicit Project ID requested
+    if (requestedProjectId) {
+      const requestedProject = data.projects.find((item) => item.id === requestedProjectId);
+      if (requestedProject) {
+        const projectChantiers = data.chantiers.filter(
+          (chantier) => chantier.projet_id === requestedProject.id
+        );
+        const targetChantier = chooseDefaultChantier(projectChantiers);
+        setSelectedProjectId(requestedProject.id);
+        setSelectedChantierId(targetChantier?.id || null);
+        return;
+      }
+    }
+
+    // 3. Fallback: only if no specific project or chantier was requested
+    const firstProjectWithGis = data.projects.find((project) =>
+      data.chantiers.some(
+        (chantier) =>
+          chantier.projet_id === project.id && chantier.gis_status !== 'NON_CONFIGURE'
+      )
+    );
+    const initialProject = firstProjectWithGis || data.projects[0] || null;
+    const projectChantiers = initialProject
+      ? data.chantiers.filter((chantier) => chantier.projet_id === initialProject.id)
+      : [];
+    const initialChantier = chooseDefaultChantier(projectChantiers);
+
+    setSelectedProjectId(initialProject?.id || null);
+    setSelectedChantierId(initialChantier?.id || null);
+  }, [params.chantierId, params.projectId]);
 
   useEffect(() => {
     let active = true;
@@ -60,35 +108,61 @@ export default function MapScreen() {
       setLoadError(null);
 
       try {
-        const data = await api.getResponsableDashboard(token);
+        let data: ResponsableDashboardData;
+        const isAgent = user?.role_nom === 'AgentTerrain' || user?.role_id === 3;
+        if (isAgent) {
+          const agentData = await api.getAgentDashboard(token);
+          setAgentAssignments(agentData.affectations);
+          const projectMap = new Map<number, ResponsableProjectItem>();
+          const chantierMap = new Map<number, ResponsableChantierItem>();
+          agentData.affectations.forEach((assignment) => {
+            if (!projectMap.has(assignment.projet_id)) {
+              projectMap.set(assignment.projet_id, {
+                id: assignment.projet_id,
+                nom: assignment.projet_nom,
+                type_projet: assignment.type_projet,
+                nombre_chantiers: 0,
+                avancement_moyen: assignment.troncon_avancement || 0,
+              });
+            }
+            if (!chantierMap.has(assignment.chantier_id)) {
+              chantierMap.set(assignment.chantier_id, {
+                id: assignment.chantier_id,
+                projet_id: assignment.projet_id,
+                nom: assignment.chantier_nom,
+                projet_nom: assignment.projet_nom,
+                projet_type: assignment.type_projet,
+                statut: assignment.troncon_statut,
+                avancement: assignment.troncon_avancement || 0,
+                nombre_troncons: 1,
+                gis_status: 'PRET_POUR_SUIVI',
+              });
+              const project = projectMap.get(assignment.projet_id)!;
+              project.nombre_chantiers += 1;
+            }
+          });
+          data = {
+            stats: {
+              totalProjects: projectMap.size,
+              totalChantiers: chantierMap.size,
+              chantiersPrets: chantierMap.size,
+              avancementMoyen: agentData.stats.avancementMoyen,
+              totalObservations: 0,
+              totalReclamations: 0,
+              equipeTerrain: { totalAvailable: 0, totalAssigned: agentData.stats.totalAssignments, totalAssignments: agentData.stats.totalAssignments, totalUnassigned: 0 },
+            },
+            projects: Array.from(projectMap.values()),
+            chantiers: Array.from(chantierMap.values()),
+            observations: [],
+            reclamations: [],
+          };
+        } else {
+          setAgentAssignments([]);
+          data = await api.getResponsableDashboard(token);
+        }
         if (!active) return;
         setDashboardData(data);
-
-        const requestedId = params.chantierId ? Number(params.chantierId) : null;
-        const requestedChantier = requestedId
-          ? data.chantiers.find((item) => item.id === requestedId)
-          : null;
-
-        if (requestedChantier) {
-          setSelectedProjectId(requestedChantier.projet_id);
-          setSelectedChantierId(requestedChantier.id);
-          return;
-        }
-
-        const firstProjectWithGis = data.projects.find((project) =>
-          data.chantiers.some(
-            (chantier) =>
-              chantier.projet_id === project.id && chantier.gis_status !== 'NON_CONFIGURE'
-          )
-        );
-        const initialProject = firstProjectWithGis || data.projects[0] || null;
-        const projectChantiers = initialProject
-          ? data.chantiers.filter((chantier) => chantier.projet_id === initialProject.id)
-          : [];
-        const initialChantier = chooseDefaultChantier(projectChantiers);
-
-        setSelectedProjectId(initialProject?.id || null);
-        setSelectedChantierId(initialChantier?.id || null);
+        applyRequestedSelection(data);
       } catch (error: any) {
         if (active) setLoadError(error.message || 'Impossible de charger les projets.');
       } finally {
@@ -100,7 +174,14 @@ export default function MapScreen() {
     return () => {
       active = false;
     };
-  }, [token, params.chantierId]);
+  }, [token, user?.role_id, user?.role_nom, applyRequestedSelection]);
+
+  // React to URL search parameters changes when dashboardData is already loaded
+  useEffect(() => {
+    if (dashboardData) {
+      applyRequestedSelection(dashboardData);
+    }
+  }, [dashboardData, applyRequestedSelection]);
 
   useEffect(() => {
     let active = true;
@@ -169,8 +250,14 @@ export default function MapScreen() {
   }, [isDesktop]);
 
   const handleOpenGis = useCallback((chantier: ResponsableChantierItem) => {
+    const isAgent = user?.role_nom === 'AgentTerrain' || user?.role_id === 3;
+    if (isAgent) {
+      const assigned = agentAssignments.find((item) => item.chantier_id === chantier.id);
+      if (assigned) router.push(`/agent/troncon/${assigned.troncon_id}` as never);
+      return;
+    }
     router.push(`/responsable/chantier/${chantier.id}/gis` as never);
-  }, [router]);
+  }, [router, user?.role_id, user?.role_nom, agentAssignments]);
 
   const mapTroncons: GisTronconSegment[] = useMemo(
     () =>

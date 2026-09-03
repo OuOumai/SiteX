@@ -15,6 +15,7 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { Text } from '@/components/ui/text';
 import { Card } from '@/components/ui/card';
 import { Palette } from '@/constants/theme';
+import { NotificationBell } from '@/components/notifications/NotificationBell';
 import { useAuth } from '@/hooks/useAuth';
 import { api, AdminStats } from '@/services/api';
 
@@ -111,14 +112,17 @@ export default function AdminDashboardScreen() {
               </Text>
             </View>
 
-            <TouchableOpacity
-              style={styles.logoutBtn}
-              activeOpacity={0.7}
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+              <NotificationBell />
+              <TouchableOpacity
+                style={styles.logoutBtn}
+                activeOpacity={0.7}
               onPress={handleLogout}
               accessibilityLabel="Se déconnecter"
             >
               <Ionicons name="log-out-outline" size={20} color={Palette.alert} />
-            </TouchableOpacity>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
 

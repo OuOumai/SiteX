@@ -351,6 +351,7 @@ async function getTronconDetails(req, res) {
         o.chainage,
         o.accuracy,
         o.distance_offset,
+        o.validation_status,
         COALESCE(o.phase, 'Terrassement') AS phase,
         COALESCE(o.phase_statut, 'En cours') AS phase_statut,
         o.statut,
@@ -459,6 +460,10 @@ async function getAvailableAgents(req, res) {
            SELECT 1 FROM public.demande_role dr_p 
            WHERE dr_p.utilisateur_id = u.id 
              AND dr_p.statut = 'PENDING'
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM public.affectation_troncon active_assignment
+           WHERE active_assignment.agent_id = u.id AND active_assignment.statut = 'ACTIF'
          )
        ORDER BY u.nom ASC, u.prenom ASC;`
     );
@@ -653,6 +658,11 @@ async function assignAgentToTroncon(req, res) {
     });
   } catch (error) {
     console.error('❌ AssignAgentToTroncon error:', error.message);
+    if (error.code === '23505') {
+      return res.status(409).json({
+        message: 'Affectation impossible : ce tronçon possède déjà un Agent de Terrain actif ou cet agent possède déjà une affectation active.',
+      });
+    }
     return res.status(500).json({ message: 'Erreur lors de l\'affectation de l\'agent au tronçon.' });
   }
 }
@@ -894,12 +904,14 @@ async function getHierarchyTree(req, res) {
  * Responsable -> Projet -> Chantier -> Tronçon -> Agent
  */
 async function createAffectation(req, res) {
+  const client = await db.pool.connect();
   try {
     const userId = req.user.id;
     const isAdmin = req.user.role_nom === 'Administrateur' || req.user.role_id === 1;
-    const { agent_id, projet_id, chantier_id, troncon_id, notes } = req.body;
+    const { agent_id, projet_id, chantier_id, troncon_id, notes, reassign, replace_current } = req.body;
 
     if (!agent_id || !troncon_id) {
+      client.release();
       return res.status(400).json({
         message: 'Identifiants de l\'agent et du tronçon requis.',
       });
@@ -936,9 +948,10 @@ async function createAffectation(req, res) {
       params.push(projetIdNum);
     }
 
-    const checkRes = await db.query(verifyQuery, params);
+    const checkRes = await client.query(verifyQuery, params);
 
     if (checkRes.rows.length === 0) {
+      client.release();
       return res.status(404).json({
         message: 'Hiérarchie invalide : le tronçon spécifié n\'appartient pas au chantier/projet indiqué.',
       });
@@ -948,13 +961,14 @@ async function createAffectation(req, res) {
 
     // Verify Responsable ownership
     if (!isAdmin && chain.responsable_id !== userId) {
+      client.release();
       return res.status(403).json({
         message: 'Accès interdit : vous ne pouvez affecter des agents qu\'à vos propres chantiers.',
       });
     }
 
     // 2. Verify agent exists, is active, has role AgentTerrain and was VALIDATED by admin
-    const agentRes = await db.query(
+    const agentRes = await client.query(
       `SELECT u.id, u.nom, u.prenom, u.email, u.actif, r.nom AS role_nom
        FROM public.utilisateur u
        JOIN public.role r ON u.role_id = r.id
@@ -976,28 +990,107 @@ async function createAffectation(req, res) {
     );
 
     if (agentRes.rows.length === 0) {
+      client.release();
       return res.status(400).json({
         message: 'Cet utilisateur n\'a pas encore été validé comme Agent de Terrain par l\'administrateur ou son compte est inactif.',
       });
     }
 
-    // 3. Insert assignment (prevent duplicates via ON CONFLICT)
-    const insertRes = await db.query(
-      `INSERT INTO public.affectation_troncon (troncon_id, agent_id, affecte_par, notes)
-       VALUES ($1, $2, $3, $4)
-       ON CONFLICT (troncon_id, agent_id) DO NOTHING
+    await client.query('BEGIN');
+
+    // 3. Check if Agent already has an active assignment
+    const activeAgentRes = await client.query(
+      `SELECT a.id, a.troncon_id, t.nom AS troncon_nom, c.nom AS chantier_nom, p.nom AS projet_nom
+       FROM public.affectation_troncon a
+       JOIN public.troncon t ON a.troncon_id = t.id
+       JOIN public.chantier c ON t.chantier_id = c.id
+       JOIN public.projet p ON c.projet_id = p.id
+       WHERE a.agent_id = $1 AND a.statut = 'ACTIF'
+       LIMIT 1`,
+      [agentIdNum]
+    );
+
+    if (activeAgentRes.rows.length > 0) {
+      const currentAff = activeAgentRes.rows[0];
+      if (currentAff.troncon_id === tronconIdNum) {
+        await client.query('ROLLBACK');
+        client.release();
+        return res.status(409).json({
+          message: 'Cet agent de terrain est déjà affecté à ce tronçon.',
+          conflict: 'ALREADY_ASSIGNED_TO_THIS_TRONCON',
+        });
+      }
+
+      // Agent is active on a different tronçon
+      if (reassign === true) {
+        await client.query(
+          `UPDATE public.affectation_troncon
+           SET statut = 'INACTIF'
+           WHERE agent_id = $1 AND statut = 'ACTIF'`,
+          [agentIdNum]
+        );
+      } else {
+        await client.query('ROLLBACK');
+        client.release();
+        return res.status(409).json({
+          message: `L'agent ${agentRes.rows[0].prenom} ${agentRes.rows[0].nom} est déjà affecté au tronçon « ${currentAff.troncon_nom} » (${currentAff.projet_nom} / ${currentAff.chantier_nom}). Confirmez la réaffectation pour le transférer.`,
+          conflict: 'AGENT_ALREADY_ASSIGNED',
+          current_assignment: currentAff,
+        });
+      }
+    }
+
+    // 4. Check if Target Tronçon already has an active agent
+    const activeTronconRes = await client.query(
+      `SELECT a.id, a.agent_id, u.prenom, u.nom, u.email
+       FROM public.affectation_troncon a
+       JOIN public.utilisateur u ON a.agent_id = u.id
+       WHERE a.troncon_id = $1 AND a.statut = 'ACTIF'
+       LIMIT 1`,
+      [tronconIdNum]
+    );
+
+    if (activeTronconRes.rows.length > 0) {
+      const currentTronconAgent = activeTronconRes.rows[0];
+      if (currentTronconAgent.agent_id === agentIdNum) {
+        await client.query('ROLLBACK');
+        client.release();
+        return res.status(409).json({
+          message: 'Cet agent de terrain est déjà affecté à ce tronçon.',
+          conflict: 'ALREADY_ASSIGNED_TO_THIS_TRONCON',
+        });
+      }
+
+      if (replace_current === true || reassign === true) {
+        await client.query(
+          `UPDATE public.affectation_troncon
+           SET statut = 'INACTIF'
+           WHERE troncon_id = $1 AND statut = 'ACTIF'`,
+          [tronconIdNum]
+        );
+      } else {
+        await client.query('ROLLBACK');
+        client.release();
+        return res.status(409).json({
+          message: `Le tronçon « ${chain.troncon_nom} » est actuellement affecté à l'agent ${currentTronconAgent.prenom} ${currentTronconAgent.nom}. Confirmez le remplacement pour affecter un nouvel agent.`,
+          conflict: 'TRONCON_ALREADY_ASSIGNED',
+          current_agent: currentTronconAgent,
+        });
+      }
+    }
+
+    // 5. Insert new active assignment
+    const insertRes = await client.query(
+      `INSERT INTO public.affectation_troncon (troncon_id, agent_id, affecte_par, notes, statut)
+       VALUES ($1, $2, $3, $4, 'ACTIF')
        RETURNING *;`,
       [tronconIdNum, agentIdNum, userId, notes || null]
     );
 
-    if (insertRes.rows.length === 0) {
-      return res.status(409).json({
-        message: 'Cet agent de terrain est déjà affecté à ce tronçon.',
-      });
-    }
+    await client.query('COMMIT');
 
-    // 4. Return full assignment details with hierarchy
-    const fullRes = await db.query(
+    // 6. Return full assignment details with hierarchy
+    const fullRes = await client.query(
       `SELECT 
         a.id AS affectation_id,
         a.troncon_id,
@@ -1026,12 +1119,39 @@ async function createAffectation(req, res) {
       [insertRes.rows[0].id]
     );
 
+    client.release();
+
     return res.status(201).json({
       message: `L'agent ${agentRes.rows[0].prenom} ${agentRes.rows[0].nom} a été affecté au tronçon « ${chain.troncon_nom} » (${chain.projet_nom} / ${chain.chantier_nom}) avec succès.`,
       affectation: fullRes.rows[0],
     });
   } catch (error) {
+    try {
+      await client.query('ROLLBACK');
+    } catch (_) {}
+    client.release();
+
     console.error('❌ CreateAffectation error:', error.message);
+
+    if (error.code === '23505') {
+      if (error.constraint === 'uq_active_affectation_per_agent') {
+        return res.status(409).json({
+          message: 'Cet agent de terrain possède déjà une affectation active sur un autre tronçon. Confirmez la réaffectation pour le déplacer.',
+          conflict: 'AGENT_ALREADY_ASSIGNED',
+        });
+      }
+      if (error.constraint === 'uq_active_affectation_per_troncon') {
+        return res.status(409).json({
+          message: 'Ce tronçon possède déjà un agent de terrain actif. Confirmez le remplacement pour affecter un nouvel agent.',
+          conflict: 'TRONCON_ALREADY_ASSIGNED',
+        });
+      }
+      return res.status(409).json({
+        message: 'Cet agent ou ce tronçon possède déjà une affectation active.',
+        conflict: 'DUPLICATE_ACTIVE_ASSIGNMENT',
+      });
+    }
+
     return res.status(500).json({
       message: 'Erreur lors de la création de l\'affectation.',
     });

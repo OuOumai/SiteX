@@ -20,6 +20,7 @@ router.get('/:id', authenticateToken, chantierController.getChantierDetails);
 
 // Chantier Creation (Responsable / Admin)
 router.post('/', authenticateToken, requireResponsableOrAdmin, chantierController.createChantier);
+router.put('/:id/configuration', authenticateToken, requireResponsableOrAdmin, chantierController.updateChantierConfiguration);
 router.put('/:id/aoi', authenticateToken, requireResponsableOrAdmin, chantierController.saveChantierAoi);
 
 // GIS Coordinate Reference System (CRS) Detection

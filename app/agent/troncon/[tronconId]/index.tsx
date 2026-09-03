@@ -7,11 +7,12 @@ import {
   ActivityIndicator,
   RefreshControl,
   Platform,
-  Linking,
   Alert,
   Modal,
   TextInput,
   Image,
+  LayoutAnimation,
+  UIManager,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -31,6 +32,7 @@ import {
 } from '@/services/api';
 import { InteractiveGisMap, GisTronconSegment } from '@/components/gis/InteractiveGisMap';
 import { getCurrentDeviceLocation, DeviceLocationResult } from '@/services/location';
+import { ObservationCalendar } from '@/components/agent/ObservationCalendar';
 
 const ALLOWED_PHASES = [
   'Terrassement',
@@ -65,6 +67,12 @@ export default function AgentTronconDetailScreen() {
   const [data, setData] = useState<AgentTronconDetailsResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [screenScrollEnabled, setScreenScrollEnabled] = useState(true);
+  const [technicalExpanded, setTechnicalExpanded] = useState(false);
+  const [historyMonth, setHistoryMonth] = useState(() => new Date().toISOString().slice(0, 7));
+  const [selectedHistoryDate, setSelectedHistoryDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [historyObservations, setHistoryObservations] = useState<TerrainObservationItem[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
 
   // Observation Modal & GPS State
   const [isObsModalOpen, setIsObsModalOpen] = useState(false);
@@ -79,7 +87,7 @@ export default function AgentTronconDetailScreen() {
   const [selectedPhase, setSelectedPhase] = useState<string>('Terrassement');
   const [selectedPhaseStatut, setSelectedPhaseStatut] = useState<string>('En cours');
   const [commentaire, setCommentaire] = useState<string>('');
-  const [selectedPhotos, setSelectedPhotos] = useState<Array<{ uri: string; base64?: string }>>([]);
+  const [selectedPhotos, setSelectedPhotos] = useState<{ uri: string; base64?: string }[]>([]);
 
   // Full Screen Photo Viewer Modal
   const [previewPhotoUrl, setPreviewPhotoUrl] = useState<string | null>(null);
@@ -92,6 +100,17 @@ export default function AgentTronconDetailScreen() {
     try {
       const res = await api.getAgentTronconDetails(token, tronconId);
       setData(res);
+      const initial = res.observations || [];
+      const initialDate = initial[0]?.date_heure?.slice(0, 10) || new Date().toISOString().slice(0, 10);
+      const initialMonth = initialDate.slice(0, 7);
+      setHistoryMonth(initialMonth);
+      setSelectedHistoryDate(initialDate);
+      try {
+        const history = await api.getTronconObservationHistory(token, tronconId, initialMonth);
+        setHistoryObservations(history.observations || []);
+      } catch {
+        setHistoryObservations(initial.filter((item) => item.date_heure?.startsWith(initialMonth)));
+      }
     } catch (err: any) {
       console.error('Erreur chargement détails tronçon agent:', err.message);
       Alert.alert('Accès refusé', err.message || 'Impossible d\'accéder à ce tronçon.');
@@ -101,6 +120,35 @@ export default function AgentTronconDetailScreen() {
       setIsRefreshing(false);
     }
   }, [token, tronconId, router]);
+
+  useEffect(() => {
+    if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
+      UIManager.setLayoutAnimationEnabledExperimental(true);
+    }
+  }, []);
+
+  const loadHistoryMonth = useCallback(async (month: string) => {
+    if (!token || !tronconId) return;
+    setHistoryLoading(true);
+    try {
+      const result = await api.getTronconObservationHistory(token, tronconId, month);
+      setHistoryObservations(result.observations || []);
+      const firstDate = result.observations?.[0]?.date_heure?.slice(0, 10);
+      setSelectedHistoryDate(firstDate || `${month}-01`);
+    } catch (error: any) {
+      Alert.alert('Historique indisponible', error.message || 'Impossible de charger les observations de ce mois.');
+    } finally { setHistoryLoading(false); }
+  }, [token, tronconId]);
+
+  const handleHistoryMonthChange = (month: string) => {
+    setHistoryMonth(month);
+    loadHistoryMonth(month);
+  };
+
+  const toggleTechnical = () => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setTechnicalExpanded((value) => !value);
+  };
 
   useEffect(() => {
     fetchDetails();
@@ -208,7 +256,7 @@ export default function AgentTronconDetailScreen() {
   };
 
   // Confirm & Save Observation
-  const handleConfirmObservation = async () => {
+  const handleConfirmObservation = async (exceptionalConfirmation = false) => {
     if (!token || !tronconId || !gpsLocation) {
       Alert.alert('Erreur', 'Données GPS non disponibles.');
       return;
@@ -226,6 +274,7 @@ export default function AgentTronconDetailScreen() {
         phase_statut: selectedPhaseStatut,
         commentaire: commentaire.trim() || undefined,
         photos: photoPayload,
+        exceptional_confirmation: exceptionalConfirmation,
       });
 
       Alert.alert(
@@ -254,6 +303,10 @@ export default function AgentTronconDetailScreen() {
   const troncon = data?.troncon;
   const siblings = data?.siblings || [];
   const observations: TerrainObservationItem[] = data?.observations || [];
+  const displayedHistory = historyObservations.filter((item) => item.date_heure?.startsWith(selectedHistoryDate));
+  const observationDates = new Set(
+    historyObservations.map((item) => item.date_heure?.slice(0, 10)).filter(Boolean) as string[],
+  );
   const latestObs = troncon?.latest_observation || (observations.length > 0 ? observations[0] : null);
   const currentId = Number(tronconId);
 
@@ -269,7 +322,29 @@ export default function AgentTronconDetailScreen() {
   }));
 
   // Custom Map Markers (GPS + Projected point)
-  const mapMarkers = [];
+  const mapMarkers: { lat: number; lng: number; label: string; sublabel: string; color: string; iconName: string }[] = [];
+  const mapLines: { start: { lat: number; lng: number }; end: { lat: number; lng: number }; label: string; color: string }[] = [];
+  observations.forEach((obs) => {
+    if (Number.isFinite(Number(obs.agent_lat)) && Number.isFinite(Number(obs.agent_lng)) &&
+        Number.isFinite(Number(obs.projected_lat)) && Number.isFinite(Number(obs.projected_lng))) {
+      mapMarkers.push({
+        lat: Number(obs.agent_lat), lng: Number(obs.agent_lng),
+        label: `Position GPS réelle — observation #${obs.id}`,
+        sublabel: `D_min = ${obs.distance_offset ?? 0} m`, color: '#0284C7', iconName: 'gps',
+      });
+      mapMarkers.push({
+        lat: Number(obs.projected_lat), lng: Number(obs.projected_lng),
+        label: `Position projetée — observation #${obs.id}`,
+        sublabel: `PK ${obs.chainage ?? 0} • ${obs.validation_status === 'exceptional' ? 'Validation exceptionnelle' : 'Validation normale'}`,
+        color: obs.validation_status === 'exceptional' ? '#DC2626' : '#10B981', iconName: 'road',
+      });
+      mapLines.push({
+        start: { lat: Number(obs.agent_lat), lng: Number(obs.agent_lng) },
+        end: { lat: Number(obs.projected_lat), lng: Number(obs.projected_lng) },
+        label: `D_min = ${obs.distance_offset ?? 0} m`, color: obs.validation_status === 'exceptional' ? '#DC2626' : '#F59E0B',
+      });
+    }
+  });
   if (projectionResult) {
     mapMarkers.push({
       lat: projectionResult.agent_location.latitude,
@@ -287,14 +362,10 @@ export default function AgentTronconDetailScreen() {
       color: '#10B981',
       iconName: 'road',
     });
-  } else if (latestObs && latestObs.projected_lat && latestObs.projected_lng) {
-    mapMarkers.push({
-      lat: latestObs.projected_lat,
-      lng: latestObs.projected_lng,
-      label: `Dernier Relevé (${latestObs.progress_percentage}%)`,
-      sublabel: `PK ${latestObs.chainage || formatPK(latestObs.distance_from_start ? Number((latestObs.distance_from_start / 1000).toFixed(3)) : 0)}`,
-      color: '#0D9488',
-      iconName: 'road',
+    mapLines.push({
+      start: { lat: projectionResult.agent_location.latitude, lng: projectionResult.agent_location.longitude },
+      end: { lat: projectionResult.projected_location.latitude, lng: projectionResult.projected_location.longitude },
+      label: `D_min = ${projectionResult.offset_distance_meters} m`, color: '#F59E0B',
     });
   }
 
@@ -317,26 +388,18 @@ export default function AgentTronconDetailScreen() {
       ? 'Problème / Retard'
       : 'Non commencé';
 
-  const handleCallResponsable = () => {
-    if (troncon?.responsable_telephone) {
-      Linking.openURL(`tel:${troncon.responsable_telephone}`);
-    }
-  };
-
-  const handleEmailResponsable = () => {
-    if (troncon?.responsable_email) {
-      Linking.openURL(`mailto:${troncon.responsable_email}?subject=Tronçon ${troncon?.nom}`);
-    }
-  };
-
   const currentAvancement = latestObs ? latestObs.progress_percentage : (troncon?.avancement || 0);
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       {/* ── Hierarchy Header: Projet -> Chantier -> Tronçon ── */}
       <View style={styles.header}>
-        <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
-          <Ionicons name="arrow-back" size={22} color={Palette.text} />
+        <TouchableOpacity
+          style={styles.backBtn}
+          onPress={() => router.back()}
+          accessibilityLabel="Retour au tableau de bord"
+        >
+          <Ionicons name="chevron-back" size={24} color={Palette.text} />
         </TouchableOpacity>
         <View style={{ flex: 1 }}>
           <View style={styles.agentTagRow}>
@@ -355,6 +418,8 @@ export default function AgentTronconDetailScreen() {
       </View>
 
       <ScrollView
+        scrollEnabled={screenScrollEnabled}
+        nestedScrollEnabled={true}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
         refreshControl={
@@ -383,10 +448,12 @@ export default function AgentTronconDetailScreen() {
           </View>
 
           <InteractiveGisMap
-            height={220}
+            height={Platform.OS === 'web' ? 440 : 420}
             troncons={mapSegments}
             selectedTronconId={currentId}
             customMarkers={mapMarkers}
+            customLines={mapLines}
+            onInteractionChange={(interacting) => setScreenScrollEnabled(!interacting)}
           />
         </Card>
 
@@ -453,7 +520,7 @@ export default function AgentTronconDetailScreen() {
               </View>
 
               {latestObs.commentaire ? (
-                <Text style={styles.obsCommentText}>"{latestObs.commentaire}"</Text>
+                <Text style={styles.obsCommentText}>{`"${latestObs.commentaire}"`}</Text>
               ) : null}
             </View>
 
@@ -482,11 +549,12 @@ export default function AgentTronconDetailScreen() {
 
         {/* ── 4. Technical Summary Card ── */}
         <Card variant="elevated" style={styles.summaryCard}>
-          <Text style={styles.summaryCardHeading} weight="bold">
-            Fiche Technique & Chaînage
-          </Text>
+          <TouchableOpacity style={styles.summaryAccordionHeader} onPress={toggleTechnical} activeOpacity={0.75}>
+            <Ionicons name={technicalExpanded ? 'chevron-down' : 'chevron-forward'} size={20} color={Palette.primary} />
+            <Text style={styles.summaryCardHeading} weight="bold">Fiche Technique & Chaînage</Text>
+          </TouchableOpacity>
 
-          <View style={styles.summaryGrid}>
+          {technicalExpanded && <View style={styles.summaryGrid}>
             <View style={styles.summaryRow}>
               <Text style={styles.summaryLabel}>Projet :</Text>
               <Text style={styles.summaryValue} weight="semibold">
@@ -536,7 +604,7 @@ export default function AgentTronconDetailScreen() {
                 ]}
               />
             </View>
-          </View>
+          </View>}
         </Card>
 
         {/* ── 5. Historique des Observations (Newest First) ── */}
@@ -547,9 +615,12 @@ export default function AgentTronconDetailScreen() {
           </Text>
         </View>
 
-        {observations.length > 0 ? (
+        <ObservationCalendar month={historyMonth} selectedDate={selectedHistoryDate} observationDates={observationDates} onMonthChange={handleHistoryMonthChange} onSelectDate={setSelectedHistoryDate} />
+        {historyLoading && <ActivityIndicator color={Palette.primary} style={{ marginBottom: 12 }} />}
+
+        {displayedHistory.length > 0 ? (
           <View style={styles.historyList}>
-            {observations.map((obs) => {
+            {displayedHistory.map((obs) => {
               const statusBg =
                 obs.phase_statut === 'Terminée'
                   ? '#DCFCE7'
@@ -594,9 +665,14 @@ export default function AgentTronconDetailScreen() {
                     </View>
                     {obs.distance_from_start ? (
                       <Text style={styles.historyDistanceText}>
-                        {obs.distance_from_start} m &bull; PK {obs.chainage || 0}
+                        {obs.distance_from_start} m &bull; PK {obs.chainage || 0} &bull; D_min {obs.distance_offset ?? 0} m
                       </Text>
                     ) : null}
+                    <View style={[styles.historyStatusTag, { backgroundColor: obs.validation_status === 'exceptional' ? '#FEE2E2' : '#DCFCE7' }]}>
+                      <Text style={[styles.historyStatusText, { color: obs.validation_status === 'exceptional' ? '#B91C1C' : '#15803D' }]} weight="semibold">
+                        {obs.validation_status === 'exceptional' ? 'Validation exceptionnelle' : 'Validation normale'}
+                      </Text>
+                    </View>
                   </View>
 
                   {/* Comment */}
@@ -643,85 +719,12 @@ export default function AgentTronconDetailScreen() {
         ) : (
           <Card variant="flat" style={styles.emptyHistoryCard}>
             <Ionicons name="document-text-outline" size={32} color={Palette.textMuted} />
-            <Text style={styles.emptyHistoryTitle}>Aucune observation enregistrée</Text>
+            <Text style={styles.emptyHistoryTitle}>Aucune observation enregistrée pour cette date.</Text>
             <Text style={styles.emptyHistorySub}>
-              Utilisez le bouton ci-dessus pour déclarer le premier relevé terrain.
+              Sélectionnez une date marquée ou changez de mois.
             </Text>
           </Card>
         )}
-
-        {/* ── 6. Assignment Details Card ── */}
-        <Card variant="elevated" style={styles.affectationCard}>
-          <View style={styles.affectationHeader}>
-            <Ionicons name="shield-checkmark" size={20} color="#0D9488" />
-            <Text style={styles.affectationTitle} weight="bold">
-              Mon Affectation
-            </Text>
-            <View style={styles.activePill}>
-              <Text style={styles.activePillText} weight="bold">
-                {troncon?.affectation?.statut || 'ACTIF'}
-              </Text>
-            </View>
-          </View>
-
-          <View style={styles.affectationBody}>
-            {troncon?.affectation?.date_affectation ? (
-              <View style={styles.affectationRow}>
-                <Text style={styles.affectationLabel}>{"Date d'assignation :"}</Text>
-                <Text style={styles.affectationValue} weight="semibold">
-                  {troncon.affectation.date_affectation}
-                </Text>
-              </View>
-            ) : null}
-
-            {troncon?.responsable_nom ? (
-              <View style={styles.affectationRow}>
-                <Text style={styles.affectationLabel}>Responsable de projet :</Text>
-                <Text style={styles.affectationValue} weight="bold">
-                  {troncon.responsable_nom}
-                </Text>
-              </View>
-            ) : null}
-
-            {troncon?.affectation?.notes ? (
-              <View style={styles.notesBox}>
-                <Text style={styles.notesLabel}>Consignes du Responsable :</Text>
-                <Text style={styles.notesText}>{`"${troncon.affectation.notes}"`}</Text>
-              </View>
-            ) : null}
-
-            {/* Quick Contact Buttons for Responsable */}
-            {(troncon?.responsable_telephone || troncon?.responsable_email) && (
-              <View style={styles.contactActionsRow}>
-                {troncon.responsable_telephone ? (
-                  <TouchableOpacity
-                    style={styles.contactBtn}
-                    onPress={handleCallResponsable}
-                    activeOpacity={0.8}
-                  >
-                    <Ionicons name="call-outline" size={15} color={Palette.primary} />
-                    <Text style={styles.contactBtnText} weight="semibold">
-                      Appeler le responsable
-                    </Text>
-                  </TouchableOpacity>
-                ) : null}
-
-                {troncon.responsable_email ? (
-                  <TouchableOpacity
-                    style={styles.contactBtn}
-                    onPress={handleEmailResponsable}
-                    activeOpacity={0.8}
-                  >
-                    <Ionicons name="mail-outline" size={15} color={Palette.primary} />
-                    <Text style={styles.contactBtnText} weight="semibold">
-                      Envoyer un email
-                    </Text>
-                  </TouchableOpacity>
-                ) : null}
-              </View>
-            )}
-          </View>
-        </Card>
       </ScrollView>
 
       {/* ── OBSERVATION MODAL (GPS, Projection, Phase, Status, Comment & Photos) ── */}
@@ -818,13 +821,23 @@ export default function AgentTronconDetailScreen() {
                       </Text>
                     </View>
                     <View style={styles.obsRow}>
-                      <Text style={styles.obsRowLabel}>Déport (écart à l'axe) :</Text>
+                      <Text style={styles.obsRowLabel}>{"Déport (écart à l'axe) :"}</Text>
                       <Text style={styles.obsRowValue}>
                         {projectionResult.offset_distance_meters} m
                       </Text>
                     </View>
                   </View>
                 </View>
+
+                {projectionResult.requires_exceptional_confirmation ? (
+                  <View style={styles.proximityWarning}>
+                    <Text style={styles.proximityWarningTitle} weight="bold">{"⚠️ Vous êtes à "}{projectionResult.offset_distance_meters}{" m de l'infrastructure."}</Text>
+                    <Text style={styles.proximityWarningText}>
+                      La distance maximale recommandée pour ce chantier est de {projectionResult.d_max_position_meters} m.{"\n\n"}
+                      Votre position réelle sera conservée et votre position projetée sur le tronçon sera utilisée pour calculer le métrage.
+                    </Text>
+                  </View>
+                ) : null}
 
                 {/* ── Section B: AVANCEMENT CALCULÉ AUTOMATIQUEMENT ── */}
                 <View style={styles.obsDataSection}>
@@ -1015,17 +1028,17 @@ export default function AgentTronconDetailScreen() {
                   >
                     <Ionicons name="refresh" size={16} color={Palette.primary} />
                     <Text style={styles.refreshGpsText} weight="semibold">
-                      GPS
+                      {projectionResult.requires_exceptional_confirmation ? 'Réessayer ma position' : 'GPS'}
                     </Text>
                   </TouchableOpacity>
 
                   <Button
-                    title={isSubmittingObs ? "Enregistrement..." : "Confirmer l'observation"}
+                    title={isSubmittingObs ? "Enregistrement..." : projectionResult.requires_exceptional_confirmation ? "Valider exceptionnellement" : "Confirmer l'observation"}
                     variant="primary"
                     size="md"
                     style={{ flex: 1 }}
                     disabled={isSubmittingObs}
-                    onPress={handleConfirmObservation}
+                    onPress={() => handleConfirmObservation(projectionResult.requires_exceptional_confirmation)}
                   />
                 </View>
               </ScrollView>
@@ -1311,10 +1324,12 @@ const styles = StyleSheet.create({
   summaryCardHeading: {
     fontSize: 14,
     color: Palette.text,
-    marginBottom: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F1F5F9',
-    paddingBottom: 8,
+  },
+  summaryAccordionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    minHeight: 38,
   },
   summaryGrid: {
     gap: 8,
@@ -1420,6 +1435,24 @@ const styles = StyleSheet.create({
   historyDistanceText: {
     fontSize: 11,
     color: Palette.textMuted,
+  },
+  proximityWarning: {
+    backgroundColor: '#FFF7ED',
+    borderColor: '#FB923C',
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 14,
+  },
+  proximityWarningTitle: {
+    color: '#9A3412',
+    fontSize: 13,
+    marginBottom: 6,
+  },
+  proximityWarningText: {
+    color: '#7C2D12',
+    fontSize: 12,
+    lineHeight: 18,
   },
   historyComment: {
     fontSize: 12,

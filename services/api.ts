@@ -152,6 +152,7 @@ export interface ProjectChantier {
   statut: string;
   surface?: number | null;
   surface_reference?: number | null;
+  d_max_position_meters?: number;
   date_debut?: string | null;
   date_fin_prevue?: string | null;
   date_creation?: string;
@@ -209,6 +210,7 @@ export interface ChantierDetails {
   statut: string;
   surface?: number | null;
   surface_reference?: number | null;
+  d_max_position_meters?: number;
   date_debut?: string | null;
   date_fin_prevue?: string | null;
   date_creation?: string | null;
@@ -369,6 +371,7 @@ export interface CreateChantierPayload {
   date_fin_prevue?: string;
   statut?: string;
   localisation?: any;
+  d_max_position_meters?: number;
 }
 
 export interface SupportedCrs {
@@ -651,6 +654,8 @@ export interface CreateAffectationPayload {
   chantier_id?: number;
   troncon_id: number;
   notes?: string;
+  reassign?: boolean;
+  replace_current?: boolean;
 }
 
 export interface AgentAssignmentItem {
@@ -718,6 +723,9 @@ export interface SpatialProjectionPreview {
   progress_percentage: number;
   calculated_pk: number;
   offset_distance_meters: number;
+  d_max_position_meters: number;
+  proximity_status: 'normal' | 'exceptional_confirmation_required';
+  requires_exceptional_confirmation: boolean;
 }
 
 export interface TerrainObservationPhoto {
@@ -743,6 +751,7 @@ export interface TerrainObservationItem {
   chainage?: number;
   accuracy?: number;
   distance_offset?: number;
+  validation_status?: 'normal' | 'exceptional';
   phase?: string;
   phase_statut?: string;
   statut?: string;
@@ -760,6 +769,20 @@ export interface CreateObservationPayload {
   commentaire?: string;
   type_observation?: string;
   photos?: string[];
+  exceptional_confirmation?: boolean;
+}
+
+export interface InAppNotification {
+  id: number;
+  titre: string;
+  message?: string;
+  type?: string;
+  related_entity_type?: string | null;
+  related_entity_id?: number | null;
+  metadata?: { chantier_id?: number; [key: string]: unknown };
+  is_read: boolean;
+  created_at: string;
+  read_at?: string | null;
 }
 
 export interface AgentTronconDetailsResponse {
@@ -1137,6 +1160,18 @@ class ApiClient {
       headers: {
         Authorization: `Bearer ${token}`,
       },
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async updateChantierConfiguration(
+    token: string,
+    chantierId: number | string,
+    payload: { d_max_position_meters: number }
+  ): Promise<{ message: string; chantier: { id: number; d_max_position_meters: number } }> {
+    return this.request(`/chantiers/${chantierId}/configuration`, {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${token}` },
       body: JSON.stringify(payload),
     });
   }
@@ -1673,6 +1708,18 @@ class ApiClient {
     });
   }
 
+  async getNotifications(token: string): Promise<{ notifications: InAppNotification[]; unread_count: number }> {
+    return this.request('/notifications', { method: 'GET', headers: { Authorization: `Bearer ${token}` } });
+  }
+
+  async markNotificationRead(token: string, id: number): Promise<{ message: string }> {
+    return this.request(`/notifications/${id}/read`, { method: 'PATCH', headers: { Authorization: `Bearer ${token}` } });
+  }
+
+  async markAllNotificationsRead(token: string): Promise<{ message: string; updated_count: number }> {
+    return this.request('/notifications/read-all', { method: 'PATCH', headers: { Authorization: `Bearer ${token}` } });
+  }
+
   async calculateTronconProjection(
     token: string,
     tronconId: number | string,
@@ -1702,6 +1749,12 @@ class ApiClient {
         body: JSON.stringify(payload),
       }
     );
+  }
+
+  async getTronconObservationHistory(token: string, tronconId: number | string, month: string): Promise<{ month: string; observations: TerrainObservationItem[] }> {
+    return this.request(`/agent/troncon/${tronconId}/observations?month=${encodeURIComponent(month)}`, {
+      method: 'GET', headers: { Authorization: `Bearer ${token}` },
+    });
   }
 }
 

@@ -6,6 +6,7 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   RefreshControl,
+  Alert,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -13,6 +14,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { Text } from '@/components/ui/text';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { Palette } from '@/constants/theme';
 import { useAuth } from '@/hooks/useAuth';
 import { api, ChantierDetails, ChantierTroncon } from '@/services/api';
@@ -35,6 +37,8 @@ export default function ChantierDetailResponsableScreen() {
   const [chantier, setChantier] = useState<ChantierDetails | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [dMaxPosition, setDMaxPosition] = useState('50');
+  const [isSavingDMax, setIsSavingDMax] = useState(false);
 
   const fetchDetails = useCallback(async (isRefresh = false) => {
     if (!token || !chantierId) return;
@@ -44,6 +48,7 @@ export default function ChantierDetailResponsableScreen() {
     try {
       const res = await api.getChantierDetails(token, chantierId);
       setChantier(res.chantier);
+      setDMaxPosition(String(res.chantier.d_max_position_meters ?? 50));
     } catch (err: any) {
       console.error('Erreur chargement chantier:', err.message);
     } finally {
@@ -55,6 +60,25 @@ export default function ChantierDetailResponsableScreen() {
   useEffect(() => {
     fetchDetails();
   }, [fetchDetails]);
+
+  const saveDMax = async () => {
+    if (!token || !chantierId) return;
+    const value = Number(dMaxPosition);
+    if (!Number.isFinite(value) || value <= 0) {
+      Alert.alert('Valeur invalide', 'Saisissez une distance strictement positive en mètres.');
+      return;
+    }
+    setIsSavingDMax(true);
+    try {
+      await api.updateChantierConfiguration(token, chantierId, { d_max_position_meters: value });
+      setChantier((current) => current ? { ...current, d_max_position_meters: value } : current);
+      Alert.alert('Configuration enregistrée', 'La distance maximale recommandée a été mise à jour.');
+    } catch (err: any) {
+      Alert.alert('Erreur', err.message || 'Impossible de mettre à jour la configuration.');
+    } finally {
+      setIsSavingDMax(false);
+    }
+  };
 
   if (isLoading && !chantier) {
     return (
@@ -145,6 +169,21 @@ export default function ChantierDetailResponsableScreen() {
               </Text>
             </View>
           </View>
+        </Card>
+
+        <Card variant="elevated" style={styles.infoCard}>
+          <Text style={styles.sectionLabel} weight="bold">Configuration de la position terrain</Text>
+          <Input
+            label="Distance maximale recommandée par rapport à l'infrastructure (m)"
+            value={dMaxPosition}
+            onChangeText={setDMaxPosition}
+            keyboardType="numeric"
+            leftIcon={<Ionicons name="resize-outline" size={18} color={Palette.textMuted} />}
+          />
+          <Text style={styles.dMaxHelp}>
+            {"Seuil recommandé entre la position GPS réelle de l'Agent de Terrain et l'infrastructure. Au-delà, une confirmation exceptionnelle sera exigée."}
+          </Text>
+          <Button title="Enregistrer le seuil" size="sm" variant="secondary" loading={isSavingDMax} onPress={saveDMax} />
         </Card>
 
         {/* General Information */}
@@ -246,7 +285,7 @@ export default function ChantierDetailResponsableScreen() {
               <Ionicons name="trending-up" size={22} color="#16A34A" />
             </View>
             <Text style={styles.quickAccessLabel} weight="bold">Avancement</Text>
-            <Text style={styles.quickAccessSub}>Voir les statistiques et l'historique détaillé</Text>
+            <Text style={styles.quickAccessSub}>{"Voir les statistiques et l'historique détaillé"}</Text>
             <Text style={styles.quickAccessLink} weight="semibold">Consulter →</Text>
           </TouchableOpacity>
 
@@ -276,7 +315,15 @@ export default function ChantierDetailResponsableScreen() {
           <TouchableOpacity
             style={styles.mapButton}
             activeOpacity={0.85}
-            onPress={() => router.push('/(tabs)/map' as any)}
+            onPress={() =>
+              router.push({
+                pathname: '/(tabs)/map',
+                params: {
+                  chantierId: String(chantierId),
+                  projectId: chantier?.projet_id ? String(chantier.projet_id) : undefined,
+                },
+              } as any)
+            }
           >
             <Ionicons name="map-outline" size={20} color="#FFFFFF" />
             <Text style={styles.mapButtonText} weight="bold">
@@ -303,7 +350,7 @@ export default function ChantierDetailResponsableScreen() {
 
             {/* Map Legend */}
             <View style={styles.legendContainer}>
-              <Text style={styles.legendTitle}>Légende d'état :</Text>
+              <Text style={styles.legendTitle}>{"Légende d'état :"}</Text>
               <View style={styles.legendItemsRow}>
                 <View style={styles.legendItem}>
                   <View style={[styles.legendDot, { backgroundColor: '#16A34A' }]} />
@@ -388,7 +435,7 @@ export default function ChantierDetailResponsableScreen() {
             <Ionicons name="git-network-outline" size={40} color={Palette.textMuted} />
             <Text style={styles.emptyTitle}>Aucun tronçon découpé</Text>
             <Text style={styles.emptySubtitle}>
-              Calibrez l'axe de référence et générez le découpage kilométrique des tronçons.
+              {"Calibrez l'axe de référence et générez le découpage kilométrique des tronçons."}
             </Text>
             <Button
               title="Configurer GIS maintenant"
@@ -511,6 +558,13 @@ const styles = StyleSheet.create({
   },
   infoGrid: {
     gap: 8,
+  },
+  dMaxHelp: {
+    fontSize: 11,
+    lineHeight: 16,
+    color: Palette.textMuted,
+    marginTop: -6,
+    marginBottom: 12,
   },
   infoRow: {
     flexDirection: 'row',

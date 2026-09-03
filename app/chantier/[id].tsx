@@ -160,6 +160,7 @@ export default function ChantierDetailScreen() {
       pathname: '/(tabs)/map',
       params: {
         chantierId: String(chantier.id),
+        projectId: chantier.projet_id ? String(chantier.projet_id) : undefined,
         tronconId: firstTronconId ? String(firstTronconId) : undefined,
       },
     });
