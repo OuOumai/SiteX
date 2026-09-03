@@ -1,0 +1,263 @@
+import React, { createContext, useState, useEffect, useCallback, useMemo, ReactNode } from 'react';
+import * as SecureStore from 'expo-secure-store';
+import { Platform } from 'react-native';
+import {
+  api,
+  User,
+  LoginPayload,
+  RegisterPayload,
+  UpdateProfilePayload,
+  ChangePasswordPayload,
+  RoleRequest,
+} from '@/services/api';
+
+const TOKEN_KEY = 'sitex_auth_token';
+const USER_KEY = 'sitex_auth_user';
+
+async function getStoredItem(key: string): Promise<string | null> {
+  try {
+    if (Platform.OS === 'web') {
+      if (typeof window !== 'undefined') {
+        return window.localStorage.getItem(key);
+      }
+      return null;
+    }
+    return await SecureStore.getItemAsync(key);
+  } catch (error) {
+    console.warn(`SecureStore getItem error for ${key}:`, error);
+    return null;
+  }
+}
+
+async function setStoredItem(key: string, value: string): Promise<void> {
+  try {
+    if (Platform.OS === 'web') {
+      if (typeof window !== 'undefined') {
+        window.localStorage.setItem(key, value);
+      }
+      return;
+    }
+    await SecureStore.setItemAsync(key, value);
+  } catch (error) {
+    console.warn(`SecureStore setItem error for ${key}:`, error);
+  }
+}
+
+async function removeStoredItem(key: string): Promise<void> {
+  try {
+    if (Platform.OS === 'web') {
+      if (typeof window !== 'undefined') {
+        window.localStorage.removeItem(key);
+      }
+      return;
+    }
+    await SecureStore.deleteItemAsync(key);
+  } catch (error) {
+    console.warn(`SecureStore deleteItem error for ${key}:`, error);
+  }
+}
+
+export interface AuthContextType {
+  user: User | null;
+  token: string | null;
+  isLoading: boolean;
+  login: (payload: LoginPayload) => Promise<void>;
+  register: (payload: RegisterPayload) => Promise<void>;
+  logout: () => Promise<void>;
+  updateUser: (updates: UpdateProfilePayload) => Promise<void>;
+  changePassword: (payload: ChangePasswordPayload) => Promise<void>;
+  uploadPhoto: (imageUri: string) => Promise<void>;
+  deletePhoto: () => Promise<void>;
+  submitRoleRequest: (roleId: number) => Promise<RoleRequest>;
+  refreshUser: () => Promise<void>;
+}
+
+export const AuthContext = createContext<AuthContextType | undefined>(undefined);
+
+export function AuthProvider({ children }: { children: ReactNode }) {
+  const [user, setUser] = useState<User | null>(null);
+  const [token, setToken] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState<boolean>(true);
+
+  useEffect(() => {
+    async function loadStoredAuth() {
+      try {
+        const storedToken = await getStoredItem(TOKEN_KEY);
+        const storedUserJson = await getStoredItem(USER_KEY);
+
+        if (storedToken && storedUserJson) {
+          setToken(storedToken);
+          setUser(JSON.parse(storedUserJson));
+
+          // Silently refresh latest profile from server
+          try {
+            const freshUser = await api.getCurrentUser(storedToken);
+            setUser(freshUser);
+            await setStoredItem(USER_KEY, JSON.stringify(freshUser));
+          } catch (e) {
+            // Ignore offline/network refresh failure
+          }
+        }
+      } catch (err) {
+        console.error('Failed to load auth state from secure storage:', err);
+      } finally {
+        setIsLoading(false);
+      }
+    }
+
+    loadStoredAuth();
+  }, []);
+
+  const login = useCallback(async (payload: LoginPayload) => {
+    setIsLoading(true);
+    try {
+      const response = await api.login(payload);
+      setToken(response.token);
+
+      // Fetch complete user profile including role requests
+      try {
+        const fullUser = await api.getCurrentUser(response.token);
+        setUser(fullUser);
+        await setStoredItem(USER_KEY, JSON.stringify(fullUser));
+      } catch {
+        setUser(response.user);
+        await setStoredItem(USER_KEY, JSON.stringify(response.user));
+      }
+
+      await setStoredItem(TOKEN_KEY, response.token);
+    } catch (err: any) {
+      // Re-throw so login screen can display the error message
+      if (__DEV__) {
+        console.error('[Auth] login failed — API URL:', api.baseUrl, '| Error:', err?.message);
+      }
+      throw err;
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  const register = useCallback(async (payload: RegisterPayload) => {
+    setIsLoading(true);
+    try {
+      const response = await api.register(payload);
+      setToken(response.token);
+      setUser(response.user);
+
+      await setStoredItem(TOKEN_KEY, response.token);
+      await setStoredItem(USER_KEY, JSON.stringify(response.user));
+    } catch (err: any) {
+      // Re-throw so register screen can display the error message
+      if (__DEV__) {
+        console.error('[Auth] register failed — API URL:', api.baseUrl, '| Error:', err?.message);
+      }
+      throw err;
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  const logout = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      setToken(null);
+      setUser(null);
+      await removeStoredItem(TOKEN_KEY);
+      await removeStoredItem(USER_KEY);
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  const updateUser = useCallback(async (updates: UpdateProfilePayload) => {
+    if (!token) throw new Error('Utilisateur non authentifié');
+    const updatedUser = await api.updateProfile(token, updates);
+    setUser(updatedUser);
+    await setStoredItem(USER_KEY, JSON.stringify(updatedUser));
+  }, [token]);
+
+  const changePassword = useCallback(async (payload: ChangePasswordPayload) => {
+    if (!token) throw new Error('Utilisateur non authentifié');
+    await api.changePassword(token, payload);
+  }, [token]);
+
+  const uploadPhoto = useCallback(async (imageUri: string) => {
+    if (!token) throw new Error('Utilisateur non authentifié');
+    const updatedUser = await api.uploadPhoto(token, imageUri);
+    setUser(updatedUser);
+    await setStoredItem(USER_KEY, JSON.stringify(updatedUser));
+  }, [token]);
+
+  const deletePhoto = useCallback(async () => {
+    if (!token) throw new Error('Utilisateur non authentifié');
+    const updatedUser = await api.deletePhoto(token);
+    setUser(updatedUser);
+    await setStoredItem(USER_KEY, JSON.stringify(updatedUser));
+  }, [token]);
+
+  const submitRoleRequest = useCallback(async (roleId: number): Promise<RoleRequest> => {
+    if (!token) throw new Error('Utilisateur non authentifié');
+    const res = await api.submitRoleRequest(token, roleId);
+    
+    // Update user state with the new role_request
+    setUser((prevUser) => {
+      if (!prevUser) return prevUser;
+      const freshUser = {
+        ...prevUser,
+        role_request: res.role_request,
+      };
+      setStoredItem(USER_KEY, JSON.stringify(freshUser));
+      return freshUser;
+    });
+    return res.role_request;
+  }, [token]);
+
+  const refreshUser = useCallback(async () => {
+    if (!token) return;
+    try {
+      const freshUser = await api.getCurrentUser(token);
+      setUser((prevUser) => {
+        if (JSON.stringify(prevUser) === JSON.stringify(freshUser)) {
+          return prevUser;
+        }
+        setStoredItem(USER_KEY, JSON.stringify(freshUser));
+        return freshUser;
+      });
+    } catch (err) {
+      console.warn('Failed to refresh user profile:', err);
+    }
+  }, [token]);
+
+  const contextValue = React.useMemo(() => ({
+    user,
+    token,
+    isLoading,
+    login,
+    register,
+    logout,
+    updateUser,
+    changePassword,
+    uploadPhoto,
+    deletePhoto,
+    submitRoleRequest,
+    refreshUser,
+  }), [
+    user,
+    token,
+    isLoading,
+    login,
+    register,
+    logout,
+    updateUser,
+    changePassword,
+    uploadPhoto,
+    deletePhoto,
+    submitRoleRequest,
+    refreshUser,
+  ]);
+
+  return (
+    <AuthContext.Provider value={contextValue}>
+      {children}
+    </AuthContext.Provider>
+  );
+}

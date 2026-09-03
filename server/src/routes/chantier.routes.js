@@ -1,0 +1,78 @@
+/**
+ * server/src/routes/chantier.routes.js
+ *
+ * Chantier & GIS Setup route definitions.
+ * Mounted at: /chantiers
+ */
+
+'use strict';
+
+const express                  = require('express');
+const chantierController       = require('../controllers/chantier.controller');
+const { authenticateToken }    = require('../middleware/auth.middleware');
+const { requireResponsableOrAdmin } = require('../middleware/responsable.middleware');
+const geojsonUpload            = require('../middleware/geojson-upload.middleware');
+
+const router = express.Router();
+
+// General Chantier Details
+router.get('/:id', authenticateToken, chantierController.getChantierDetails);
+
+// Chantier Creation (Responsable / Admin)
+router.post('/', authenticateToken, requireResponsableOrAdmin, chantierController.createChantier);
+router.put('/:id/aoi', authenticateToken, requireResponsableOrAdmin, chantierController.saveChantierAoi);
+
+// GIS Coordinate Reference System (CRS) Detection
+router.post(
+  '/:chantierId/crs/detect',
+  authenticateToken,
+  requireResponsableOrAdmin,
+  geojsonUpload.single('geojson'),
+  chantierController.detectSourceCrs
+);
+
+// GIS Reference Alignment
+router.get('/:chantierId/reference-alignment', authenticateToken, chantierController.getReferenceAlignment);
+router.put(
+  '/:chantierId/reference-alignment/direction',
+  authenticateToken,
+  requireResponsableOrAdmin,
+  chantierController.toggleAlignmentDirection
+);
+router.post(
+  '/:chantierId/reference-alignment/analyze',
+  authenticateToken,
+  requireResponsableOrAdmin,
+  geojsonUpload.single('geojson'),
+  chantierController.analyzeGeoJSONSource
+);
+router.post(
+  '/:chantierId/reference-alignment',
+  authenticateToken,
+  requireResponsableOrAdmin,
+  geojsonUpload.single('geojson'),
+  chantierController.uploadReferenceAlignment
+);
+
+// Tronçon Generation Preview & Persistence
+router.post(
+  '/:chantierId/troncons/generate',
+  authenticateToken,
+  requireResponsableOrAdmin,
+  chantierController.generateTronconsPreview
+);
+router.post(
+  '/:chantierId/troncons/recalculate-chainage',
+  authenticateToken,
+  requireResponsableOrAdmin,
+  chantierController.recalculateTronconsChainage
+);
+router.post(
+  '/:chantierId/troncons',
+  authenticateToken,
+  requireResponsableOrAdmin,
+  chantierController.saveTroncons
+);
+router.get('/:chantierId/troncons', authenticateToken, chantierController.getChantierTroncons);
+
+module.exports = router;
