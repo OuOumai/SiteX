@@ -68,6 +68,9 @@ export default function AgentTronconDetailScreen() {
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [screenScrollEnabled, setScreenScrollEnabled] = useState(true);
+  const handleMapInteractionChange = useCallback((interacting: boolean) => {
+    setScreenScrollEnabled(!interacting);
+  }, []);
   const [technicalExpanded, setTechnicalExpanded] = useState(false);
   const [historyMonth, setHistoryMonth] = useState(() => new Date().toISOString().slice(0, 7));
   const [selectedHistoryDate, setSelectedHistoryDate] = useState(() => new Date().toISOString().slice(0, 10));
@@ -278,8 +281,11 @@ export default function AgentTronconDetailScreen() {
       });
 
       Alert.alert(
-        'Observation enregistrée avec succès ! 🎯',
-        `Phase : ${res.observation.phase || selectedPhase} (${res.observation.phase_statut || selectedPhaseStatut})\nAvancement calculé : ${res.observation.progress_percentage}%\nDistance : ${res.observation.distance_from_start} m`
+        'Observation enregistrée ✓',
+        `Métrage atteint :\nPK ${Math.round(res.observation.distance_from_start || 0)} m\n\n` +
+        `Avancement aujourd'hui :\n+${Math.round(res.observation.daily_progress_meters || 0)} m (+${res.observation.daily_progress_percentage || 0}%)\n\n` +
+        `Avancement total du tronçon :\n${res.observation.authoritative_progress_percentage ?? res.observation.progress_percentage}%\n\n` +
+        `Distance à l'axe (D_min) :\n${Number(res.observation.distance_offset || 0).toFixed(2)} m`
       );
 
       setIsObsModalOpen(false);
@@ -319,10 +325,12 @@ export default function AgentTronconDetailScreen() {
     statut: t.statut || 'NON_COMMENCE',
     length_km: t.length_km,
     geometry: t.geometry,
+    progress_percentage: Number(t.id) === currentId ? Number(troncon?.avancement || 0) : Number(t.avancement || 0),
   }));
 
   // Custom Map Markers (GPS + Projected point)
-  const mapMarkers: { lat: number; lng: number; label: string; sublabel: string; color: string; iconName: string }[] = [];
+  const furthestMeters = Math.max(0, ...observations.map((item) => Number(item.distance_from_start) || 0));
+  const mapMarkers: NonNullable<React.ComponentProps<typeof InteractiveGisMap>['customMarkers']> = [];
   const mapLines: { start: { lat: number; lng: number }; end: { lat: number; lng: number }; label: string; color: string }[] = [];
   observations.forEach((obs) => {
     if (Number.isFinite(Number(obs.agent_lat)) && Number.isFinite(Number(obs.agent_lng)) &&
@@ -337,6 +345,17 @@ export default function AgentTronconDetailScreen() {
         label: `Position projetée — observation #${obs.id}`,
         sublabel: `PK ${obs.chainage ?? 0} • ${obs.validation_status === 'exceptional' ? 'Validation exceptionnelle' : 'Validation normale'}`,
         color: obs.validation_status === 'exceptional' ? '#DC2626' : '#10B981', iconName: 'road',
+        photoUrl: obs.photos?.[0]?.url ? getMediaUrl(obs.photos[0].url) : undefined,
+        dateTime: obs.date_heure,
+        phase: obs.phase,
+        workStatus: obs.phase_statut,
+        remarks: obs.commentaire,
+        distanceOffset: Number(obs.distance_offset || 0),
+        dailyMeters: Number(obs.daily_progress_meters || 0),
+        dailyPercentage: Number(obs.daily_progress_percentage || 0),
+        totalPercentage: Number(obs.authoritative_progress_percentage ?? obs.progress_percentage),
+        validationStatus: obs.validation_status,
+        isFurthest: Number(obs.distance_from_start) === furthestMeters,
       });
       mapLines.push({
         start: { lat: Number(obs.agent_lat), lng: Number(obs.agent_lng) },
@@ -388,7 +407,7 @@ export default function AgentTronconDetailScreen() {
       ? 'Problème / Retard'
       : 'Non commencé';
 
-  const currentAvancement = latestObs ? latestObs.progress_percentage : (troncon?.avancement || 0);
+  const currentAvancement = troncon?.avancement || 0;
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
@@ -420,6 +439,7 @@ export default function AgentTronconDetailScreen() {
       <ScrollView
         scrollEnabled={screenScrollEnabled}
         nestedScrollEnabled={true}
+        disableScrollViewPanResponder
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
         refreshControl={
@@ -453,7 +473,7 @@ export default function AgentTronconDetailScreen() {
             selectedTronconId={currentId}
             customMarkers={mapMarkers}
             customLines={mapLines}
-            onInteractionChange={(interacting) => setScreenScrollEnabled(!interacting)}
+            onInteractionChange={handleMapInteractionChange}
           />
         </Card>
 

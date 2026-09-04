@@ -321,16 +321,16 @@ export default function CreateProjectScreen() {
               <Ionicons name="git-network-outline" size={22} color={Palette.primary} />
               <View style={{ flex: 1 }}>
                 <Text style={styles.flowNoticeTitle} weight="bold">
-                  Étape suivante : Cadrage SIG
+                  Étape suivante : Structuration des chantiers
                 </Text>
                 <Text style={styles.flowNoticeText}>
-                  Importez le tracé pour délimiter la zone d'étude et structurer vos chantiers.
+                  Définissez le nombre de chantiers pour ce projet avant de procéder au cadrage spatial et au découpage en tronçons.
                 </Text>
               </View>
             </View>
 
             <Button
-              title="Continuer vers le Cadrage SIG →"
+              title="Continuer vers la Structuration du Projet →"
               variant="primary"
               size="lg"
               loading={isLoading}

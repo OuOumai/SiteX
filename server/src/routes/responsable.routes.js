@@ -21,6 +21,10 @@ router.post('/affectations',              authenticateToken, requireResponsableO
 router.delete('/affectations/:affectationId', authenticateToken, requireResponsableOrAdmin, responsableController.removeAffectation);
 router.get('/agents-terrain',             authenticateToken, requireResponsableOrAdmin, responsableController.getAvailableAgents);
 router.get('/troncon/:id',                authenticateToken, requireResponsableOrAdmin, responsableController.getTronconDetails);
+router.patch('/troncon/:id',              authenticateToken, requireResponsableOrAdmin, responsableController.renameTroncon);
+router.delete('/troncon/:id',             authenticateToken, requireResponsableOrAdmin, responsableController.deleteTroncon);
+router.patch('/chantier/:id',             authenticateToken, requireResponsableOrAdmin, responsableController.renameChantier);
+router.delete('/chantier/:id',            authenticateToken, requireResponsableOrAdmin, responsableController.deleteChantier);
 router.get('/troncon/:id/agents',         authenticateToken, requireResponsableOrAdmin, responsableController.getTronconAssignments);
 router.post('/troncon/:id/agents',        authenticateToken, requireResponsableOrAdmin, responsableController.assignAgentToTroncon);
 router.delete('/troncon/:id/agents/:agentId', authenticateToken, requireResponsableOrAdmin, responsableController.removeAgentFromTroncon);

@@ -18,6 +18,18 @@ export interface GisTronconSegment {
   length_km?: number;
   geometry: GisFeatureGeometry;
   color?: string;
+  progress_percentage?: number;
+  isPrimary?: boolean;
+  isSecondary?: boolean;
+  showProgress?: boolean;
+}
+
+export interface GisChantierAlignment {
+  id: number | string;
+  nom: string;
+  length_km?: number | null;
+  geometry: GisFeatureGeometry;
+  color?: string;
 }
 
 export interface GisCandidateCorridor {
@@ -41,6 +53,9 @@ export interface GisCandidateCorridor {
 
 export interface InteractiveGisMapProps {
   referenceGeometry?: GisFeatureGeometry | null;
+  chantierAlignments?: GisChantierAlignment[] | null;
+  selectedChantierId?: number | string | null;
+  onSelectChantierAlignment?: (chantierId: number | string) => void;
   rawGeoJson?: any | null;
   searchLocation?: { lat: number; lon: number; label?: string } | null;
   troncons?: GisTronconSegment[] | null;
@@ -51,6 +66,7 @@ export interface InteractiveGisMapProps {
   onAoiChange?: (coordinates: [number, number][]) => void;
   onSelectCorridor?: (corridorId: number) => void;
   selectedTronconId?: number | string;
+  onSelectTroncon?: (tronconId: number | string) => void;
   center?: [number, number];
   zoom?: number;
   height?: DimensionValue;
@@ -59,13 +75,27 @@ export interface InteractiveGisMapProps {
   fitPaddingBottom?: number;
   optimizePkLabels?: boolean;
   customMarkers?: {
+    id?: number | string;
     lat: number;
     lng: number;
     label?: string;
     sublabel?: string;
     color?: string;
     iconName?: string;
+    photoUrl?: string;
+    dateTime?: string;
+    phase?: string;
+    workStatus?: string;
+    remarks?: string;
+    distanceOffset?: number;
+    dailyMeters?: number;
+    dailyPercentage?: number;
+    totalPercentage?: number;
+    validationStatus?: string;
+    isFurthest?: boolean;
   }[] | null;
+  selectedMarkerId?: number | string | null;
+  onSelectMarker?: (markerId: number | string) => void;
   customLines?: {
     start: { lat: number; lng: number };
     end: { lat: number; lng: number };
@@ -90,6 +120,9 @@ const TRONCON_COLORS = [
 
 export function InteractiveGisMap({
   referenceGeometry,
+  chantierAlignments = null,
+  selectedChantierId = null,
+  onSelectChantierAlignment,
   rawGeoJson,
   searchLocation,
   troncons,
@@ -100,6 +133,7 @@ export function InteractiveGisMap({
   onAoiChange,
   onSelectCorridor,
   selectedTronconId,
+  onSelectTroncon,
   center = [34.12, -6.70],
   zoom = 11,
   height = 340,
@@ -107,6 +141,8 @@ export function InteractiveGisMap({
   fitPaddingBottom = 35,
   optimizePkLabels = false,
   customMarkers = null,
+  selectedMarkerId = null,
+  onSelectMarker,
   customLines = null,
   onInteractionChange,
 }: InteractiveGisMapProps) {
@@ -123,13 +159,16 @@ export function InteractiveGisMap({
         if (event.data.type === 'SELECT_CORRIDOR' && event.data.corridorId !== undefined) {
           if (onSelectCorridor) onSelectCorridor(event.data.corridorId);
         }
+        if (event.data.type === 'SELECT_TRONCON' && event.data.tronconId !== undefined) onSelectTroncon?.(event.data.tronconId);
+        if (event.data.type === 'SELECT_MARKER' && event.data.markerId !== undefined) onSelectMarker?.(event.data.markerId);
+        if (event.data.type === 'SELECT_CHANTIER' && event.data.chantierId !== undefined) onSelectChantierAlignment?.(event.data.chantierId);
         if (event.data.type === 'MAP_INTERACTION') onInteractionChange?.(!!event.data.active);
       };
 
       window.addEventListener('message', handleMessage);
       return () => window.removeEventListener('message', handleMessage);
     }
-  }, [onAoiChange, onSelectCorridor, onInteractionChange]);
+  }, [onAoiChange, onSelectCorridor, onSelectTroncon, onSelectMarker, onSelectChantierAlignment, onInteractionChange]);
 
   // Handle messages on React Native Mobile WebView
   const handleWebViewMessage = (event: any) => {
@@ -141,6 +180,9 @@ export function InteractiveGisMap({
       if (data.type === 'SELECT_CORRIDOR' && data.corridorId !== undefined) {
         if (onSelectCorridor) onSelectCorridor(data.corridorId);
       }
+      if (data.type === 'SELECT_TRONCON' && data.tronconId !== undefined) onSelectTroncon?.(data.tronconId);
+      if (data.type === 'SELECT_MARKER' && data.markerId !== undefined) onSelectMarker?.(data.markerId);
+      if (data.type === 'SELECT_CHANTIER' && data.chantierId !== undefined) onSelectChantierAlignment?.(data.chantierId);
       if (data.type === 'MAP_INTERACTION') {
         onInteractionChange?.(!!data.active);
       }
@@ -154,6 +196,8 @@ export function InteractiveGisMap({
   const leafletHtml = useMemo(() => {
     const mapConfig = {
       rawRef: referenceGeometry || null,
+      rawChantierAlignments: chantierAlignments && chantierAlignments.length > 0 ? chantierAlignments : [],
+      selectedChantierId: selectedChantierId ?? null,
       rawGeoJson: rawGeoJson || null,
       rawSearchLoc: searchLocation || null,
       rawTroncons: troncons && troncons.length > 0 ? troncons : [],
@@ -164,6 +208,7 @@ export function InteractiveGisMap({
       customMarkers: customMarkers && customMarkers.length > 0 ? customMarkers : [],
       customLines: customLines && customLines.length > 0 ? customLines : [],
       selectedId: selectedTronconId || null,
+      selectedMarkerId: selectedMarkerId ?? null,
       center: center || [34.12, -6.70],
       zoom: zoom || 11,
       fitPaddingBottom: fitPaddingBottom || 35,
@@ -248,6 +293,11 @@ export function InteractiveGisMap({
       color: #94A3B8;
       margin: 2px 0;
     }
+    .station-card { width: min(270px, 72vw); max-height: 300px; overflow-y: auto; }
+    .station-photo { width: 100%; height: 112px; object-fit: cover; border-radius: 9px; margin-bottom: 8px; }
+    .station-grid { display: grid; grid-template-columns: auto 1fr; gap: 4px 8px; font-size: 11px; }
+    .station-key { color: #94A3B8; }
+    .station-value { color: #F8FAFC; font-weight: 600; }
     .pk-pill {
       background: #0284C7;
       color: #FFFFFF;
@@ -470,6 +520,7 @@ export function InteractiveGisMap({
       }
 
       var rawRef = config.rawRef;
+      var rawChantierAlignments = config.rawChantierAlignments || [];
       var rawGeoJson = config.rawGeoJson;
       var rawSearchLoc = config.rawSearchLoc;
       var rawTroncons = config.rawTroncons || [];
@@ -811,7 +862,8 @@ export function InteractiveGisMap({
             var startIcon = L.divIcon({
               className: 'raw-start-marker',
               html: '<div style="display:flex;align-items:center;background:#0284C7;color:#FFFFFF;border:2px solid #FFFFFF;border-radius:18px;padding:3px 9px;font-size:11px;font-weight:bold;box-shadow:0 3px 8px rgba(0,0,0,0.45);white-space:nowrap;"><span style="font-size:12px;margin-right:4px;">📍</span> Tracé importé</div>',
-              iconAnchor: [55, 14]
+              iconSize: [130, 28],
+              iconAnchor: [14, 14]
             });
             L.marker([firstPt[1], firstPt[0]], { icon: startIcon, zIndexOffset: 800 })
               .bindPopup('<div class="custom-popup"><div class="popup-title">📍 Tracé Source SIG</div><div class="popup-detail">Point de repère du tracé importé</div></div>')
@@ -862,6 +914,62 @@ export function InteractiveGisMap({
         return "#64748B";
       }
 
+      function escapeHtml(value) {
+        return String(value === undefined || value === null ? '' : value)
+          .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+      }
+
+      function sliceLineByFraction(geometry, fraction) {
+        if (!geometry || geometry.type !== 'LineString' || !Array.isArray(geometry.coordinates)) return null;
+        var coords = geometry.coordinates;
+        if (coords.length < 2) return null;
+        var targetFraction = Math.max(0, Math.min(1, Number(fraction) || 0));
+        var lengths = [], total = 0;
+        for (var i = 1; i < coords.length; i++) {
+          var length = map.distance([coords[i - 1][1], coords[i - 1][0]], [coords[i][1], coords[i][0]]);
+          lengths.push(length); total += length;
+        }
+        var target = total * targetFraction, travelled = 0, result = [coords[0]];
+        for (var j = 1; j < coords.length; j++) {
+          if (travelled + lengths[j - 1] <= target) {
+            result.push(coords[j]); travelled += lengths[j - 1]; continue;
+          }
+          var local = lengths[j - 1] > 0 ? (target - travelled) / lengths[j - 1] : 0;
+          result.push([
+            coords[j - 1][0] + (coords[j][0] - coords[j - 1][0]) * local,
+            coords[j - 1][1] + (coords[j][1] - coords[j - 1][1]) * local
+          ]);
+          break;
+        }
+        return { type: 'LineString', coordinates: result };
+      }
+
+      // Project-level chantier hierarchy: each line is the authoritative clipped
+      // reference alignment owned by that chantier, never an invented connector.
+      var selectedChantierLayer = null;
+      rawChantierAlignments.forEach(function(ch, idx) {
+        if (!ch || !ch.geometry) return;
+        var selected = config.selectedChantierId !== null && String(ch.id) === String(config.selectedChantierId);
+        var palette = ["#0284C7", "#7C3AED", "#D97706", "#0F766E", "#BE123C", "#4F46E5"];
+        var chantierColor = ch.color || palette[idx % palette.length];
+        if (selected) {
+          L.geoJSON({ type: "Feature", geometry: ch.geometry }, { style: {
+            color: "#FACC15", weight: 15, opacity: 0.42, lineCap: "round", lineJoin: "round"
+          }}).addTo(featureGroup);
+        }
+        var chantierLayer = L.geoJSON({ type: "Feature", geometry: ch.geometry }, { style: {
+          color: selected ? chantierColor : chantierColor,
+          weight: selected ? 9 : 6,
+          opacity: selected ? 1 : 0.62,
+          lineCap: "round",
+          lineJoin: "round"
+        }}).addTo(featureGroup);
+        chantierLayer.bindTooltip(escapeHtml(ch.nom), { sticky: true, direction: "top" });
+        chantierLayer.on("click", function() { sendToParent({ type: "SELECT_CHANTIER", chantierId: ch.id }); });
+        if (selected) selectedChantierLayer = chantierLayer;
+      });
+
       // Render Reference Alignment
       if (rawRef && rawRef.coordinates) {
         try {
@@ -908,7 +1016,8 @@ export function InteractiveGisMap({
               var originIcon = L.divIcon({
                 className: "origin-marker",
                 html: "<div style='display:flex;align-items:center;background:#16A34A;color:#FFFFFF;border:2px solid #FFFFFF;border-radius:18px;padding:3px 9px;font-size:11px;font-weight:bold;box-shadow:0 3px 8px rgba(0,0,0,0.45);white-space:nowrap;'><span style='font-size:12px;margin-right:4px;'>🟢</span> PK 0+000 (Début)</div>",
-                iconAnchor: optimizePkLabels ? [55, 34] : [55, 14]
+                iconSize: [145, 28],
+                iconAnchor: optimizePkLabels ? [14, -6] : [14, 14]
               });
               L.marker(startLatLng, { icon: originIcon, zIndexOffset: 1000 })
                 .bindPopup("<div class='custom-popup'><div class='popup-title' style='color:#16A34A;'>🟢 Origine du Chantier — PK 0+000</div><div class='popup-detail'>Point d'entrée du linéaire dans la zone d'étude.</div></div>")
@@ -917,7 +1026,8 @@ export function InteractiveGisMap({
               var endIcon = L.divIcon({
                 className: "end-marker",
                 html: "<div style='display:flex;align-items:center;background:#DC2626;color:#FFFFFF;border:2px solid #FFFFFF;border-radius:18px;padding:3px 9px;font-size:11px;font-weight:bold;box-shadow:0 3px 8px rgba(0,0,0,0.45);white-space:nowrap;'><span style='font-size:12px;margin-right:4px;'>🔴</span> Fin du Chantier</div>",
-                iconAnchor: optimizePkLabels ? [50, 34] : [50, 14]
+                iconSize: [130, 28],
+                iconAnchor: optimizePkLabels ? [14, -6] : [14, 14]
               });
               L.marker(endLatLng, { icon: endIcon, zIndexOffset: 1000 })
                 .bindPopup("<div class='custom-popup'><div class='popup-title' style='color:#DC2626;'>🔴 Fin du Chantier</div><div class='popup-detail'>Point de fin du linéaire dans la zone d'étude.</div></div>")
@@ -997,10 +1107,13 @@ export function InteractiveGisMap({
       }
 
       // Render Tronçons (Linear Referencing)
+      var selectedTronconLayer = null;
       if (rawTroncons && rawTroncons.length > 0) {
         rawTroncons.forEach(function(tr, idx) {
           if (!tr.geometry) return;
           var isSelected = selectedId && (String(tr.id) === String(selectedId) || String(idx + 1) === String(selectedId));
+          var isPrimary = !!tr.isPrimary;
+          var isSecondary = !!tr.isSecondary;
           var color = tr.color || getStatusColor(tr.statut, idx);
 
           if (isSelected) {
@@ -1024,11 +1137,23 @@ export function InteractiveGisMap({
           }, {
             style: {
               color: color,
-              weight: isSelected ? 8 : 6,
-              opacity: 0.95,
+              weight: isSelected || isPrimary ? 8 : (isSecondary ? 4 : 6),
+              opacity: isSecondary ? 0.55 : 0.95,
+              dashArray: isSecondary ? "7, 8" : undefined,
               lineCap: "round"
             }
           }).addTo(featureGroup);
+          if (isSelected) selectedTronconLayer = tLayer;
+
+          tLayer.on("click", function() { sendToParent({ type: "SELECT_TRONCON", tronconId: tr.id }); });
+
+          var progressFraction = Math.max(0, Math.min(1, Number(tr.progress_percentage || 0) / 100));
+          if (tr.showProgress !== false && !isSecondary && progressFraction > 0 && tr.geometry.type === 'LineString') {
+            var completedGeometry = sliceLineByFraction(tr.geometry, progressFraction);
+            if (completedGeometry) L.geoJSON(completedGeometry, { style: {
+              color: '#16A34A', weight: isSelected ? 9 : 7, opacity: 1, lineCap: 'round'
+            }}).addTo(featureGroup);
+          }
 
           var popupContent = '<div class="custom-popup">' +
             '<div class="popup-title">' + (tr.nom || ('Tronçon ' + (idx + 1))) + '</div>' +
@@ -1205,7 +1330,7 @@ export function InteractiveGisMap({
 
           var markerHtml = isGps
             ? "<div style='position:relative;width:32px;height:32px;display:flex;align-items:center;justify-content:center;'><div style='position:absolute;width:32px;height:32px;border-radius:16px;background:" + color + "44;border:1px solid " + color + "88;'></div><div style='width:16px;height:16px;border-radius:8px;background:" + color + ";border:2.5px solid #FFFFFF;box-shadow:0 2px 8px rgba(0,0,0,0.5);'></div></div>"
-            : "<div style='background:" + color + ";color:#FFF;font-size:12px;font-weight:bold;width:26px;height:26px;border-radius:13px;display:flex;align-items:center;justify-content:center;border:2.5px solid #FFF;box-shadow:0 3px 8px rgba(0,0,0,0.4);'>📍</div>";
+            : "<div style='width:32px;height:32px;display:flex;align-items:center;justify-content:center;'><div style='background:" + color + ";color:#FFF;font-size:12px;font-weight:bold;width:26px;height:26px;border-radius:13px;display:flex;align-items:center;justify-content:center;border:2.5px solid #FFF;box-shadow:0 3px 8px rgba(0,0,0,0.4);'>📍</div></div>";
 
           var cIcon = L.divIcon({
             className: "custom-point-marker",
@@ -1215,8 +1340,28 @@ export function InteractiveGisMap({
           });
 
           var marker = L.marker([m.lat, m.lng], { icon: cIcon, zIndexOffset: 1500 }).addTo(featureGroup);
-          if (m.label) {
-            marker.bindPopup("<div class='custom-popup'><div class='popup-title' style='color:" + color + ";'>" + m.label + "</div>" + (m.sublabel ? ("<div class='popup-detail'>" + m.sublabel + "</div>") : "") + "</div>");
+          if (m.id !== undefined && m.id !== null) {
+            marker.on("click", function() { sendToParent({ type: "SELECT_MARKER", markerId: m.id }); });
+            if (config.selectedMarkerId !== null && String(config.selectedMarkerId) === String(m.id)) {
+              setTimeout(function() { map.setView([m.lat, m.lng], Math.max(map.getZoom(), 17), { animate: true }); }, 220);
+            }
+          }
+          if (m.label && (m.id === undefined || m.id === null)) {
+            var stationDetails = m.dateTime || m.phase || m.photoUrl;
+            var popup = "<div class='custom-popup" + (stationDetails ? " station-card" : "") + "'><div class='popup-title' style='color:" + color + ";'>" + escapeHtml(m.label) + "</div>";
+            if (m.photoUrl) popup += "<img class='station-photo' src='" + escapeHtml(m.photoUrl) + "' alt='Photo observation' />";
+            if (m.sublabel) popup += "<div class='popup-badge'>" + escapeHtml(m.sublabel) + "</div>";
+            if (stationDetails) popup += "<div class='station-grid'>" +
+              "<span class='station-key'>Date</span><span class='station-value'>" + escapeHtml(m.dateTime || '—') + "</span>" +
+              "<span class='station-key'>Phase</span><span class='station-value'>" + escapeHtml(m.phase || '—') + "</span>" +
+              "<span class='station-key'>Statut</span><span class='station-value'>" + escapeHtml(m.workStatus || '—') + "</span>" +
+              "<span class='station-key'>D_min</span><span class='station-value'>" + escapeHtml(m.distanceOffset) + " m</span>" +
+              "<span class='station-key'>Aujourd'hui</span><span class='station-value'>+" + escapeHtml(m.dailyMeters || 0) + " m (+" + escapeHtml(m.dailyPercentage || 0) + "%)</span>" +
+              "<span class='station-key'>Total</span><span class='station-value'>" + escapeHtml(m.totalPercentage || 0) + "%</span></div>";
+            if (m.remarks) popup += "<div class='popup-detail' style='margin-top:8px'>" + escapeHtml(m.remarks) + "</div>";
+            if (m.validationStatus === 'exceptional') popup += "<div class='popup-badge popup-badge-gold'>Validation exceptionnelle</div>";
+            popup += "</div>";
+            marker.bindPopup(popup, { maxWidth: 290, autoPanPadding: [18, 18] });
           }
         });
       }
@@ -1224,6 +1369,15 @@ export function InteractiveGisMap({
       // Fit map to features immediately
       fitAllFeatures();
       setTimeout(function() { fitAllFeatures(); }, 150);
+      var focusLayer = selectedTronconLayer || selectedChantierLayer;
+      if (focusLayer && focusLayer.getBounds) {
+        setTimeout(function() {
+          var selectedBounds = focusLayer.getBounds();
+          if (selectedBounds && selectedBounds.isValid()) map.fitBounds(selectedBounds, {
+            paddingTopLeft: [35, 76], paddingBottomRight: [35, fitPaddingBottom || 35], maxZoom: 17, animate: true
+          });
+        }, 260);
+      }
       setTimeout(function() { map.invalidateSize(); }, 500);
       window.addEventListener("resize", function() { map.invalidateSize(); });
 
@@ -1236,6 +1390,8 @@ export function InteractiveGisMap({
 </html>`;
   }, [
     referenceGeometry,
+    chantierAlignments,
+    selectedChantierId,
     rawGeoJson,
     searchLocation,
     troncons,
@@ -1244,6 +1400,7 @@ export function InteractiveGisMap({
     aoiGeometry,
     enableAoiDrawing,
     selectedTronconId,
+    selectedMarkerId,
     center,
     zoom,
     fitPaddingBottom,

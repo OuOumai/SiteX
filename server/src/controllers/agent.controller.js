@@ -13,6 +13,7 @@ const path = require('path');
 const fs = require('fs');
 const db = require('../db');
 const crsService = require('../services/crs.service');
+const { calculateObservationProgress } = require('../services/progress.service');
 
 const ALLOWED_PHASES = [
   'Terrassement',
@@ -52,7 +53,7 @@ async function getAgentDashboard(req, res) {
         t.pk_debut,
         t.pk_fin,
         COALESCE(t.statut, 'NON_COMMENCE') AS troncon_statut,
-        COALESCE(latest_obs.progress_percentage, t.avancement, 0)::int AS troncon_avancement,
+        COALESCE(t.avancement, 0)::int AS troncon_avancement,
         ROUND((ST_Length(t.geometry::geography) / 1000.0)::numeric, 3) AS length_km,
         ROUND(ST_Length(t.geometry::geography)::numeric, 2) AS length_meters,
         ST_AsGeoJSON(t.geometry)::json AS geometry,
@@ -202,6 +203,10 @@ async function getAgentTronconDetails(req, res) {
         ot.projected_lng,
         ot.distance_from_start,
         ot.progress_percentage,
+        ot.daily_progress_meters,
+        ot.daily_progress_percentage,
+        ot.authoritative_progress_meters,
+        ot.authoritative_progress_percentage,
         ot.chainage,
         ot.accuracy,
         ot.distance_offset,
@@ -234,9 +239,9 @@ async function getAgentTronconDetails(req, res) {
     const obsRes = await db.query(obsQuery, [id]);
     const observations = obsRes.rows;
 
-    // 4. Latest observation & calculated progress
+    // 4. Latest observation and non-regressing authoritative progress
     const latestObservation = observations.length > 0 ? observations[0] : null;
-    const currentProgress = latestObservation ? latestObservation.progress_percentage : (troncon.avancement || 0);
+    const currentProgress = troncon.avancement || 0;
 
     return res.status(200).json({
       troncon: {
@@ -529,7 +534,32 @@ async function createObservation(req, res) {
       });
     }
 
-    // 5. Insert into public.observation_terrain (Historical Timeline)
+    // 5. Calculate today's baseline and the non-regressing authoritative progression.
+    // CURRENT_DATE intentionally follows the database's local calendar day.
+    const progressStateRes = await db.query(`
+      SELECT
+        COALESCE(MAX(distance_from_start) FILTER (WHERE date_heure < CURRENT_DATE), 0) AS daily_baseline_meters,
+        COALESCE(MAX(distance_from_start), 0) AS previous_authoritative_meters
+      FROM public.observation_terrain
+      WHERE troncon_id = $1
+    `, [id]);
+    const totalLengthMeters = proj.total_length_meters || 0;
+    const currentMetricMeters = proj.distance_from_start_meters;
+    const dailyBaselineMeters = parseFloat(progressStateRes.rows[0]?.daily_baseline_meters) || 0;
+    const previousAuthoritativeMeters = parseFloat(progressStateRes.rows[0]?.previous_authoritative_meters) || 0;
+    const {
+      dailyProgressMeters,
+      dailyProgressPercentage,
+      authoritativeProgressMeters,
+      authoritativeProgressPercentage,
+    } = calculateObservationProgress({
+      currentMetricMeters,
+      totalLengthMeters,
+      dailyBaselineMeters,
+      previousAuthoritativeMeters,
+    });
+
+    // 6. Insert into public.observation_terrain (Historical Timeline)
     const insertQuery = `
       INSERT INTO public.observation_terrain (
         chantier_id,
@@ -552,7 +582,11 @@ async function createObservation(req, res) {
         statut,
         type_observation,
         commentaire,
-        validation_status
+        validation_status,
+        daily_progress_meters,
+        daily_progress_percentage,
+        authoritative_progress_meters,
+        authoritative_progress_percentage
       )
       VALUES (
         $1, $2, $3, NOW(),
@@ -564,7 +598,7 @@ async function createObservation(req, res) {
         'EN_COURS',
         COALESCE($15, 'OBSERVATION_PROGRESSION'),
         $16,
-        $17
+        $17, $18, $19, $20, $21
       )
       RETURNING 
         id,
@@ -586,7 +620,11 @@ async function createObservation(req, res) {
         statut,
         type_observation,
         commentaire,
-        validation_status;
+        validation_status,
+        daily_progress_meters,
+        daily_progress_percentage,
+        authoritative_progress_meters,
+        authoritative_progress_percentage;
     `;
 
     const insertRes = await db.query(insertQuery, [
@@ -607,9 +645,19 @@ async function createObservation(req, res) {
       type_observation || 'OBSERVATION_PROGRESSION',
       commentaire || null,
       validationStatus,
+      Number(dailyProgressMeters.toFixed(2)),
+      Number(dailyProgressPercentage.toFixed(2)),
+      Number(authoritativeProgressMeters.toFixed(2)),
+      Number(authoritativeProgressPercentage.toFixed(2)),
     ]);
 
     const createdObs = insertRes.rows[0];
+    await db.query(`
+      UPDATE public.troncon
+      SET authoritative_progress_meters = GREATEST(COALESCE(authoritative_progress_meters, 0), $2),
+          avancement = GREATEST(COALESCE(avancement, 0), $3)
+      WHERE id = $1
+    `, [id, authoritativeProgressMeters, Math.round(authoritativeProgressPercentage)]);
     const savedPhotos = [];
 
     // 6. Handle Photos Attachment
@@ -700,6 +748,8 @@ async function getObservationHistory(req, res) {
               ot.agent_lat, ot.agent_lng, ot.projected_lat, ot.projected_lng,
               ot.distance_from_start, ot.progress_percentage, ot.chainage, ot.accuracy,
               ot.distance_offset, ot.validation_status, ot.statut, ot.type_observation,
+              ot.daily_progress_meters, ot.daily_progress_percentage,
+              ot.authoritative_progress_meters, ot.authoritative_progress_percentage,
               COALESCE(ot.phase, 'Terrassement') AS phase,
               COALESCE(ot.phase_statut, 'En cours') AS phase_statut, ot.commentaire,
               TRIM(CONCAT(u.prenom, ' ', u.nom)) AS agent_nom,

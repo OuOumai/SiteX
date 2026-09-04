@@ -9,9 +9,10 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 
-import { InteractiveGisMap, GisTronconSegment } from '@/components/gis/InteractiveGisMap';
+import { InteractiveGisMap, GisChantierAlignment, GisTronconSegment } from '@/components/gis/InteractiveGisMap';
 import { MapDesktopPanel } from '@/components/map/MapDesktopPanel';
 import { MapMonitoringSheet } from '@/components/map/MapMonitoringSheet';
+import { StationDetailModal } from '@/components/map/StationDetailModal';
 import { ProjectMapSearch } from '@/components/map/ProjectMapSearch';
 import { Text } from '@/components/ui/text';
 import { Palette } from '@/constants/theme';
@@ -24,6 +25,8 @@ import {
   ResponsableDashboardData,
   ResponsableProjectItem,
   TronconItem,
+  TerrainObservationItem,
+  getMediaUrl,
 } from '@/services/api';
 
 function chooseDefaultChantier(chantiers: ResponsableChantierItem[]) {
@@ -46,17 +49,23 @@ export default function MapScreen() {
   const [agentAssignments, setAgentAssignments] = useState<AgentAssignmentItem[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null);
   const [selectedChantierId, setSelectedChantierId] = useState<number | null>(null);
+  const [selectedTronconId, setSelectedTronconId] = useState<number | null>(params.tronconId ? Number(params.tronconId) : null);
   const [activeReference, setActiveReference] = useState<ReferenceAlignment | null>(null);
+  const [projectAlignments, setProjectAlignments] = useState<GisChantierAlignment[]>([]);
   const [activeTroncons, setActiveTroncons] = useState<TronconItem[]>([]);
   const [isLoadingDashboard, setIsLoadingDashboard] = useState(true);
   const [isLoadingGis, setIsLoadingGis] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isSheetExpanded, setIsSheetExpanded] = useState(false);
+  const [stationObservations, setStationObservations] = useState<TerrainObservationItem[]>([]);
+  const [selectedObservation, setSelectedObservation] = useState<TerrainObservationItem | null>(null);
+  const [focusedStationId, setFocusedStationId] = useState<number | null>(null);
 
   // Helper to apply navigation params to project/chantier selection
   const applyRequestedSelection = useCallback((data: ResponsableDashboardData) => {
     const requestedChantierId = params.chantierId ? Number(params.chantierId) : null;
     const requestedProjectId = params.projectId ? Number(params.projectId) : null;
+    const isAgent = user?.role_nom === 'AgentTerrain' || user?.role_id === 3;
 
     // 1. Explicit Chantier ID requested
     if (requestedChantierId) {
@@ -77,7 +86,7 @@ export default function MapScreen() {
         );
         const targetChantier = chooseDefaultChantier(projectChantiers);
         setSelectedProjectId(requestedProject.id);
-        setSelectedChantierId(targetChantier?.id || null);
+        setSelectedChantierId(isAgent ? targetChantier?.id || null : null);
         return;
       }
     }
@@ -96,8 +105,8 @@ export default function MapScreen() {
     const initialChantier = chooseDefaultChantier(projectChantiers);
 
     setSelectedProjectId(initialProject?.id || null);
-    setSelectedChantierId(initialChantier?.id || null);
-  }, [params.chantierId, params.projectId]);
+    setSelectedChantierId(isAgent ? initialChantier?.id || null : null);
+  }, [params.chantierId, params.projectId, user?.role_id, user?.role_nom]);
 
   useEffect(() => {
     let active = true;
@@ -110,6 +119,7 @@ export default function MapScreen() {
       try {
         let data: ResponsableDashboardData;
         const isAgent = user?.role_nom === 'AgentTerrain' || user?.role_id === 3;
+        const isClient = user?.role_nom === 'Client' || user?.role_id === 4;
         if (isAgent) {
           const agentData = await api.getAgentDashboard(token);
           setAgentAssignments(agentData.affectations);
@@ -155,6 +165,23 @@ export default function MapScreen() {
             chantiers: Array.from(chantierMap.values()),
             observations: [],
             reclamations: [],
+          };
+        } else if (isClient) {
+          setAgentAssignments([]);
+          const projectsResponse = await api.getProjects(token, { limit: 100 });
+          const details = await Promise.all(projectsResponse.projects.map((project) => api.getProjectDetails(token, project.id)));
+          const projects: ResponsableProjectItem[] = details.map(({ project }) => ({
+            id: project.id, nom: project.nom, description: project.description, type_projet: project.type_projet,
+            date_debut: project.date_debut, date_fin: project.date_fin, statut: project.statut,
+            nombre_chantiers: project.indicateurs.nombreChantiers,
+            avancement_moyen: project.indicateurs.avancementGlobal,
+          }));
+          const chantiers: ResponsableChantierItem[] = details.flatMap(({ project }) => project.chantiers.map((chantier) => ({
+            ...chantier, projet_nom: project.nom, projet_type: project.type_projet,
+          })));
+          data = {
+            stats: { totalProjects: projects.length, totalChantiers: chantiers.length, chantiersPrets: chantiers.filter((c) => c.gis_status === 'PRET_POUR_SUIVI').length, avancementMoyen: projects.length ? Math.round(projects.reduce((sum, p) => sum + Number(p.avancement_moyen || 0), 0) / projects.length) : 0, totalObservations: 0, totalReclamations: 0 },
+            projects, chantiers, observations: [], reclamations: [],
           };
         } else {
           setAgentAssignments([]);
@@ -221,6 +248,35 @@ export default function MapScreen() {
     };
   }, [token, selectedChantierId]);
 
+  useEffect(() => {
+    const requested = params.tronconId ? Number(params.tronconId) : null;
+    if (requested) { setSelectedTronconId(requested); return; }
+    const isAgent = user?.role_nom === 'AgentTerrain' || user?.role_id === 3;
+    if (isAgent && selectedChantierId) {
+      setSelectedTronconId(agentAssignments.find((item) => item.chantier_id === selectedChantierId)?.troncon_id || null);
+    } else {
+      setSelectedTronconId(null);
+    }
+  }, [params.tronconId, selectedChantierId, agentAssignments, user?.role_id, user?.role_nom]);
+
+  useEffect(() => {
+    let active = true;
+    async function loadStations() {
+      if (!token || !selectedTronconId) { setStationObservations([]); return; }
+      try {
+        const isAgent = user?.role_nom === 'AgentTerrain' || user?.role_id === 3;
+        const isClient = user?.role_nom === 'Client' || user?.role_id === 4;
+        if (isClient) { setStationObservations([]); return; }
+        const details = isAgent
+          ? await api.getAgentTronconDetails(token, selectedTronconId)
+          : await api.getTronconDetails(token, selectedTronconId);
+        if (active) setStationObservations(details.observations || []);
+      } catch { if (active) setStationObservations([]); }
+    }
+    loadStations();
+    return () => { active = false; };
+  }, [token, selectedTronconId, user?.role_id, user?.role_nom]);
+
   const projects = useMemo(() => dashboardData?.projects || [], [dashboardData]);
   const allChantiers = useMemo(() => dashboardData?.chantiers || [], [dashboardData]);
   const selectedProject = projects.find((project) => project.id === selectedProjectId) || null;
@@ -231,22 +287,43 @@ export default function MapScreen() {
   const selectedChantier =
     allChantiers.find((chantier) => chantier.id === selectedChantierId) || null;
 
+  useEffect(() => {
+    let active = true;
+    async function loadProjectAlignments() {
+      if (!token || !selectedProjectId) { setProjectAlignments([]); return; }
+      const results = await Promise.allSettled(projectChantiers.map(async (chantier) => {
+        const response = await api.getReferenceAlignment(token, chantier.id);
+        const alignment = response.reference_alignment;
+        return alignment?.geometry ? { id: chantier.id, nom: chantier.nom, length_km: alignment.length_km, geometry: alignment.geometry } : null;
+      }));
+      if (!active) return;
+      setProjectAlignments(results.flatMap((result) => result.status === 'fulfilled' && result.value ? [result.value] : []));
+    }
+    loadProjectAlignments();
+    return () => { active = false; };
+  }, [token, selectedProjectId, projectChantiers]);
+
   const handleSelectProject = useCallback(
     (project: ResponsableProjectItem) => {
       const relatedChantiers = allChantiers.filter(
         (chantier) => chantier.projet_id === project.id
       );
       const defaultChantier = chooseDefaultChantier(relatedChantiers);
+      const agentRole = user?.role_nom === 'AgentTerrain' || user?.role_id === 3;
       setSelectedProjectId(project.id);
-      setSelectedChantierId(defaultChantier?.id || null);
+      setSelectedChantierId(agentRole ? defaultChantier?.id || null : null);
+      setSelectedTronconId(null);
+      setSelectedObservation(null);
       setIsSheetExpanded(false);
     },
-    [allChantiers]
+    [allChantiers, user?.role_id, user?.role_nom]
   );
 
   const handleSelectChantier = useCallback((chantier: ResponsableChantierItem) => {
     setSelectedChantierId(chantier.id);
-    if (!isDesktop) setIsSheetExpanded(false);
+    setSelectedTronconId(null);
+    setSelectedObservation(null);
+    if (!isDesktop) setIsSheetExpanded(true);
   }, [isDesktop]);
 
   const handleOpenGis = useCallback((chantier: ResponsableChantierItem) => {
@@ -259,6 +336,11 @@ export default function MapScreen() {
     router.push(`/responsable/chantier/${chantier.id}/gis` as never);
   }, [router, user?.role_id, user?.role_nom, agentAssignments]);
 
+  const isAgent = user?.role_nom === 'AgentTerrain' || user?.role_id === 3;
+  const isClient = user?.role_nom === 'Client' || user?.role_id === 4;
+  const assignedTronconId = isAgent ? agentAssignments.find((item) => item.chantier_id === selectedChantierId)?.troncon_id : undefined;
+  const selectedTroncon = activeTroncons.find((item) => Number(item.id) === Number(selectedTronconId)) || null;
+
   const mapTroncons: GisTronconSegment[] = useMemo(
     () =>
       activeTroncons.map((troncon, index) => ({
@@ -269,9 +351,55 @@ export default function MapScreen() {
         statut: troncon.statut,
         length_km: troncon.length_km,
         geometry: troncon.geometry,
+        progress_percentage: troncon.avancement,
+        isPrimary: !!assignedTronconId && Number(troncon.id) === Number(assignedTronconId),
+        isSecondary: !!assignedTronconId && Number(troncon.id) !== Number(assignedTronconId),
+        showProgress: !assignedTronconId || Number(troncon.id) === Number(assignedTronconId),
       })),
-    [activeTroncons]
+    [activeTroncons, assignedTronconId]
   );
+
+  const mapStations: NonNullable<React.ComponentProps<typeof InteractiveGisMap>['customMarkers']> = stationObservations
+    .filter((obs) => Number.isFinite(Number(obs.projected_lat)) && Number.isFinite(Number(obs.projected_lng)))
+    .map((obs) => ({
+      id: obs.id,
+      lat: Number(obs.projected_lat), lng: Number(obs.projected_lng), iconName: 'road',
+      label: `Station PK ${Math.round(Number(obs.distance_from_start) || 0)} m`,
+      sublabel: obs.validation_status === 'exceptional' ? 'Validation exceptionnelle' : 'Observation validée',
+      color: '#10B981', photoUrl: obs.photos?.[0]?.url ? getMediaUrl(obs.photos[0].url) : undefined,
+      dateTime: obs.date_heure, phase: obs.phase, workStatus: obs.phase_statut,
+      remarks: obs.commentaire, distanceOffset: Number(obs.distance_offset || 0),
+      dailyMeters: Number(obs.daily_progress_meters || 0), dailyPercentage: Number(obs.daily_progress_percentage || 0),
+      totalPercentage: Number(obs.authoritative_progress_percentage ?? obs.progress_percentage),
+      validationStatus: obs.validation_status,
+    }));
+
+  const handleSelectObservation = useCallback((observation: TerrainObservationItem) => {
+    setFocusedStationId(observation.id);
+    setSelectedObservation(observation);
+    setIsSheetExpanded(false);
+  }, []);
+
+  const handleSelectTroncon = useCallback((id: number | string) => {
+    const numericId = Number(id);
+    if (!Number.isFinite(numericId)) return;
+    if (isAgent && Number(assignedTronconId) !== numericId) return;
+    setSelectedTronconId(numericId);
+    setSelectedObservation(null);
+    if (!isDesktop) setIsSheetExpanded(true);
+  }, [isAgent, assignedTronconId, isDesktop]);
+
+  const handleDeclareObservation = useCallback(() => {
+    if (selectedTronconId) router.push(`/agent/troncon/${selectedTronconId}` as never);
+  }, [router, selectedTronconId]);
+
+  const handleBackToProject = useCallback(() => {
+    if (isAgent) return;
+    setSelectedChantierId(null);
+    setSelectedTronconId(null);
+    setSelectedObservation(null);
+    setStationObservations([]);
+  }, [isAgent]);
 
   const mobileSheetHeight = Math.min(height * 0.62, 540);
 
@@ -286,18 +414,39 @@ export default function MapScreen() {
             chantiers={projectChantiers}
             onSelectProject={handleSelectProject}
             onSelectChantier={handleSelectChantier}
-            onOpenGis={handleOpenGis}
+            onOpenGis={isClient ? undefined : handleOpenGis}
+            selectedTroncon={selectedTroncon}
+            observations={stationObservations}
+            isAgent={isAgent}
+            onSelectObservation={handleSelectObservation}
+            onDeclareObservation={isAgent ? handleDeclareObservation : undefined}
+            troncons={activeTroncons}
+            onSelectTroncon={(troncon) => handleSelectTroncon(troncon.id || 0)}
+            onBackToProject={handleBackToProject}
           />
         )}
 
         <View style={styles.mapArea}>
           <InteractiveGisMap
-            referenceGeometry={activeReference?.geometry}
+            referenceGeometry={isAgent ? activeReference?.geometry : undefined}
+            chantierAlignments={isAgent ? null : projectAlignments}
+            selectedChantierId={selectedChantierId}
+            onSelectChantierAlignment={(id) => {
+              const chantier = projectChantiers.find((item) => String(item.id) === String(id));
+              if (chantier) handleSelectChantier(chantier);
+            }}
             troncons={mapTroncons.length > 0 ? mapTroncons : null}
-            selectedTronconId={params.tronconId}
+            selectedTronconId={selectedTronconId || undefined}
+            onSelectTroncon={handleSelectTroncon}
             height="100%"
             fitPaddingBottom={!isDesktop ? (isSheetExpanded ? mobileSheetHeight : 145) : 35}
             optimizePkLabels
+            customMarkers={mapStations}
+            selectedMarkerId={focusedStationId}
+            onSelectMarker={(id) => {
+              const observation = stationObservations.find((item) => String(item.id) === String(id));
+              if (observation) handleSelectObservation(observation);
+            }}
           />
 
           {!isDesktop && (
@@ -341,7 +490,15 @@ export default function MapScreen() {
               expanded={isSheetExpanded}
               onToggle={() => setIsSheetExpanded((value) => !value)}
               onSelectChantier={handleSelectChantier}
-              onOpenGis={handleOpenGis}
+              onOpenGis={isClient ? undefined : handleOpenGis}
+              selectedTroncon={selectedTroncon}
+              observations={stationObservations}
+              isAgent={isAgent}
+              onSelectObservation={handleSelectObservation}
+              onDeclareObservation={isAgent ? handleDeclareObservation : undefined}
+              troncons={activeTroncons}
+              onSelectTroncon={(troncon) => handleSelectTroncon(troncon.id || 0)}
+              onBackToProject={handleBackToProject}
             />
           )}
         </View>
@@ -356,6 +513,12 @@ export default function MapScreen() {
           </View>
         </View>
       )}
+      <StationDetailModal
+        observation={selectedObservation}
+        visible={!!selectedObservation}
+        onClose={() => setSelectedObservation(null)}
+        onLocate={() => setSelectedObservation(null)}
+      />
     </SafeAreaView>
   );
 }

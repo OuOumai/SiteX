@@ -7,6 +7,7 @@ import {
   ActivityIndicator,
   RefreshControl,
   Alert,
+  Platform,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -37,20 +38,30 @@ export default function ChantierDetailResponsableScreen() {
   const [chantier, setChantier] = useState<ChantierDetails | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [dMaxPosition, setDMaxPosition] = useState('50');
   const [isSavingDMax, setIsSavingDMax] = useState(false);
+  const [isRenaming, setIsRenaming] = useState(false);
+  const [newName, setNewName] = useState('');
+  const [isManaging, setIsManaging] = useState(false);
+  const showChantierList = () => {
+    if (chantier?.projet_id) router.replace(`/responsable/projet/${chantier.projet_id}` as any);
+    else router.replace('/(tabs)/projects' as any);
+  };
 
   const fetchDetails = useCallback(async (isRefresh = false) => {
     if (!token || !chantierId) return;
     if (isRefresh) setIsRefreshing(true);
     else setIsLoading(true);
+    setLoadError(null);
 
     try {
       const res = await api.getChantierDetails(token, chantierId);
       setChantier(res.chantier);
       setDMaxPosition(String(res.chantier.d_max_position_meters ?? 50));
+      setNewName(res.chantier.nom || '');
     } catch (err: any) {
-      console.error('Erreur chargement chantier:', err.message);
+      setLoadError(err.message || 'Impossible de charger le chantier.');
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);
@@ -80,11 +91,65 @@ export default function ChantierDetailResponsableScreen() {
     }
   };
 
+  const renameChantier = async () => {
+    if (!token || !chantierId || !newName.trim()) return;
+    setIsManaging(true);
+    try {
+      const result = await api.renameResponsableChantier(token, chantierId, newName.trim());
+      setChantier((current) => current ? { ...current, nom: result.chantier.nom } : current);
+      setIsRenaming(false);
+      if (Platform.OS === 'web') {
+        window.alert(result.message);
+        showChantierList();
+      } else {
+        Alert.alert('Chantier renommé', result.message, [{ text: 'OK', onPress: showChantierList }]);
+      }
+    } catch (err: any) { Alert.alert('Erreur', err.message || 'Impossible de renommer le chantier.'); }
+    finally { setIsManaging(false); }
+  };
+
+  const deleteChantier = async () => {
+      if (!token || !chantierId) return;
+      setIsManaging(true);
+      try {
+        const result = await api.deleteResponsableChantier(token, chantierId);
+        if (Platform.OS === 'web') {
+          window.alert(result.message);
+          showChantierList();
+        } else {
+          Alert.alert('Chantier supprimé', result.message, [{ text: 'OK', onPress: showChantierList }]);
+        }
+      } catch (err: any) { setIsManaging(false); Alert.alert('Erreur', err.message || 'Impossible de supprimer le chantier.'); }
+  };
+
+  const confirmDeleteChantier = () => {
+    const message = `Cette action supprimera définitivement « ${chantier?.nom || ''} », tous ses tronçons, observations et données associées.`;
+    if (Platform.OS === 'web') {
+      if (window.confirm(`Supprimer le chantier ?\n\n${message}`)) void deleteChantier();
+      return;
+    }
+    Alert.alert('Supprimer le chantier ?', message, [
+      { text: 'Annuler', style: 'cancel' },
+      { text: 'Supprimer', style: 'destructive', onPress: deleteChantier },
+    ]);
+  };
+
   if (isLoading && !chantier) {
     return (
       <SafeAreaView style={styles.loadingContainer}>
         <ActivityIndicator size="large" color={Palette.primary} />
         <Text style={styles.loadingText}>Chargement du chantier...</Text>
+      </SafeAreaView>
+    );
+  }
+
+  if (!chantier && loadError) {
+    return (
+      <SafeAreaView style={styles.loadingContainer}>
+        <Ionicons name="cloud-offline-outline" size={44} color="#DC2626" />
+        <Text style={styles.loadingText}>{loadError}</Text>
+        <Button title="Réessayer" onPress={() => fetchDetails()} style={{ marginTop: 16 }} />
+        <Button title="Retour" variant="ghost" onPress={() => router.back()} style={{ marginTop: 8 }} />
       </SafeAreaView>
     );
   }
@@ -169,6 +234,21 @@ export default function ChantierDetailResponsableScreen() {
               </Text>
             </View>
           </View>
+          {isRenaming && (
+            <View style={styles.renameBox}>
+              <Input label="Nouveau nom du chantier" value={newName} onChangeText={setNewName} />
+              <View style={styles.manageActions}>
+                <Button title="Annuler" variant="ghost" size="sm" onPress={() => setIsRenaming(false)} />
+                <Button title="Enregistrer" size="sm" loading={isManaging} onPress={renameChantier} />
+              </View>
+            </View>
+          )}
+          {!isRenaming && (
+            <View style={styles.manageActions}>
+              <Button title="Renommer" variant="outline" size="sm" onPress={() => setIsRenaming(true)} />
+              <Button title="Supprimer le chantier" variant="destructive" size="sm" loading={isManaging} onPress={confirmDeleteChantier} />
+            </View>
+          )}
         </Card>
 
         <Card variant="elevated" style={styles.infoCard}>
@@ -511,6 +591,8 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
     marginBottom: 12,
   },
+  renameBox: { marginTop: 14, gap: 10 },
+  manageActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 12 },
   statutLabel: {
     fontSize: 12,
     color: Palette.textMuted,

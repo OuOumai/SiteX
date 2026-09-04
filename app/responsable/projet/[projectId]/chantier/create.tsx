@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   StyleSheet,
@@ -22,14 +22,22 @@ import { useAuth } from '@/hooks/useAuth';
 import { api, ProjectDetails } from '@/services/api';
 
 export default function CreateChantierScreen() {
-  const { projectId } = useLocalSearchParams<{ projectId: string }>();
+  const { projectId, current, total } = useLocalSearchParams<{
+    projectId: string;
+    current?: string;
+    total?: string;
+  }>();
   const router = useRouter();
   const { token, user } = useAuth();
+
+  const currentNum = current ? parseInt(current, 10) : 1;
+  const totalNum = total ? parseInt(total, 10) : 1;
+  const isMultiFlow = Boolean(total && totalNum >= 1);
 
   const [project, setProject] = useState<ProjectDetails | null>(null);
   const [isFetchingProject, setIsFetchingProject] = useState(true);
 
-  const [nom, setNom] = useState('');
+  const [nom, setNom] = useState(isMultiFlow ? `Chantier ${currentNum}` : '');
   const [surface, setSurface] = useState('');
   const [dMaxPosition, setDMaxPosition] = useState('50');
   const [dateDebut, setDateDebut] = useState(new Date().toISOString().split('T')[0]);
@@ -38,6 +46,7 @@ export default function CreateChantierScreen() {
   const [showPickerFin, setShowPickerFin] = useState(false);
   const [statut, setStatut] = useState('En attente');
   const [isLoading, setIsLoading] = useState(false);
+  const submitLockRef = useRef(false);
   const [errors, setErrors] = useState<{ nom?: string; surface?: string; dMaxPosition?: string; general?: string }>({});
 
   useEffect(() => {
@@ -71,8 +80,12 @@ export default function CreateChantierScreen() {
   };
 
   const handleCreate = async () => {
+    // State updates are asynchronous; the ref closes the brief window in which
+    // two rapid taps could otherwise start two POST requests.
+    if (submitLockRef.current || isLoading) return;
     if (!validate() || !token || !projectId) return;
 
+    submitLockRef.current = true;
     setIsLoading(true);
     setErrors({});
 
@@ -86,21 +99,13 @@ export default function CreateChantierScreen() {
         d_max_position_meters: Number(dMaxPosition),
       });
 
-      const newChantierId = res.chantier.id;
-
-      Alert.alert(
-        'Chantier créé !',
-        `Le chantier "${res.chantier.nom}" a été créé avec succès. Passons maintenant à la configuration spatiale (GIS) de son tracé.`,
-        [
-          {
-            text: 'Configurer le GIS maintenant',
-            onPress: () => router.replace(`/responsable/chantier/${newChantierId}/gis` as any),
-          },
-        ]
+      // Automatically navigate to GIS configuration for this chantier
+      router.replace(
+        `/responsable/chantier/${res.chantier.id}/gis?current=${currentNum}&total=${totalNum}&projectId=${projectId}` as any
       );
     } catch (err: any) {
+      submitLockRef.current = false;
       setErrors({ general: err.message || 'Échec de la création du chantier.' });
-    } finally {
       setIsLoading(false);
     }
   };
@@ -113,12 +118,15 @@ export default function CreateChantierScreen() {
       >
         {/* Header */}
         <View style={styles.header}>
-          <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
+          <TouchableOpacity
+            style={styles.backBtn}
+            onPress={() => router.replace(`/responsable/projet/${projectId}` as any)}
+          >
             <Ionicons name="arrow-back" size={22} color={Palette.text} />
           </TouchableOpacity>
           <View style={{ flex: 1 }}>
             <Text variant="h1" style={styles.headerTitle}>
-              Ajouter un Chantier
+              {isMultiFlow ? `Chantier ${currentNum} sur ${totalNum}` : 'Ajouter un Chantier'}
             </Text>
             <Text variant="subtitle" style={styles.headerSubtitle}>
               {project ? `Projet : ${project.nom}` : 'Chargement du projet...'}
@@ -131,6 +139,22 @@ export default function CreateChantierScreen() {
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
         >
+          {isMultiFlow && (
+            <View style={styles.multiStepBanner}>
+              <View style={styles.multiStepBadge}>
+                <Text style={styles.multiStepBadgeText} weight="bold">
+                  ÉTAPE {currentNum} / {totalNum}
+                </Text>
+              </View>
+              <Text style={styles.multiStepTitle} weight="semibold">
+                Configuration des paramètres du Chantier {currentNum}
+              </Text>
+              <Text style={styles.multiStepDesc}>
+                Renseignez les détails ci-dessous avant d'ouvrir son assistant de cadrage spatial SIG.
+              </Text>
+            </View>
+          )}
+
           {isFetchingProject ? (
             <ActivityIndicator size="small" color={Palette.primary} style={{ marginVertical: 20 }} />
           ) : null}
@@ -283,10 +307,15 @@ export default function CreateChantierScreen() {
             </View>
 
             <Button
-              title="Créer et Configurer le SIG →"
+              title={
+                isMultiFlow
+                  ? `Continuer vers le Cadrage SIG (Chantier ${currentNum}/${totalNum}) →`
+                  : 'Créer et Configurer le SIG →'
+              }
               variant="primary"
               size="lg"
               loading={isLoading}
+              disabled={isLoading}
               onPress={handleCreate}
               style={{ marginTop: 24 }}
             />
@@ -330,6 +359,36 @@ const styles = StyleSheet.create({
   scrollContent: {
     padding: 20,
     paddingBottom: 40,
+  },
+  multiStepBanner: {
+    backgroundColor: '#F0FDF4',
+    padding: 14,
+    borderRadius: 12,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: '#BBF7D0',
+  },
+  multiStepBadge: {
+    alignSelf: 'flex-start',
+    backgroundColor: Palette.primary,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    marginBottom: 6,
+  },
+  multiStepBadgeText: {
+    fontSize: 10.5,
+    color: '#FFFFFF',
+  },
+  multiStepTitle: {
+    fontSize: 13.5,
+    color: Palette.primaryDark,
+  },
+  multiStepDesc: {
+    fontSize: 11.5,
+    color: Palette.textMuted,
+    marginTop: 3,
+    lineHeight: 16,
   },
   projectBanner: {
     flexDirection: 'row',

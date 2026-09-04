@@ -12,10 +12,10 @@ import Constants from 'expo-constants';
  * NOTE: When using --tunnel, hostUri is a public ngrok hostname — we intentionally
  * SKIP that and fall through to DEV_LAN_IP so the backend is still reachable over LAN.
  *
- * YOUR MACHINE'S WI-FI IP: 192.168.1.155
+ * YOUR MACHINE'S WI-FI IP: 192.168.100.249
  * Update DEV_LAN_IP below if your router assigns a different IP.
  */
-const DEV_LAN_IP = '192.168.1.160';
+const DEV_LAN_IP = '192.168.100.249';
 const BACKEND_PORT = 5000;
 
 /** Returns true only for reachable RFC-1918 private LAN addresses (excluding VirtualBox host-only network) */
@@ -721,6 +721,10 @@ export interface SpatialProjectionPreview {
   total_length_km: number;
   fraction: number;
   progress_percentage: number;
+  daily_progress_meters?: number;
+  daily_progress_percentage?: number;
+  authoritative_progress_meters?: number;
+  authoritative_progress_percentage?: number;
   calculated_pk: number;
   offset_distance_meters: number;
   d_max_position_meters: number;
@@ -748,6 +752,10 @@ export interface TerrainObservationItem {
   projected_lng: number;
   distance_from_start: number;
   progress_percentage: number;
+  daily_progress_meters?: number;
+  daily_progress_percentage?: number;
+  authoritative_progress_meters?: number;
+  authoritative_progress_percentage?: number;
   chainage?: number;
   accuracy?: number;
   distance_offset?: number;
@@ -1511,6 +1519,30 @@ class ApiClient {
       headers: {
         Authorization: `Bearer ${token}`,
       },
+    });
+  }
+
+  async renameResponsableTroncon(token: string, tronconId: number | string, nom: string) {
+    return this.request<{ message: string; troncon: { id: number; nom: string; chantier_id: number } }>(`/responsable/troncon/${tronconId}`, {
+      method: 'PATCH', headers: { Authorization: `Bearer ${token}` }, body: JSON.stringify({ nom }),
+    });
+  }
+
+  async deleteResponsableTroncon(token: string, tronconId: number | string) {
+    return this.request<{ message: string }>(`/responsable/troncon/${tronconId}`, {
+      method: 'DELETE', headers: { Authorization: `Bearer ${token}` },
+    });
+  }
+
+  async renameResponsableChantier(token: string, chantierId: number | string, nom: string) {
+    return this.request<{ message: string; chantier: { id: number; nom: string } }>(`/responsable/chantier/${chantierId}`, {
+      method: 'PATCH', headers: { Authorization: `Bearer ${token}` }, body: JSON.stringify({ nom }),
+    });
+  }
+
+  async deleteResponsableChantier(token: string, chantierId: number | string) {
+    return this.request<{ message: string }>(`/responsable/chantier/${chantierId}`, {
+      method: 'DELETE', headers: { Authorization: `Bearer ${token}` },
     });
   }
 

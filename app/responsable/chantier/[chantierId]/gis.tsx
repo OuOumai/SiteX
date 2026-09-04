@@ -80,9 +80,23 @@ function formatPK(val?: number | null, isReversed = false): string {
 }
 
 export default function GisSetupScreen() {
-  const { chantierId } = useLocalSearchParams<{ chantierId: string }>();
+  const { chantierId, current, total, projectId } = useLocalSearchParams<{
+    chantierId: string;
+    current?: string;
+    total?: string;
+    projectId?: string;
+  }>();
   const router = useRouter();
   const { token } = useAuth();
+  const [screenScrollEnabled, setScreenScrollEnabled] = useState(true);
+
+  const currentNum = current ? parseInt(current, 10) : 1;
+  const totalNum = total ? parseInt(total, 10) : 1;
+  const isMultiFlow = Boolean(total && totalNum >= 1);
+
+  const handleMapInteractionChange = useCallback((interacting: boolean) => {
+    setScreenScrollEnabled(!interacting);
+  }, []);
 
   const [currentStep, setCurrentStep] = useState<number>(1);
   const [chantier, setChantier] = useState<ChantierDetails | null>(null);
@@ -669,11 +683,11 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
   };
 
   const stepsList = [
-    { num: 1, label: '1. Données SIG' },
-    { num: 2, label: '2. Zone d\'Étude' },
-    { num: 3, label: '3. Analyse & Axe' },
-    { num: 4, label: '4. Direction & PK 0+000' },
-    { num: 5, label: '5. Découpage' },
+    { num: 1, label: '1. Infrastructure' },
+    { num: 2, label: '2. Zone du chantier' },
+    { num: 3, label: '3. Alignement de référence' },
+    { num: 4, label: '4. Longueur calculée & PK' },
+    { num: 5, label: '5. Découpage en tronçons' },
     { num: 6, label: '6. Vérification' },
     { num: 7, label: '7. Finalisation' },
   ];
@@ -769,18 +783,42 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
 
       {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
+        <TouchableOpacity
+          style={styles.backBtn}
+          onPress={() => {
+            const pId = projectId || (chantier?.projet_id ? String(chantier.projet_id) : undefined);
+            if (pId) {
+              router.replace(`/responsable/projet/${pId}` as any);
+            } else {
+              router.back();
+            }
+          }}
+        >
           <Ionicons name="arrow-back" size={22} color={Palette.text} />
         </TouchableOpacity>
         <View style={{ flex: 1 }}>
           <Text variant="h1" style={styles.headerTitle}>
-            Configuration GIS
+            {isMultiFlow ? `Cadrage SIG • Chantier ${currentNum}/${totalNum}` : 'Configuration GIS'}
           </Text>
           <Text variant="subtitle" style={styles.headerSubtitle}>
             {chantier ? `${chantier.nom} (${chantier.projet_nom || 'Projet'})` : 'Chantier'}
           </Text>
         </View>
       </View>
+
+      {/* Multi-Chantier Progress Banner */}
+      {isMultiFlow && (
+        <View style={styles.multiFlowHeaderBanner}>
+          <View style={styles.multiFlowHeaderBadge}>
+            <Text style={styles.multiFlowHeaderBadgeText} weight="bold">
+              CHANTIER {currentNum} SUR {totalNum}
+            </Text>
+          </View>
+          <Text style={styles.multiFlowHeaderText} weight="semibold">
+            Cadrage spatial et découpage des tronçons du Chantier {currentNum}
+          </Text>
+        </View>
+      )}
 
       {/* Stepper Header */}
       <View style={styles.stepperContainer}>
@@ -822,7 +860,19 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
         </ScrollView>
       </View>
 
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+      <View style={styles.spatialHierarchyBar}>
+        <Text style={styles.spatialHierarchyText} weight="semibold">
+          Infrastructure <Text style={styles.spatialHierarchyArrow}>→</Text> portion spatiale du chantier <Text style={styles.spatialHierarchyArrow}>→</Text> alignement de référence <Text style={styles.spatialHierarchyArrow}>→</Text> tronçons
+        </Text>
+      </View>
+
+      <ScrollView
+        scrollEnabled={screenScrollEnabled}
+        nestedScrollEnabled
+        disableScrollViewPanResponder
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+      >
         {/* ── STEP 1: Source GIS Infrastructure Selection ── */}
         {currentStep === 1 && (
           <Card variant="elevated" style={styles.stepCard}>
@@ -1039,7 +1089,7 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
                 Zone d'Étude du Chantier (AOI)
               </Text>
               <Text style={styles.stepDescription}>
-                Délimitez l'emprise du chantier (min. 4 points).
+                Délimitez la portion spatiale de l’infrastructure qui appartient à ce chantier (min. 4 points).
               </Text>
             </View>
 
@@ -1132,6 +1182,7 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
                   center={mapCenter}
                   zoom={mapZoom}
                   onAoiChange={handleAoiMapDrawn}
+                  onInteractionChange={handleMapInteractionChange}
                   height={320}
                 />
               </View>
@@ -1226,6 +1277,7 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
                   const target = analysisResult.candidate_corridors.find((c) => c.id === cId);
                   if (target) handleSelectCorridorWithAutoReveal(target);
                 }}
+                onInteractionChange={handleMapInteractionChange}
                 height={260}
               />
             </View>
@@ -1517,6 +1569,7 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
                 referenceGeometry={referenceAlignment.geometry}
                 center={mapCenter}
                 zoom={mapZoom}
+                onInteractionChange={handleMapInteractionChange}
                 height={220}
               />
             </View>
@@ -1554,7 +1607,7 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
                 <Text style={styles.metricValue} weight="bold">
                   {referenceAlignment.length_km} km
                 </Text>
-                <Text style={styles.metricSub}>({Number(referenceAlignment.length_meters).toLocaleString()} m dans la zone d'étude)</Text>
+                <Text style={styles.metricSub}>Calculée automatiquement sur la géométrie courbe • {Number(referenceAlignment.length_meters).toLocaleString()} m</Text>
               </View>
 
               <View style={styles.metricItem}>
@@ -1761,6 +1814,7 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
                 troncons={mapTroncons}
                 center={mapCenter}
                 zoom={mapZoom}
+                onInteractionChange={handleMapInteractionChange}
                 height={230}
               />
             </View>
@@ -1873,32 +1927,81 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
           <Card variant="elevated" style={styles.successCard}>
             <Ionicons name="checkmark-circle" size={48} color="#16A34A" />
             <Text style={styles.successTitle} weight="bold">
-              Configuration GIS Enregistrée !
+              {isMultiFlow && currentNum < totalNum
+                ? `Chantier ${currentNum} sur ${totalNum} Validé !`
+                : isMultiFlow
+                ? 'Tous les chantiers ont été configurés !'
+                : 'Configuration GIS Enregistrée !'}
             </Text>
             <Text style={styles.successSubtitle}>
-              Le chantier "{chantier?.nom}" dispose maintenant de son emprise spatiale (AOI), de son axe de référence et de ses {editableTroncons.length} tronçons calibrés.
+              {isMultiFlow && currentNum < totalNum
+                ? `Le chantier "${chantier?.nom}" et ses ${editableTroncons.length} tronçons ont été enregistrés avec succès. Vous pouvez maintenant passer à la configuration du chantier suivant.`
+                : isMultiFlow
+                ? `Les ${totalNum} chantiers du projet sont maintenant délimités, dotés de leurs axes de référence et découpés en leurs propres tronçons.`
+                : `Le chantier "${chantier?.nom}" dispose maintenant de son emprise spatiale (AOI), de son axe de référence et de ses ${editableTroncons.length} tronçons calibrés.`}
             </Text>
             <View style={{ gap: 10, marginTop: 16 }}>
-              <Button
-                title="🗺️ Visualiser sur la carte →"
-                variant="primary"
-                size="md"
-                onPress={() =>
-                  router.replace({
-                    pathname: '/(tabs)/map',
-                    params: {
-                      chantierId: String(chantierId),
-                      projectId: chantier?.projet_id ? String(chantier.projet_id) : undefined,
-                    },
-                  } as any)
-                }
-              />
-              <Button
-                title="Consulter les détails du Chantier"
-                variant="secondary"
-                size="md"
-                onPress={() => router.replace(`/responsable/chantier/${chantierId}` as any)}
-              />
+              {isMultiFlow && currentNum < totalNum ? (
+                <>
+                  <Button
+                    title={`Passer au Chantier ${currentNum + 1} sur ${totalNum} →`}
+                    variant="primary"
+                    size="lg"
+                    onPress={() => {
+                      const pId = projectId || (chantier?.projet_id ? String(chantier.projet_id) : undefined);
+                      router.replace(
+                        `/responsable/projet/${pId}/chantier/create?current=${currentNum + 1}&total=${totalNum}` as any
+                      );
+                    }}
+                  />
+                  <Button
+                    title="Consulter la liste des chantiers du projet"
+                    variant="secondary"
+                    size="md"
+                    onPress={() => {
+                      const pId = projectId || (chantier?.projet_id ? String(chantier.projet_id) : undefined);
+                      router.replace(`/responsable/projet/${pId}` as any);
+                    }}
+                  />
+                </>
+              ) : (
+                <>
+                  <Button
+                    title="Voir la liste des chantiers du projet →"
+                    variant="primary"
+                    size="lg"
+                    onPress={() => {
+                      const pId = projectId || (chantier?.projet_id ? String(chantier.projet_id) : undefined);
+                      router.replace(
+                        pId
+                          ? `/responsable/projet/${pId}`
+                          : `/responsable/chantier/${chantierId}` as any
+                      );
+                    }}
+                  />
+                  <Button
+                    title="🗺️ Visualiser sur la carte"
+                    variant="secondary"
+                    size="md"
+                    onPress={() => {
+                      const pId = projectId || (chantier?.projet_id ? String(chantier.projet_id) : undefined);
+                      router.replace({
+                        pathname: '/(tabs)/map',
+                        params: {
+                          chantierId: String(chantierId),
+                          projectId: pId,
+                        },
+                      } as any);
+                    }}
+                  />
+                  <Button
+                    title="Consulter les détails de ce Chantier"
+                    variant="ghost"
+                    size="sm"
+                    onPress={() => router.replace(`/responsable/chantier/${chantierId}` as any)}
+                  />
+                </>
+              )}
             </View>
           </Card>
         )}
@@ -2061,6 +2164,47 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     gap: 8,
   },
+  multiFlowHeaderBanner: {
+    marginHorizontal: 16,
+    marginTop: 8,
+    marginBottom: 4,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+    backgroundColor: '#EFF6FF',
+    borderWidth: 1,
+    borderColor: '#BFDBFE',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  multiFlowHeaderBadge: {
+    backgroundColor: '#1E40AF',
+    paddingHorizontal: 7,
+    paddingVertical: 2.5,
+    borderRadius: 5,
+  },
+  multiFlowHeaderBadgeText: {
+    fontSize: 10,
+    color: '#FFFFFF',
+  },
+  multiFlowHeaderText: {
+    fontSize: 11.5,
+    color: '#1E40AF',
+    flex: 1,
+  },
+  spatialHierarchyBar: {
+    marginHorizontal: 16,
+    marginTop: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    borderRadius: 11,
+    borderWidth: 1,
+    borderColor: '#A7F3D0',
+    backgroundColor: '#ECFDF5',
+  },
+  spatialHierarchyText: { fontSize: 10.5, color: '#065F46', textAlign: 'center' },
+  spatialHierarchyArrow: { color: Palette.primary },
   stepBadge: {
     flexDirection: 'row',
     alignItems: 'center',

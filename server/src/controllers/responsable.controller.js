@@ -8,6 +8,98 @@
 
 const db = require('../db');
 
+function isAdminUser(user) {
+  return user.role_nom === 'Administrateur' || user.role_id === 1;
+}
+
+async function renameChantier(req, res) {
+  try {
+    const name = String(req.body?.nom || '').trim();
+    if (!name) return res.status(400).json({ message: 'Le nom du chantier est requis.' });
+    const result = await db.query(`
+      UPDATE public.chantier SET nom = $1
+      WHERE id = $2 AND (responsable_id = $3 OR $4 = true)
+      RETURNING id, nom
+    `, [name, req.params.id, req.user.id, isAdminUser(req.user)]);
+    if (!result.rows.length) return res.status(404).json({ message: 'Chantier introuvable ou accès interdit.' });
+    return res.json({ message: 'Chantier renommé avec succès.', chantier: result.rows[0] });
+  } catch (error) {
+    console.error('RenameChantier error:', error.message);
+    return res.status(500).json({ message: 'Erreur lors du renommage du chantier.' });
+  }
+}
+
+async function renameTroncon(req, res) {
+  try {
+    const name = String(req.body?.nom || '').trim();
+    if (!name) return res.status(400).json({ message: 'Le nom du tronçon est requis.' });
+    const result = await db.query(`
+      UPDATE public.troncon t SET nom = $1
+      FROM public.chantier c
+      WHERE t.id = $2 AND c.id = t.chantier_id
+        AND (c.responsable_id = $3 OR $4 = true)
+      RETURNING t.id, t.nom, t.chantier_id
+    `, [name, req.params.id, req.user.id, isAdminUser(req.user)]);
+    if (!result.rows.length) return res.status(404).json({ message: 'Tronçon introuvable ou accès interdit.' });
+    return res.json({ message: 'Tronçon renommé avec succès.', troncon: result.rows[0] });
+  } catch (error) {
+    console.error('RenameTroncon error:', error.message);
+    return res.status(500).json({ message: 'Erreur lors du renommage du tronçon.' });
+  }
+}
+
+async function deleteTroncon(req, res) {
+  const client = await db.pool.connect();
+  try {
+    const check = await client.query(`
+      SELECT t.id, t.nom FROM public.troncon t
+      JOIN public.chantier c ON c.id = t.chantier_id
+      WHERE t.id = $1 AND (c.responsable_id = $2 OR $3 = true)
+    `, [req.params.id, req.user.id, isAdminUser(req.user)]);
+    if (!check.rows.length) return res.status(404).json({ message: 'Tronçon introuvable ou accès interdit.' });
+    await client.query('BEGIN');
+    await client.query(`DELETE FROM public.photo_terrain WHERE observation_id IN
+      (SELECT id FROM public.observation_terrain WHERE troncon_id = $1)`, [req.params.id]);
+    await client.query('DELETE FROM public.observation_terrain WHERE troncon_id = $1', [req.params.id]);
+    await client.query('DELETE FROM public.troncon WHERE id = $1', [req.params.id]);
+    await client.query('COMMIT');
+    return res.json({ message: `Tronçon « ${check.rows[0].nom} » supprimé avec succès.` });
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('DeleteTroncon error:', error.message);
+    return res.status(500).json({ message: 'Erreur lors de la suppression du tronçon.' });
+  } finally { client.release(); }
+}
+
+async function deleteChantier(req, res) {
+  const client = await db.pool.connect();
+  try {
+    const check = await client.query(`SELECT id, nom FROM public.chantier
+      WHERE id = $1 AND (responsable_id = $2 OR $3 = true)`,
+      [req.params.id, req.user.id, isAdminUser(req.user)]);
+    if (!check.rows.length) return res.status(404).json({ message: 'Chantier introuvable ou accès interdit.' });
+    await client.query('BEGIN');
+    await client.query(`DELETE FROM public.photo_terrain WHERE observation_id IN
+      (SELECT id FROM public.observation_terrain WHERE chantier_id = $1 OR troncon_id IN
+        (SELECT id FROM public.troncon WHERE chantier_id = $1))`, [req.params.id]);
+    await client.query(`DELETE FROM public.observation_terrain WHERE chantier_id = $1 OR troncon_id IN
+      (SELECT id FROM public.troncon WHERE chantier_id = $1)`, [req.params.id]);
+    await client.query('DELETE FROM public.rapport WHERE chantier_id = $1', [req.params.id]);
+    await client.query('DELETE FROM public.troncon WHERE chantier_id = $1', [req.params.id]);
+    await client.query('DELETE FROM public.reference_alignment WHERE chantier_id = $1', [req.params.id]);
+    await client.query('DELETE FROM public.avancement WHERE chantier_id = $1', [req.params.id]);
+    await client.query('DELETE FROM public.image_satellite WHERE chantier_id = $1', [req.params.id]);
+    await client.query('DELETE FROM public.reclamation WHERE chantier_id = $1', [req.params.id]);
+    await client.query('DELETE FROM public.chantier WHERE id = $1', [req.params.id]);
+    await client.query('COMMIT');
+    return res.json({ message: `Chantier « ${check.rows[0].nom} » et ses tronçons supprimés avec succès.` });
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('DeleteChantier error:', error.message);
+    return res.status(500).json({ message: 'Erreur lors de la suppression du chantier.' });
+  } finally { client.release(); }
+}
+
 /**
  * GET /responsable/dashboard
  * Aggregates all real database records for the authenticated Responsable:
@@ -348,6 +440,10 @@ async function getTronconDetails(req, res) {
         o.projected_lng,
         o.distance_from_start,
         o.progress_percentage,
+        o.daily_progress_meters,
+        o.daily_progress_percentage,
+        o.authoritative_progress_meters,
+        o.authoritative_progress_percentage,
         o.chainage,
         o.accuracy,
         o.distance_offset,
@@ -382,11 +478,7 @@ async function getTronconDetails(req, res) {
     const obsRes = await db.query(obsQuery, [id]);
     const observations = obsRes.rows;
 
-    // 4. Update avancement from latest observation if available
-    const latestObs = observations.length > 0 ? observations[0] : null;
-    if (latestObs && latestObs.progress_percentage !== null && latestObs.progress_percentage !== undefined) {
-      troncon.avancement = latestObs.progress_percentage;
-    }
+    // 4. t.avancement is the non-regressing authoritative maximum.
 
     // 5. Anomaly counts
     const anomaliesCount = observations.filter(
@@ -1212,4 +1304,8 @@ module.exports = {
   getTronconAssignments,
   assignAgentToTroncon,
   removeAgentFromTroncon,
+  renameChantier,
+  deleteChantier,
+  renameTroncon,
+  deleteTroncon,
 };

@@ -121,6 +121,60 @@ async function runMigration() {
     `);
     console.log('  └─ D_max and observation validation status ready');
 
+    // 6b. Observation progress snapshots and precise authoritative tronçon progress.
+    // Spatial positions remain sourced from distance_from_start/chainage; these fields
+    // preserve the business result as it was when an observation was accepted.
+    await client.query(`
+      ALTER TABLE public.observation_terrain
+      ADD COLUMN IF NOT EXISTS daily_progress_meters DOUBLE PRECISION,
+      ADD COLUMN IF NOT EXISTS daily_progress_percentage DOUBLE PRECISION,
+      ADD COLUMN IF NOT EXISTS authoritative_progress_meters DOUBLE PRECISION,
+      ADD COLUMN IF NOT EXISTS authoritative_progress_percentage DOUBLE PRECISION;
+
+      ALTER TABLE public.troncon
+      ADD COLUMN IF NOT EXISTS authoritative_progress_meters DOUBLE PRECISION NOT NULL DEFAULT 0;
+
+      WITH maxima AS (
+        SELECT troncon_id, MAX(COALESCE(distance_from_start, 0)) AS max_meters
+        FROM public.observation_terrain
+        GROUP BY troncon_id
+      )
+      UPDATE public.troncon t
+      SET authoritative_progress_meters = GREATEST(t.authoritative_progress_meters, m.max_meters),
+          avancement = GREATEST(COALESCE(t.avancement, 0), LEAST(100, ROUND(
+            100.0 * m.max_meters / NULLIF(ST_Length(t.geometry::geography), 0)
+          )))
+      FROM maxima m
+      WHERE t.id = m.troncon_id;
+
+      WITH snapshots AS (
+        SELECT o.id,
+          MAX(COALESCE(o.distance_from_start, 0)) OVER (
+            PARTITION BY o.troncon_id ORDER BY o.date_heure, o.id ROWS UNBOUNDED PRECEDING
+          ) AS authoritative_meters,
+          COALESCE((SELECT MAX(prev.distance_from_start)
+            FROM public.observation_terrain prev
+            WHERE prev.troncon_id = o.troncon_id
+              AND prev.date_heure < DATE_TRUNC('day', o.date_heure)), 0) AS day_baseline
+        FROM public.observation_terrain o
+      )
+      UPDATE public.observation_terrain o
+      SET daily_progress_meters = COALESCE(o.daily_progress_meters,
+            GREATEST(0, COALESCE(o.distance_from_start, 0) - s.day_baseline)),
+          daily_progress_percentage = COALESCE(o.daily_progress_percentage,
+            GREATEST(0, o.progress_percentage - 100.0 * s.day_baseline /
+              NULLIF(ST_Length(t.geometry::geography), 0))),
+          authoritative_progress_meters = COALESCE(o.authoritative_progress_meters, s.authoritative_meters),
+          authoritative_progress_percentage = COALESCE(o.authoritative_progress_percentage,
+            LEAST(100, 100.0 * s.authoritative_meters / NULLIF(ST_Length(t.geometry::geography), 0)))
+      FROM snapshots s, public.troncon t
+      WHERE o.id = s.id AND t.id = o.troncon_id;
+
+      CREATE INDEX IF NOT EXISTS idx_observation_troncon_date_progress
+      ON public.observation_terrain(troncon_id, date_heure, distance_from_start);
+    `);
+    console.log('  └─ Daily and authoritative progress snapshots ready');
+
     // 7. A live operational assignment is one-to-one in both directions.
     await client.query(`
       WITH ranked AS (

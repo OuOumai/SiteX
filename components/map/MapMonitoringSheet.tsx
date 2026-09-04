@@ -4,8 +4,10 @@ import { Ionicons } from '@expo/vector-icons';
 
 import { Text } from '@/components/ui/text';
 import { Palette } from '@/constants/theme';
-import { ResponsableChantierItem, ResponsableProjectItem } from '@/services/api';
+import { ResponsableChantierItem, ResponsableProjectItem, TerrainObservationItem, TronconItem } from '@/services/api';
 import { MapLegendContent } from './MapLegendContent';
+import { TronconMonitoringContent } from './TronconMonitoringContent';
+import { ChantierMonitoringContent } from './ChantierMonitoringContent';
 
 interface MapMonitoringSheetProps {
   project: ResponsableProjectItem | null;
@@ -15,6 +17,14 @@ interface MapMonitoringSheetProps {
   onToggle: () => void;
   onSelectChantier: (chantier: ResponsableChantierItem) => void;
   onOpenGis?: (chantier: ResponsableChantierItem) => void;
+  selectedTroncon?: TronconItem | null;
+  observations?: TerrainObservationItem[];
+  isAgent?: boolean;
+  onSelectObservation?: (observation: TerrainObservationItem) => void;
+  onDeclareObservation?: () => void;
+  troncons?: TronconItem[];
+  onSelectTroncon?: (troncon: TronconItem) => void;
+  onBackToProject?: () => void;
 }
 
 function gisLabel(status?: string) {
@@ -37,6 +47,14 @@ export function MapMonitoringSheet({
   onToggle,
   onSelectChantier,
   onOpenGis,
+  selectedTroncon,
+  observations = [],
+  isAgent,
+  onSelectObservation,
+  onDeclareObservation,
+  troncons = [],
+  onSelectTroncon,
+  onBackToProject,
 }: MapMonitoringSheetProps) {
   return (
     <View style={[styles.sheet, expanded ? styles.sheetExpanded : styles.sheetCollapsed]}>
@@ -54,7 +72,7 @@ export function MapMonitoringSheet({
               {project?.nom || 'Sélectionnez un projet'}
             </Text>
             <Text style={styles.chantierName} numberOfLines={1}>
-              {chantier?.nom || (project ? 'Aucun chantier disponible' : 'Recherchez un projet pour commencer')}
+              {selectedTroncon?.nom || chantier?.nom || (project ? 'Aucun chantier disponible' : 'Recherchez un projet pour commencer')}
             </Text>
           </View>
 
@@ -65,15 +83,15 @@ export function MapMonitoringSheet({
           <View style={styles.metricsRow}>
             <View style={styles.metricPill}>
               <Ionicons name="git-branch-outline" size={13} color={Palette.primary} />
-              <Text style={styles.metricText}>{chantier.nombre_troncons || 0} tronçons</Text>
+              <Text style={styles.metricText}>{selectedTroncon ? `${observations.length} observations` : `${chantier.nombre_troncons || 0} tronçons`}</Text>
             </View>
             <View style={styles.metricPill}>
               <Ionicons name="resize-outline" size={13} color={Palette.primary} />
-              <Text style={styles.metricText}>{chantier.length_km ? `${chantier.length_km} km` : '— km'}</Text>
+              <Text style={styles.metricText}>{selectedTroncon?.length_km ? `${selectedTroncon.length_km} km` : chantier.length_km ? `${chantier.length_km} km` : '— km'}</Text>
             </View>
             <View style={styles.metricPill}>
               <Ionicons name="speedometer-outline" size={13} color={Palette.primary} />
-              <Text style={styles.metricText}>{chantier.avancement || 0}%</Text>
+              <Text style={styles.metricText}>{selectedTroncon?.avancement ?? chantier.avancement ?? 0}%</Text>
             </View>
           </View>
         )}
@@ -85,6 +103,18 @@ export function MapMonitoringSheet({
           contentContainerStyle={styles.expandedContentInner}
           showsVerticalScrollIndicator={false}
         >
+          {selectedTroncon && onSelectObservation ? (
+            <TronconMonitoringContent
+              troncon={selectedTroncon}
+              chantierName={chantier?.nom}
+              observations={observations}
+              isAgent={isAgent}
+              onSelectObservation={onSelectObservation}
+              onDeclareObservation={onDeclareObservation}
+            />
+          ) : chantier && onSelectTroncon && onBackToProject ? (
+            <ChantierMonitoringContent chantier={chantier} troncons={troncons} onSelectTroncon={onSelectTroncon} onBack={onBackToProject} onOpenGis={onOpenGis ? () => onOpenGis(chantier) : undefined} />
+          ) : <>
           {project?.description ? (
             <Text style={styles.projectDescription}>{project.description}</Text>
           ) : null}
@@ -167,6 +197,7 @@ export function MapMonitoringSheet({
 
           <View style={styles.divider} />
           <MapLegendContent />
+          </>}
         </ScrollView>
       )}
     </View>

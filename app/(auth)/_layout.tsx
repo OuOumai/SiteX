@@ -1,11 +1,11 @@
 import React from 'react';
-import { View, StyleSheet, SafeAreaView, StatusBar, ScrollView } from 'react-native';
+import { View, StyleSheet, StatusBar } from 'react-native';
 import { Stack } from 'expo-router';
 import { Palette } from '@/constants/theme';
 
 export default function AuthLayout() {
   return (
-    <SafeAreaView style={styles.container}>
+    <View style={styles.container}>
       <StatusBar barStyle="dark-content" backgroundColor={Palette.background} />
       <Stack
         screenOptions={{
@@ -14,7 +14,7 @@ export default function AuthLayout() {
           animation: 'slide_from_right',
         }}
       />
-    </SafeAreaView>
+    </View>
   );
 }
 

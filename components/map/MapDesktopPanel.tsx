@@ -4,9 +4,11 @@ import { Ionicons } from '@expo/vector-icons';
 
 import { Text } from '@/components/ui/text';
 import { Palette } from '@/constants/theme';
-import { ResponsableChantierItem, ResponsableProjectItem } from '@/services/api';
+import { ResponsableChantierItem, ResponsableProjectItem, TerrainObservationItem, TronconItem } from '@/services/api';
 import { MapLegendContent } from './MapLegendContent';
 import { ProjectMapSearch } from './ProjectMapSearch';
+import { TronconMonitoringContent } from './TronconMonitoringContent';
+import { ChantierMonitoringContent } from './ChantierMonitoringContent';
 
 interface MapDesktopPanelProps {
   projects: ResponsableProjectItem[];
@@ -16,6 +18,14 @@ interface MapDesktopPanelProps {
   onSelectProject: (project: ResponsableProjectItem) => void;
   onSelectChantier: (chantier: ResponsableChantierItem) => void;
   onOpenGis?: (chantier: ResponsableChantierItem) => void;
+  selectedTroncon?: TronconItem | null;
+  observations?: TerrainObservationItem[];
+  isAgent?: boolean;
+  onSelectObservation?: (observation: TerrainObservationItem) => void;
+  onDeclareObservation?: () => void;
+  troncons?: TronconItem[];
+  onSelectTroncon?: (troncon: TronconItem) => void;
+  onBackToProject?: () => void;
 }
 
 export function MapDesktopPanel({
@@ -26,6 +36,14 @@ export function MapDesktopPanel({
   onSelectProject,
   onSelectChantier,
   onOpenGis,
+  selectedTroncon,
+  observations = [],
+  isAgent,
+  onSelectObservation,
+  onDeclareObservation,
+  troncons = [],
+  onSelectTroncon,
+  onBackToProject,
 }: MapDesktopPanelProps) {
   return (
     <View style={styles.panel}>
@@ -45,7 +63,11 @@ export function MapDesktopPanel({
       />
 
       <ScrollView style={styles.scroll} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-        {project ? (
+        {selectedTroncon && onSelectObservation ? (
+          <TronconMonitoringContent troncon={selectedTroncon} chantierName={chantier?.nom} observations={observations} isAgent={isAgent} onSelectObservation={onSelectObservation} onDeclareObservation={onDeclareObservation} />
+        ) : chantier && onSelectTroncon && onBackToProject ? (
+          <ChantierMonitoringContent chantier={chantier} troncons={troncons} onSelectTroncon={onSelectTroncon} onBack={onBackToProject} onOpenGis={onOpenGis ? () => onOpenGis(chantier) : undefined} />
+        ) : project ? (
           <>
             <View style={styles.projectHeader}>
               <Text style={styles.projectName} weight="bold">{project.nom}</Text>

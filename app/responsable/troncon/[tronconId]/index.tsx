@@ -18,6 +18,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { Text } from '@/components/ui/text';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { Palette } from '@/constants/theme';
 import { useAuth } from '@/hooks/useAuth';
 import {
@@ -46,6 +47,13 @@ export default function TronconDetailResponsableScreen() {
   const [data, setData] = useState<TronconDetailsResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isRenamingTroncon, setIsRenamingTroncon] = useState(false);
+  const [tronconName, setTronconName] = useState('');
+  const [isManagingTroncon, setIsManagingTroncon] = useState(false);
+  const showTronconList = () => {
+    if (data?.troncon.chantier_id) router.replace(`/responsable/chantier/${data.troncon.chantier_id}` as any);
+    else router.replace('/(tabs)/projects' as any);
+  };
 
   // Assignment Modal State
   const [isAssignModalOpen, setIsAssignModalOpen] = useState(false);
@@ -71,6 +79,7 @@ export default function TronconDetailResponsableScreen() {
     try {
       const res = await api.getTronconDetails(token, tronconId);
       setData(res);
+      setTronconName(res.troncon.nom || '');
     } catch (err: any) {
       console.error('Erreur chargement détails tronçon:', err.message);
     } finally {
@@ -82,6 +91,49 @@ export default function TronconDetailResponsableScreen() {
   useEffect(() => {
     fetchDetails();
   }, [fetchDetails]);
+
+  const renameTroncon = async () => {
+    if (!token || !tronconId || !tronconName.trim()) return;
+    setIsManagingTroncon(true);
+    try {
+      const result = await api.renameResponsableTroncon(token, tronconId, tronconName.trim());
+      setData((current) => current ? { ...current, troncon: { ...current.troncon, nom: result.troncon.nom } } : current);
+      setIsRenamingTroncon(false);
+      if (Platform.OS === 'web') {
+        window.alert(result.message);
+        showTronconList();
+      } else {
+        Alert.alert('Tronçon renommé', result.message, [{ text: 'OK', onPress: showTronconList }]);
+      }
+    } catch (err: any) { Alert.alert('Erreur', err.message || 'Impossible de renommer le tronçon.'); }
+    finally { setIsManagingTroncon(false); }
+  };
+
+  const deleteTroncon = async () => {
+      if (!token || !tronconId) return;
+      setIsManagingTroncon(true);
+      try {
+        const result = await api.deleteResponsableTroncon(token, tronconId);
+        if (Platform.OS === 'web') {
+          window.alert(result.message);
+          showTronconList();
+        } else {
+          Alert.alert('Tronçon supprimé', result.message, [{ text: 'OK', onPress: showTronconList }]);
+        }
+      } catch (err: any) { setIsManagingTroncon(false); Alert.alert('Erreur', err.message || 'Impossible de supprimer le tronçon.'); }
+  };
+
+  const confirmDeleteTroncon = () => {
+    const message = `Cette action supprimera définitivement « ${data?.troncon.nom || ''} » et ses observations.`;
+    if (Platform.OS === 'web') {
+      if (window.confirm(`Supprimer le tronçon ?\n\n${message}`)) void deleteTroncon();
+      return;
+    }
+    Alert.alert('Supprimer le tronçon ?', message, [
+      { text: 'Annuler', style: 'cancel' },
+      { text: 'Supprimer', style: 'destructive', onPress: deleteTroncon },
+    ]);
+  };
 
   // Open Assign Modal and fetch available agents
   const handleOpenAssignModal = async () => {
@@ -167,7 +219,31 @@ export default function TronconDetailResponsableScreen() {
     statut: t.statut || 'NON_COMMENCE',
     length_km: t.length_km,
     geometry: t.geometry,
+    progress_percentage: Number(t.id) === currentId ? Number(troncon?.avancement || 0) : Number(t.avancement || 0),
   }));
+
+  const furthestMeters = Math.max(0, ...observations.map((item) => Number(item.distance_from_start) || 0));
+  const stationMarkers: NonNullable<React.ComponentProps<typeof InteractiveGisMap>['customMarkers']> = observations
+    .filter((obs) => Number.isFinite(Number(obs.projected_lat)) && Number.isFinite(Number(obs.projected_lng)))
+    .map((obs) => ({
+      lat: Number(obs.projected_lat),
+      lng: Number(obs.projected_lng),
+      label: `Station PK ${Math.round(Number(obs.distance_from_start) || 0)} m`,
+      sublabel: obs.validation_status === 'exceptional' ? 'Exceptionnelle' : 'Validée',
+      color: Number(obs.distance_from_start) === furthestMeters ? '#F59E0B' : '#10B981',
+      iconName: 'road',
+      photoUrl: obs.photos?.[0]?.url ? getMediaUrl(obs.photos[0].url) : undefined,
+      dateTime: obs.date_heure,
+      phase: obs.phase,
+      workStatus: obs.phase_statut,
+      remarks: obs.commentaire,
+      distanceOffset: Number(obs.distance_offset || 0),
+      dailyMeters: Number(obs.daily_progress_meters || 0),
+      dailyPercentage: Number(obs.daily_progress_percentage || 0),
+      totalPercentage: Number(obs.authoritative_progress_percentage ?? obs.progress_percentage),
+      validationStatus: obs.validation_status,
+      isFurthest: Number(obs.distance_from_start) === furthestMeters,
+    }));
 
   const statut = troncon?.statut || 'NON_COMMENCE';
   const statutColor =
@@ -249,11 +325,12 @@ export default function TronconDetailResponsableScreen() {
             height={220}
             troncons={mapSegments}
             selectedTronconId={currentId}
+            customMarkers={stationMarkers}
           />
 
           {/* Color Legend */}
           <View style={styles.legendContainer}>
-            <Text style={styles.legendTitle}>Légende d'état :</Text>
+            <Text style={styles.legendTitle}>{"Légende d'état :"}</Text>
             <View style={styles.legendItemsRow}>
               <View style={styles.legendItem}>
                 <View style={[styles.legendDot, { backgroundColor: '#16A34A' }]} />
@@ -273,6 +350,24 @@ export default function TronconDetailResponsableScreen() {
               </View>
             </View>
           </View>
+        </Card>
+
+        <Card variant="elevated" style={styles.manageCard}>
+          <Text weight="bold" style={styles.manageTitle}>Gestion du tronçon</Text>
+          {isRenamingTroncon ? (
+            <>
+              <Input label="Nouveau nom du tronçon" value={tronconName} onChangeText={setTronconName} />
+              <View style={styles.manageActions}>
+                <Button title="Annuler" variant="ghost" size="sm" onPress={() => setIsRenamingTroncon(false)} />
+                <Button title="Enregistrer" size="sm" loading={isManagingTroncon} onPress={renameTroncon} />
+              </View>
+            </>
+          ) : (
+            <View style={styles.manageActions}>
+              <Button title="Renommer" variant="outline" size="sm" onPress={() => setIsRenamingTroncon(true)} />
+              <Button title="Supprimer le tronçon" variant="destructive" size="sm" loading={isManagingTroncon} onPress={confirmDeleteTroncon} />
+            </View>
+          )}
         </Card>
 
         {/* ── 2. AGENTS DE TERRAIN AFFECTÉS SECTION (New Feature) ── */}
@@ -1035,6 +1130,9 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
     marginBottom: 16,
   },
+  manageCard: { marginBottom: 16 },
+  manageTitle: { fontSize: 15, color: Palette.text },
+  manageActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 12 },
   summaryCardHeading: {
     fontSize: 14,
     color: Palette.text,
