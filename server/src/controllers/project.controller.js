@@ -187,6 +187,7 @@ async function getProjectDetails(req, res) {
         c.statut,
         c.surface,
         c.surface_reference,
+        ST_AsGeoJSON(c.localisation)::json AS localisation,
         TO_CHAR(c.date_debut, 'YYYY-MM-DD') AS date_debut,
         TO_CHAR(c.date_fin_prevue, 'YYYY-MM-DD') AS date_fin_prevue,
         c.date_creation,
@@ -229,7 +230,7 @@ async function getProjectDetails(req, res) {
             AND assigned_a.agent_id = $3
             AND assigned_a.statut = 'ACTIF'
         ))
-      GROUP BY c.id, latest_avancement.pourcentage, latest_avancement.date, latest_avancement.commentaire, u.prenom, u.nom, ref.id, ref.nom, ref.geometry, ref.direction_reversed
+      GROUP BY c.id, c.localisation, latest_avancement.pourcentage, latest_avancement.date, latest_avancement.commentaire, u.prenom, u.nom, ref.id, ref.nom, ref.geometry, ref.direction_reversed
       ORDER BY c.id ASC;
     `;
     const chantiersRes = await db.query(chantiersQuery, [id, isAgent, agentId]);

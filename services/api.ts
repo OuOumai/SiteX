@@ -461,6 +461,25 @@ export interface GeoJSONAnalysisResponse {
   source_srid?: number;
 }
 
+export interface AoiConflictItem {
+  chantierId: number;
+  chantierName: string;
+  overlapAreaM2: number;
+}
+
+export interface AoiConflictCheckResponse {
+  conflict: boolean;
+  conflicts: AoiConflictItem[];
+  message?: string;
+}
+
+export interface SiblingChantierAoiItem {
+  id: number;
+  nom: string;
+  geometry: any;
+  surface_m2?: number;
+}
+
 export interface TronconItem {
   id?: number;
   step?: number;
@@ -901,7 +920,10 @@ class ApiClient {
       }
 
       if (!response.ok) {
-        throw new Error(data.message || data.error || `Erreur HTTP ${response.status}`);
+        const error: any = new Error(data.message || data.error || `Erreur HTTP ${response.status}`);
+        error.status = response.status;
+        error.data = data;
+        throw error;
       }
 
       return data as T;
@@ -1197,6 +1219,38 @@ class ApiClient {
           Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({ aoi: aoiData }),
+      }
+    );
+  }
+
+  async checkChantierAoiConflict(
+    token: string,
+    chantierId: number | string,
+    aoiData: any
+  ): Promise<AoiConflictCheckResponse> {
+    return this.request<AoiConflictCheckResponse>(
+      `/chantiers/${chantierId}/aoi/check-conflict`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ aoi: aoiData }),
+      }
+    );
+  }
+
+  async getSiblingChantierAois(
+    token: string,
+    chantierId: number | string
+  ): Promise<{ chantiers: SiblingChantierAoiItem[] }> {
+    return this.request<{ chantiers: SiblingChantierAoiItem[] }>(
+      `/chantiers/${chantierId}/sibling-aois`,
+      {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
       }
     );
   }

@@ -393,51 +393,185 @@ function validateCoordinatesRange(coords) {
 }
 
 /**
+ * Helper: Normalizes input AOI data (array of points, GeoJSON Feature, Polygon, or string)
+ * into a canonical GeoJSON Polygon object with closed linear ring.
+ */
+function extractAoiPolygonGeometry(rawAoi) {
+  if (!rawAoi) {
+    throw new Error("La géométrie de la zone d'étude (AOI) est requise.");
+  }
+
+  let aoiData = rawAoi;
+  if (typeof aoiData === 'string') {
+    try {
+      aoiData = JSON.parse(aoiData);
+    } catch {
+      throw new Error("Le corps de l'AOI n'est pas un JSON valide.");
+    }
+  }
+
+  if (Array.isArray(aoiData)) {
+    let coords = [...aoiData];
+    if (coords.length >= 3) {
+      const first = coords[0];
+      const last = coords[coords.length - 1];
+      if (first[0] !== last[0] || first[1] !== last[1]) {
+        coords.push([first[0], first[1]]);
+      }
+    }
+    aoiData = {
+      type: 'Polygon',
+      coordinates: [coords],
+    };
+  } else if (aoiData.type === 'Feature' && aoiData.geometry) {
+    aoiData = aoiData.geometry;
+  }
+
+  if (aoiData.type !== 'Polygon' && aoiData.type !== 'MultiPolygon') {
+    throw new Error(`Type de géométrie AOI non supporté : ${aoiData.type}. Seul Polygon est accepté.`);
+  }
+
+  validateCoordinatesRange(aoiData.coordinates);
+  return aoiData;
+}
+
+/**
+ * Helper: Validates proposed AOI against sibling chantiers belonging to the same project.
+ * Returns an array of conflicting chantiers where ST_Area(ST_Intersection(...)::geography) > 1.0 m².
+ * Touching boundaries/edges/vertices (area <= 1 m²) are considered valid.
+ */
+async function findAoiConflicts(clientOrDb, chantierId, aoiGeoJson) {
+  const conflictQuery = `
+    WITH current_ch AS (
+      SELECT projet_id FROM public.chantier WHERE id = $1
+    ),
+    raw_input AS (
+      SELECT ST_SetSRID(ST_GeomFromGeoJSON($2), 4326) AS src_geom
+    ),
+    proposed_geom AS (
+      SELECT CASE 
+        WHEN ST_IsValid(src_geom) THEN src_geom
+        ELSE ST_MakeValid(src_geom)
+      END AS geom
+      FROM raw_input
+    ),
+    sibling_chantiers AS (
+      SELECT 
+        c.id AS chantier_id,
+        c.nom AS chantier_nom,
+        c.localisation AS sibling_geom
+      FROM public.chantier c
+      JOIN current_ch curr ON c.projet_id = curr.projet_id
+      WHERE c.id != $1
+        AND c.localisation IS NOT NULL
+    ),
+    intersections AS (
+      SELECT 
+        s.chantier_id,
+        s.chantier_nom,
+        ST_Intersection(s.sibling_geom, p.geom) AS inter_geom
+      FROM sibling_chantiers s
+      CROSS JOIN proposed_geom p
+      WHERE ST_Intersects(s.sibling_geom, p.geom)
+    )
+    SELECT 
+      chantier_id,
+      chantier_nom,
+      ROUND(ST_Area(inter_geom::geography)::numeric, 2) AS overlap_area_m2
+    FROM intersections
+    WHERE ST_Area(inter_geom::geography) > 1.0
+    ORDER BY overlap_area_m2 DESC;
+  `;
+
+  const result = await clientOrDb.query(conflictQuery, [chantierId, JSON.stringify(aoiGeoJson)]);
+  return result.rows.map((row) => ({
+    chantierId: row.chantier_id,
+    chantierName: row.chantier_nom,
+    overlapAreaM2: parseFloat(row.overlap_area_m2),
+  }));
+}
+
+/**
+ * POST /chantiers/:id/aoi/check-conflict
+ * Pre-checks a proposed AOI polygon for positive area overlaps against sibling chantiers
+ * belonging to the same project, without committing changes.
+ */
+async function checkChantierAoiConflict(req, res) {
+  try {
+    const { id } = req.params;
+    const rawAoi = req.body.aoi || req.body.geometry || req.body.localisation;
+    const aoiData = extractAoiPolygonGeometry(rawAoi);
+
+    const conflicts = await findAoiConflicts(db, id, aoiData);
+    const hasConflict = conflicts.length > 0;
+
+    return res.status(200).json({
+      conflict: hasConflict,
+      conflicts,
+      message: hasConflict
+        ? `Conflit d'emprise spatiale détecté avec ${conflicts.length} chantier(s).`
+        : "Aucun conflit d'emprise spatiale.",
+    });
+  } catch (error) {
+    console.error('❌ CheckChantierAoiConflict error:', error.message);
+    return res.status(400).json({
+      message: "Erreur lors de la vérification du conflit d'AOI : " + error.message,
+    });
+  }
+}
+
+/**
+ * GET /chantiers/:chantierId/sibling-aois
+ * Returns existing sibling chantiers and their saved AOI geometries for visual reference on the map.
+ */
+async function getSiblingChantierAois(req, res) {
+  try {
+    const { chantierId } = req.params;
+    const query = `
+      SELECT 
+        c.id,
+        c.nom,
+        ST_AsGeoJSON(c.localisation)::json AS geometry,
+        ROUND(COALESCE(c.surface, 0)::numeric, 2) AS surface_m2
+      FROM public.chantier c
+      WHERE c.projet_id = (SELECT projet_id FROM public.chantier WHERE id = $1)
+        AND c.id != $1
+        AND c.localisation IS NOT NULL
+      ORDER BY c.id ASC;
+    `;
+    const result = await db.query(query, [chantierId]);
+    return res.status(200).json({
+      chantiers: result.rows,
+    });
+  } catch (error) {
+    console.error('❌ GetSiblingChantierAois error:', error.message);
+    return res.status(500).json({
+      message: 'Erreur lors de la récupération des zones des chantiers voisins.',
+    });
+  }
+}
+
+/**
  * PUT /chantiers/:id/aoi
  * Saves the Area of Interest (AOI) polygon on public.chantier.localisation
  * and automatically calculates the surface in square meters via PostGIS ST_Area.
+ * Strictly enforces that the AOI does not overlap with sibling chantiers (> 1 m²).
  */
 async function saveChantierAoi(req, res) {
   try {
     const { id } = req.params;
-    let aoiData = req.body.aoi || req.body.geometry || req.body.localisation;
+    const rawAoi = req.body.aoi || req.body.geometry || req.body.localisation;
+    const aoiData = extractAoiPolygonGeometry(rawAoi);
 
-    if (!aoiData) {
-      return res.status(400).json({ message: "La géométrie de la zone d'étude (AOI) est requise." });
-    }
-
-    if (typeof aoiData === 'string') {
-      try {
-        aoiData = JSON.parse(aoiData);
-      } catch {
-        return res.status(400).json({ message: "Le corps de l'AOI n'est pas un JSON valide." });
-      }
-    }
-
-    // If passed as array of coordinate points [[lng, lat], ...]
-    if (Array.isArray(aoiData)) {
-      let coords = [...aoiData];
-      // Ensure closed ring (first == last)
-      if (coords.length >= 3) {
-        const first = coords[0];
-        const last = coords[coords.length - 1];
-        if (first[0] !== last[0] || first[1] !== last[1]) {
-          coords.push([first[0], first[1]]);
-        }
-      }
-      aoiData = {
-        type: 'Polygon',
-        coordinates: [coords],
-      };
-    } else if (aoiData.type === 'Feature' && aoiData.geometry) {
-      aoiData = aoiData.geometry;
-    }
-
-    // Validate coordinates range
-    try {
-      validateCoordinatesRange(aoiData.coordinates);
-    } catch (valErr) {
-      return res.status(400).json({ message: valErr.message });
+    // Enforce positive area overlap rule against sibling chantiers
+    const conflicts = await findAoiConflicts(db, id, aoiData);
+    if (conflicts.length > 0) {
+      const first = conflicts[0];
+      return res.status(409).json({
+        conflict: true,
+        conflicts,
+        message: `Zone en conflit : Cette zone chevauche l'emprise du chantier "${first.chantierName}" (${first.overlapAreaM2} m² de chevauchement).`,
+      });
     }
 
     const updateQuery = `
@@ -1670,6 +1804,8 @@ module.exports = {
   createChantier,
   updateChantierConfiguration,
   saveChantierAoi,
+  checkChantierAoiConflict,
+  getSiblingChantierAois,
   detectSourceCrs,
   analyzeGeoJSONSource,
   uploadReferenceAlignment,

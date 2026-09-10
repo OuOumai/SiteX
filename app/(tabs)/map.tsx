@@ -393,6 +393,12 @@ export default function MapScreen() {
     if (selectedTronconId) router.push(`/agent/troncon/${selectedTronconId}` as never);
   }, [router, selectedTronconId]);
 
+  const handleBackToChantier = useCallback(() => {
+    setSelectedTronconId(null);
+    setSelectedObservation(null);
+    setFocusedStationId(null);
+  }, []);
+
   const handleBackToProject = useCallback(() => {
     if (isAgent) return;
     setSelectedChantierId(null);
@@ -423,6 +429,7 @@ export default function MapScreen() {
             troncons={activeTroncons}
             onSelectTroncon={(troncon) => handleSelectTroncon(troncon.id || 0)}
             onBackToProject={handleBackToProject}
+            onBackToChantier={handleBackToChantier}
           />
         )}
 
@@ -499,6 +506,7 @@ export default function MapScreen() {
               troncons={activeTroncons}
               onSelectTroncon={(troncon) => handleSelectTroncon(troncon.id || 0)}
               onBackToProject={handleBackToProject}
+              onBackToChantier={handleBackToChantier}
             />
           )}
         </View>

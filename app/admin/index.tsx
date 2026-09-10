@@ -74,7 +74,7 @@ export default function AdminDashboardScreen() {
   const adminName = user ? `${user.prenom || ''} ${user.nom || ''}`.trim() : 'Administrateur';
 
   return (
-    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
+    <SafeAreaView style={styles.container} edges={['top', 'bottom', 'left', 'right']}>
       <ScrollView
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}

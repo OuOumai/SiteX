@@ -63,7 +63,7 @@ export default function ProjectDetailResponsableScreen() {
   const globalProgress = project?.indicateurs?.avancementGlobal || 0;
 
   return (
-    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
+    <SafeAreaView style={styles.container} edges={['top', 'bottom', 'left', 'right']}>
       {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>

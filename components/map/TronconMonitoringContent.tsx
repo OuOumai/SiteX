@@ -13,6 +13,7 @@ interface Props {
   isAgent?: boolean;
   onSelectObservation: (observation: TerrainObservationItem) => void;
   onDeclareObservation?: () => void;
+  onBackToChantier?: () => void;
 }
 
 function observationPk(observation: TerrainObservationItem) {
@@ -20,7 +21,15 @@ function observationPk(observation: TerrainObservationItem) {
   return km.toFixed(3);
 }
 
-export function TronconMonitoringContent({ troncon, chantierName, observations, isAgent, onSelectObservation, onDeclareObservation }: Props) {
+export function TronconMonitoringContent({
+  troncon,
+  chantierName,
+  observations,
+  isAgent,
+  onSelectObservation,
+  onDeclareObservation,
+  onBackToChantier,
+}: Props) {
   const totalMeters = Number(troncon.length_meters || (troncon.length_km || 0) * 1000);
   const realizedMeters = Math.min(totalMeters || Number.MAX_SAFE_INTEGER, Math.max(0, ...observations.map((o) => Number(o.authoritative_progress_meters ?? o.distance_from_start) || 0)));
   const observationPercentage = Math.max(0, ...observations.map((o) => Number(o.authoritative_progress_percentage ?? o.progress_percentage) || 0));
@@ -29,6 +38,19 @@ export function TronconMonitoringContent({ troncon, chantierName, observations, 
 
   return (
     <View>
+      {onBackToChantier ? (
+        <TouchableOpacity
+          style={styles.back}
+          onPress={onBackToChantier}
+          accessibilityRole="button"
+          accessibilityLabel="Retour au chantier"
+        >
+          <Ionicons name="arrow-back" size={16} color={Palette.primary} />
+          <Text style={styles.backText} weight="semibold">
+            {chantierName || 'Vue du chantier'}
+          </Text>
+        </TouchableOpacity>
+      ) : null}
       <Text style={styles.eyebrow} weight="bold">{chantierName ? `${chantierName} • ` : ''}{troncon.nom}</Text>
       <Text style={styles.pkRange}>PK {Number(troncon.pk_debut || 0).toFixed(3)} → PK {Number(troncon.pk_fin || 0).toFixed(3)}</Text>
       <View style={styles.metrics}>
@@ -64,6 +86,8 @@ function Metric({ value, label }: { value: string; label: string }) {
 }
 
 const styles = StyleSheet.create({
+  back: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 10 },
+  backText: { color: Palette.primary, fontSize: 11 },
   eyebrow: { fontSize: 14, color: Palette.text }, pkRange: { fontSize: 11, color: Palette.textMuted, marginTop: 3 },
   metrics: { flexDirection: 'row', flexWrap: 'wrap', gap: 7, marginTop: 12 }, metric: { flexGrow: 1, minWidth: '46%', backgroundColor: '#F0F7F5', borderRadius: 10, padding: 9 },
   metricValue: { color: Palette.primary, fontSize: 13 }, metricLabel: { color: Palette.textMuted, fontSize: 9, marginTop: 2 },

@@ -26,6 +26,7 @@ interface MapDesktopPanelProps {
   troncons?: TronconItem[];
   onSelectTroncon?: (troncon: TronconItem) => void;
   onBackToProject?: () => void;
+  onBackToChantier?: () => void;
 }
 
 export function MapDesktopPanel({
@@ -44,6 +45,7 @@ export function MapDesktopPanel({
   troncons = [],
   onSelectTroncon,
   onBackToProject,
+  onBackToChantier,
 }: MapDesktopPanelProps) {
   return (
     <View style={styles.panel}>
@@ -64,7 +66,15 @@ export function MapDesktopPanel({
 
       <ScrollView style={styles.scroll} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         {selectedTroncon && onSelectObservation ? (
-          <TronconMonitoringContent troncon={selectedTroncon} chantierName={chantier?.nom} observations={observations} isAgent={isAgent} onSelectObservation={onSelectObservation} onDeclareObservation={onDeclareObservation} />
+          <TronconMonitoringContent
+            troncon={selectedTroncon}
+            chantierName={chantier?.nom}
+            observations={observations}
+            isAgent={isAgent}
+            onSelectObservation={onSelectObservation}
+            onDeclareObservation={onDeclareObservation}
+            onBackToChantier={onBackToChantier}
+          />
         ) : chantier && onSelectTroncon && onBackToProject ? (
           <ChantierMonitoringContent chantier={chantier} troncons={troncons} onSelectTroncon={onSelectTroncon} onBack={onBackToProject} onOpenGis={onOpenGis ? () => onOpenGis(chantier) : undefined} />
         ) : project ? (

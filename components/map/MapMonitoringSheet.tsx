@@ -25,6 +25,7 @@ interface MapMonitoringSheetProps {
   troncons?: TronconItem[];
   onSelectTroncon?: (troncon: TronconItem) => void;
   onBackToProject?: () => void;
+  onBackToChantier?: () => void;
 }
 
 function gisLabel(status?: string) {
@@ -55,6 +56,7 @@ export function MapMonitoringSheet({
   troncons = [],
   onSelectTroncon,
   onBackToProject,
+  onBackToChantier,
 }: MapMonitoringSheetProps) {
   return (
     <View style={[styles.sheet, expanded ? styles.sheetExpanded : styles.sheetCollapsed]}>
@@ -111,6 +113,7 @@ export function MapMonitoringSheet({
               isAgent={isAgent}
               onSelectObservation={onSelectObservation}
               onDeclareObservation={onDeclareObservation}
+              onBackToChantier={onBackToChantier}
             />
           ) : chantier && onSelectTroncon && onBackToProject ? (
             <ChantierMonitoringContent chantier={chantier} troncons={troncons} onSelectTroncon={onSelectTroncon} onBack={onBackToProject} onOpenGis={onOpenGis ? () => onOpenGis(chantier) : undefined} />

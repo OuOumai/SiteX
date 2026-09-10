@@ -22,6 +22,8 @@ router.get('/:id', authenticateToken, chantierController.getChantierDetails);
 router.post('/', authenticateToken, requireResponsableOrAdmin, chantierController.createChantier);
 router.put('/:id/configuration', authenticateToken, requireResponsableOrAdmin, chantierController.updateChantierConfiguration);
 router.put('/:id/aoi', authenticateToken, requireResponsableOrAdmin, chantierController.saveChantierAoi);
+router.post('/:id/aoi/check-conflict', authenticateToken, requireResponsableOrAdmin, chantierController.checkChantierAoiConflict);
+router.get('/:chantierId/sibling-aois', authenticateToken, requireResponsableOrAdmin, chantierController.getSiblingChantierAois);
 
 // GIS Coordinate Reference System (CRS) Detection
 router.post(

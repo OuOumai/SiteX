@@ -5,6 +5,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { Text } from '@/components/ui/text';
 import { Palette } from '@/constants/theme';
 import { ResponsableChantierItem, TronconItem } from '@/services/api';
+import { getTronconColor } from '@/components/gis/InteractiveGisMap';
 
 interface Props {
   chantier: ResponsableChantierItem;
@@ -27,9 +28,9 @@ export function ChantierMonitoringContent({ chantier, troncons, onSelectTroncon,
       </View>
       <Text style={styles.derived}><Ionicons name="analytics-outline" size={13} color="#0F766E" /> La longueur provient de l’alignement de référence réel.</Text>
       <Text style={styles.section} weight="bold">TRONÇONS DU CHANTIER</Text>
-      {troncons.map((troncon) => (
+      {troncons.map((troncon, index) => (
         <TouchableOpacity key={troncon.id} style={styles.row} onPress={() => onSelectTroncon(troncon)}>
-          <View style={styles.line} />
+          <View style={[styles.line, { backgroundColor: getTronconColor(index) }]} />
           <View style={styles.rowText}>
             <Text style={styles.name} weight="semibold">{troncon.nom}</Text>
             <Text style={styles.meta}>PK {Number(troncon.pk_debut || 0).toFixed(3)} → {Number(troncon.pk_fin || 0).toFixed(3)} • {troncon.avancement || 0}%</Text>

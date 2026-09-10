@@ -205,7 +205,7 @@ export default function AdminDemandesScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
+    <SafeAreaView style={styles.container} edges={['top', 'bottom', 'left', 'right']}>
       {/* ── 1. Top Header ── */}
       <View style={styles.header}>
         <TouchableOpacity

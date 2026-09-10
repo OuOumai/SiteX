@@ -1,7 +1,8 @@
+import { Ionicons } from '@expo/vector-icons';
 import { Tabs } from 'expo-router';
 import React from 'react';
-import { Ionicons } from '@expo/vector-icons';
 import { useWindowDimensions } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { HapticTab } from '@/components/haptic-tab';
 import { Colors } from '@/constants/theme';
@@ -11,7 +12,12 @@ export default function TabLayout() {
   const colorScheme = useColorScheme();
   const colors = Colors[colorScheme ?? 'light'];
   const { width } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
   const showLeftSidebar = width >= 768;
+
+  const bottomInset = Math.max(insets.bottom, 0);
+  const mobileHeight = 60 + bottomInset;
+  const mobilePaddingBottom = bottomInset > 0 ? bottomInset : 8;
 
   return (
     <Tabs
@@ -37,11 +43,11 @@ export default function TabLayout() {
           elevation: 8,
           shadowOpacity: 0.06,
           shadowRadius: 8,
-          height: showLeftSidebar ? '100%' : 60,
+          height: showLeftSidebar ? '100%' : mobileHeight,
           width: showLeftSidebar ? 240 : undefined,
           paddingHorizontal: showLeftSidebar ? 12 : 0,
-          paddingBottom: showLeftSidebar ? 20 : 8,
-          paddingTop: showLeftSidebar ? 24 : 4,
+          paddingBottom: showLeftSidebar ? Math.max(bottomInset, 20) : mobilePaddingBottom,
+          paddingTop: showLeftSidebar ? Math.max(insets.top, 24) : 6,
         },
         tabBarLabelStyle: {
           fontSize: showLeftSidebar ? 14 : 11,
@@ -50,10 +56,10 @@ export default function TabLayout() {
         },
         tabBarItemStyle: showLeftSidebar
           ? {
-              maxHeight: 54,
-              marginVertical: 3,
-              borderRadius: 12,
-            }
+            maxHeight: 54,
+            marginVertical: 3,
+            borderRadius: 12,
+          }
           : undefined,
         tabBarPosition: showLeftSidebar ? 'left' : 'bottom',
         tabBarLabelPosition: showLeftSidebar ? 'beside-icon' : 'below-icon',

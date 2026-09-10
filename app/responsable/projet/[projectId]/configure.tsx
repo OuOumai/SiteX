@@ -74,7 +74,7 @@ export default function ProjectConfigureScreen() {
   const infraIcon = (project?.type_projet && INFRA_ICONS[project.type_projet]) || 'business-outline';
 
   return (
-    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
+    <SafeAreaView style={styles.container} edges={['top', 'bottom', 'left', 'right']}>
       {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity

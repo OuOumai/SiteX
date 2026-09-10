@@ -1,8 +1,14 @@
-import React, { useMemo, useRef, useEffect } from 'react';
+import React, { useMemo, useRef, useEffect, useImperativeHandle, forwardRef } from 'react';
 import { View, StyleSheet, Platform, ActivityIndicator, DimensionValue } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { Palette } from '@/constants/theme';
 import { LEAFLET_CSS, LEAFLET_JS, PROJ4_JS } from './leafletAssets';
+
+export interface InteractiveGisMapRef {
+  undo: () => void;
+  clear: () => void;
+  finish: () => void;
+}
 
 export interface GisFeatureGeometry {
   type: string;
@@ -52,6 +58,8 @@ export interface GisCandidateCorridor {
 }
 
 export interface InteractiveGisMapProps {
+  ref?: React.Ref<InteractiveGisMapRef>;
+  mapRef?: React.Ref<InteractiveGisMapRef>;
   referenceGeometry?: GisFeatureGeometry | null;
   chantierAlignments?: GisChantierAlignment[] | null;
   selectedChantierId?: number | string | null;
@@ -62,8 +70,16 @@ export interface InteractiveGisMapProps {
   corridors?: GisCandidateCorridor[] | null;
   selectedCorridorId?: number | null;
   aoiGeometry?: GisFeatureGeometry | null;
+  existingAois?: Array<{
+    id?: number | string;
+    chantierId?: number | string;
+    nom: string;
+    geometry: any;
+    color?: string;
+    surface_m2?: number;
+  }> | null;
   enableAoiDrawing?: boolean;
-  onAoiChange?: (coordinates: [number, number][]) => void;
+  onAoiChange?: (coordinates: [number, number][], pointCount?: number) => void;
   onSelectCorridor?: (corridorId: number) => void;
   selectedTronconId?: number | string;
   onSelectTroncon?: (tronconId: number | string) => void;
@@ -105,20 +121,28 @@ export interface InteractiveGisMapProps {
   onInteractionChange?: (interacting: boolean) => void;
 }
 
-const TRONCON_COLORS = [
-  '#0EA5E9',
-  '#10B981',
-  '#F59E0B',
-  '#8B5CF6',
-  '#EF4444',
-  '#06B6D4',
-  '#EC4899',
-  '#14B8A6',
-  '#6366F1',
-  '#84CC16',
+export const TRONCON_PALETTE = [
+  '#10B981', // Tronçon 1: Green / Emerald
+  '#0EA5E9', // Tronçon 2: Blue / Sky
+  '#F59E0B', // Tronçon 3: Orange / Amber
+  '#EF4444', // Tronçon 4: Red / Coral
+  '#8B5CF6', // Tronçon 5: Purple / Violet
+  '#06B6D4', // Tronçon 6: Cyan
+  '#EC4899', // Tronçon 7: Pink / Magenta
+  '#14B8A6', // Tronçon 8: Teal
+  '#6366F1', // Tronçon 9: Indigo
+  '#84CC16', // Tronçon 10: Lime
 ];
 
+export function getTronconColor(index: number): string {
+  return TRONCON_PALETTE[Math.abs(index) % TRONCON_PALETTE.length];
+}
+
+const TRONCON_COLORS = TRONCON_PALETTE;
+
 export function InteractiveGisMap({
+  ref,
+  mapRef,
   referenceGeometry,
   chantierAlignments = null,
   selectedChantierId = null,
@@ -129,6 +153,7 @@ export function InteractiveGisMap({
   corridors,
   selectedCorridorId,
   aoiGeometry,
+  existingAois = null,
   enableAoiDrawing = false,
   onAoiChange,
   onSelectCorridor,
@@ -147,50 +172,81 @@ export function InteractiveGisMap({
   onInteractionChange,
 }: InteractiveGisMapProps) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const webViewRef = useRef<WebView | null>(null);
 
-  // Listen to messages from Leaflet (Web)
-  useEffect(() => {
+  const executeAction = (action: 'undo' | 'clear' | 'finish') => {
     if (Platform.OS === 'web') {
-      const handleMessage = (event: MessageEvent) => {
-        if (!event.data || typeof event.data !== 'object') return;
-        if (event.data.type === 'AOI_CHANGED' && Array.isArray(event.data.coordinates)) {
-          if (onAoiChange) onAoiChange(event.data.coordinates);
+      try {
+        const iframe = iframeRef.current;
+        if (iframe && iframe.contentWindow) {
+          (iframe.contentWindow as any).gisMapAction?.(action);
+          iframe.contentWindow.postMessage({ type: 'GIS_ACTION', action }, '*');
         }
-        if (event.data.type === 'SELECT_CORRIDOR' && event.data.corridorId !== undefined) {
-          if (onSelectCorridor) onSelectCorridor(event.data.corridorId);
-        }
-        if (event.data.type === 'SELECT_TRONCON' && event.data.tronconId !== undefined) onSelectTroncon?.(event.data.tronconId);
-        if (event.data.type === 'SELECT_MARKER' && event.data.markerId !== undefined) onSelectMarker?.(event.data.markerId);
-        if (event.data.type === 'SELECT_CHANTIER' && event.data.chantierId !== undefined) onSelectChantierAlignment?.(event.data.chantierId);
-        if (event.data.type === 'MAP_INTERACTION') onInteractionChange?.(!!event.data.active);
-      };
-
-      window.addEventListener('message', handleMessage);
-      return () => window.removeEventListener('message', handleMessage);
+      } catch (e) {}
+    } else {
+      try {
+        webViewRef.current?.injectJavaScript(`
+          (function() {
+            if (window.gisMapAction) {
+              window.gisMapAction('${action}');
+            }
+          })();
+          true;
+        `);
+      } catch (e) {}
     }
-  }, [onAoiChange, onSelectCorridor, onSelectTroncon, onSelectMarker, onSelectChantierAlignment, onInteractionChange]);
-
-  // Handle messages on React Native Mobile WebView
-  const handleWebViewMessage = (event: any) => {
-    try {
-      const data = JSON.parse(event.nativeEvent.data);
-      if (data.type === 'AOI_CHANGED' && Array.isArray(data.coordinates)) {
-        if (onAoiChange) onAoiChange(data.coordinates);
-      }
-      if (data.type === 'SELECT_CORRIDOR' && data.corridorId !== undefined) {
-        if (onSelectCorridor) onSelectCorridor(data.corridorId);
-      }
-      if (data.type === 'SELECT_TRONCON' && data.tronconId !== undefined) onSelectTroncon?.(data.tronconId);
-      if (data.type === 'SELECT_MARKER' && data.markerId !== undefined) onSelectMarker?.(data.markerId);
-      if (data.type === 'SELECT_CHANTIER' && data.chantierId !== undefined) onSelectChantierAlignment?.(data.chantierId);
-      if (data.type === 'MAP_INTERACTION') {
-        onInteractionChange?.(!!data.active);
-      }
-      if (data.type === 'MAP_ERROR') {
-        console.warn('GIS Map Warning:', data.error);
-      }
-    } catch {}
   };
+
+  const targetRef = ref || mapRef;
+  useImperativeHandle(targetRef, () => ({
+    undo: () => executeAction('undo'),
+    clear: () => executeAction('clear'),
+    finish: () => executeAction('finish'),
+  }));
+
+    // Listen to messages from Leaflet (Web)
+    useEffect(() => {
+      if (Platform.OS === 'web') {
+        const handleMessage = (event: MessageEvent) => {
+          if (!event.data || typeof event.data !== 'object') return;
+          if (event.data.type === 'AOI_CHANGED' && Array.isArray(event.data.coordinates)) {
+            if (onAoiChange) onAoiChange(event.data.coordinates, event.data.pointCount);
+          }
+          if (event.data.type === 'SELECT_CORRIDOR' && event.data.corridorId !== undefined) {
+            if (onSelectCorridor) onSelectCorridor(event.data.corridorId);
+          }
+          if (event.data.type === 'SELECT_TRONCON' && event.data.tronconId !== undefined) onSelectTroncon?.(event.data.tronconId);
+          if (event.data.type === 'SELECT_MARKER' && event.data.markerId !== undefined) onSelectMarker?.(event.data.markerId);
+          if (event.data.type === 'SELECT_CHANTIER' && event.data.chantierId !== undefined) onSelectChantierAlignment?.(event.data.chantierId);
+          if (event.data.type === 'MAP_INTERACTION') onInteractionChange?.(!!event.data.active);
+        };
+
+        window.addEventListener('message', handleMessage);
+        return () => window.removeEventListener('message', handleMessage);
+      }
+    }, [onAoiChange, onSelectCorridor, onSelectTroncon, onSelectMarker, onSelectChantierAlignment, onInteractionChange]);
+
+    // Handle messages on React Native Mobile WebView
+    const handleWebViewMessage = (event: any) => {
+      try {
+        const data = JSON.parse(event.nativeEvent.data);
+        if (data.type === 'AOI_CHANGED' && Array.isArray(data.coordinates)) {
+          if (onAoiChange) onAoiChange(data.coordinates, data.pointCount);
+        }
+        if (data.type === 'SELECT_CORRIDOR' && data.corridorId !== undefined) {
+          if (onSelectCorridor) onSelectCorridor(data.corridorId);
+        }
+        if (data.type === 'SELECT_TRONCON' && data.tronconId !== undefined) onSelectTroncon?.(data.tronconId);
+        if (data.type === 'SELECT_MARKER' && data.markerId !== undefined) onSelectMarker?.(data.markerId);
+        if (data.type === 'SELECT_CHANTIER' && data.chantierId !== undefined) onSelectChantierAlignment?.(data.chantierId);
+        if (data.type === 'MAP_INTERACTION') {
+          onInteractionChange?.(!!data.active);
+        }
+        if (data.type === 'MAP_ERROR') {
+          console.warn('GIS Map Warning:', data.error);
+        }
+      } catch {}
+    };
 
   // Generate self-contained Leaflet HTML with inlined assets and robust corridor selection
   const leafletHtml = useMemo(() => {
@@ -204,6 +260,7 @@ export function InteractiveGisMap({
       rawCorridors: corridors && corridors.length > 0 ? corridors : [],
       selectedCorridorId: selectedCorridorId !== undefined && selectedCorridorId !== null ? selectedCorridorId : null,
       rawAoi: aoiGeometry || null,
+      rawExistingAois: existingAois && existingAois.length > 0 ? existingAois : [],
       enableDrawing: !!enableAoiDrawing,
       customMarkers: customMarkers && customMarkers.length > 0 ? customMarkers : [],
       customLines: customLines && customLines.length > 0 ? customLines : [],
@@ -298,6 +355,13 @@ export function InteractiveGisMap({
     .station-grid { display: grid; grid-template-columns: auto 1fr; gap: 4px 8px; font-size: 11px; }
     .station-key { color: #94A3B8; }
     .station-value { color: #F8FAFC; font-weight: 600; }
+    .existing-aoi-label {
+      background: rgba(238, 242, 255, 0.95) !important;
+      border: 1px solid #818CF8 !important;
+      border-radius: 6px !important;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25) !important;
+      padding: 2px 6px !important;
+    }
     .pk-pill {
       background: #0284C7;
       color: #FFFFFF;
@@ -309,6 +373,71 @@ export function InteractiveGisMap({
       box-shadow: 0 2px 4px rgba(0,0,0,0.3);
       white-space: nowrap;
       text-align: center;
+    }
+
+    /* Tronçon Compact Map Tooltip & Visual Hierarchy */
+    .troncon-leaflet-tooltip {
+      pointer-events: none !important;
+      background: rgba(15, 23, 42, 0.92) !important;
+      border: 1px solid rgba(255, 255, 255, 0.22) !important;
+      border-radius: 8px !important;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45) !important;
+      padding: 0 !important;
+      color: #F8FAFC !important;
+      white-space: nowrap !important;
+      backdrop-filter: blur(4px);
+    }
+    .troncon-leaflet-tooltip::before {
+      display: none !important;
+    }
+    .troncon-badge-wrap {
+      display: flex;
+      flex-direction: column;
+      padding: 4px 7px 4px 6px;
+      gap: 2px;
+    }
+    .troncon-badge-header {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .troncon-badge-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+      box-shadow: 0 0 5px currentColor;
+    }
+    .troncon-badge-title {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.2px;
+      line-height: 1.2;
+    }
+    .troncon-badge-pk {
+      font-size: 9px;
+      color: #94A3B8;
+      font-weight: 500;
+      margin-left: 13px;
+      line-height: 1.1;
+    }
+    .troncon-tooltip-selected {
+      background: rgba(15, 23, 42, 0.98) !important;
+      border: 2px solid #FACC15 !important;
+      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.65), 0 0 10px rgba(250, 204, 21, 0.4) !important;
+      z-index: 1000 !important;
+      transform: scale(1.06);
+    }
+    .troncon-tooltip-selected .troncon-badge-title {
+      font-size: 12px;
+      font-weight: 800;
+    }
+    .troncon-tooltip-selected .troncon-badge-pk {
+      color: #E2E8F0;
+      font-weight: 600;
+    }
+    .troncon-endpoint-icon {
+      pointer-events: none !important;
     }
 
     /* Floating Navigation Controls (Left side, below top search bar) */
@@ -388,73 +517,7 @@ export function InteractiveGisMap({
       background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Cpath fill='%23176B5B' d='M12.41 187.52l182.22 95.88a107.09 107.09 0 00122.74 0l182.22-95.88a24 24 0 000-42.51L317.37 49.13a107.09 107.09 0 00-122.74 0L12.41 145.01a24 24 0 000 42.51z'/%3E%3Cpath fill='%23176B5B' d='M256 360a107 107 0 01-61.37-19.12L12.41 245a24 24 0 00-12.41 21.26v3.74a24 24 0 0012.41 21.25L194.63 387.1a107.09 107.09 0 00122.74 0l182.22-95.88A24 24 0 00512 270v-3.74a24 24 0 00-12.41-21.26l-182.22 95.88A107 107 0 01256 360z'/%3E%3Cpath fill='%23176B5B' d='M256 464a107 107 0 01-61.37-19.12L12.41 349a24 24 0 00-12.41 21.26v3.74a24 24 0 0012.41 21.25L194.63 491.1a107.09 107.09 0 00122.74 0l182.22-95.88A24 24 0 00512 374v-3.74a24 24 0 00-12.41-21.26l-182.22 95.88A107 107 0 01256 464z'/%3E%3C/svg%3E");
     }
 
-    /* Minimalist Floating AOI Toolbar */
-    .aoi-toolbar {
-      position: absolute;
-      top: 130px;
-      right: 12px;
-      z-index: 1000;
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-      align-items: flex-end;
-    }
-    .aoi-pill-status {
-      background: rgba(15, 23, 42, 0.88);
-      backdrop-filter: blur(8px);
-      border: 1px solid rgba(255, 255, 255, 0.15);
-      border-radius: 20px;
-      padding: 5px 12px;
-      font-size: 11px;
-      color: #F1F5F9;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.35);
-      display: flex;
-      align-items: center;
-      gap: 6px;
-    }
-    .aoi-btn-group {
-      display: flex;
-      gap: 6px;
-      background: rgba(15, 23, 42, 0.88);
-      backdrop-filter: blur(8px);
-      padding: 4px 6px;
-      border-radius: 24px;
-      border: 1px solid rgba(255, 255, 255, 0.15);
-      box-shadow: 0 4px 15px rgba(0,0,0,0.35);
-    }
-    .aoi-circle-btn {
-      width: 32px;
-      height: 32px;
-      border-radius: 16px;
-      border: none;
-      background: #334155;
-      color: #FFFFFF;
-      font-size: 14px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      cursor: pointer;
-      transition: transform 0.15s, background 0.15s;
-    }
-    .aoi-circle-btn:hover {
-      background: #475569;
-      transform: scale(1.08);
-    }
-    .aoi-circle-btn:active {
-      transform: scale(0.92);
-    }
-    .aoi-circle-btn-primary {
-      background: #176B5B;
-    }
-    .aoi-circle-btn-primary:hover {
-      background: #125548;
-    }
-    .aoi-circle-btn-danger {
-      background: #991B1B;
-    }
-    .aoi-circle-btn-danger:hover {
-      background: #7F1D1D;
-    }
+    /* AOI vertex marker icon */
     .aoi-vertex-icon {
       background: #F59E0B;
       border: 2px solid #FFFFFF;
@@ -896,6 +959,34 @@ export function InteractiveGisMap({
         renderAoiPolygon(rawAoi);
       }
 
+      // Render Existing Sibling Chantier AOIs (Visual reference for other chantiers)
+      var rawExistingAois = config.rawExistingAois || [];
+      if (rawExistingAois && rawExistingAois.length > 0) {
+        rawExistingAois.forEach(function(item) {
+          if (!item || !item.geometry) return;
+          try {
+            var color = item.color || "#6366F1";
+            var existingLayer = L.geoJSON(item.geometry, {
+              style: {
+                color: color,
+                fillColor: color,
+                fillOpacity: 0.16,
+                weight: 2,
+                dashArray: "4, 4"
+              }
+            });
+            var label = escapeHtml(item.nom || 'Autre chantier');
+            existingLayer.bindTooltip('<span style="font-weight:700;font-size:11px;color:#3730A3;">🏢 ' + label + '</span>', {
+              permanent: true,
+              direction: 'center',
+              className: 'existing-aoi-label'
+            });
+            existingLayer.bindPopup('<div class="custom-popup"><div class="popup-title" style="color:#4F46E5;">🏢 ' + label + '</div><div class="popup-detail">Emprise déjà enregistrée pour ce chantier du projet.</div></div>');
+            existingLayer.addTo(featureGroup);
+          } catch(e) {}
+        });
+      }
+
       function formatPK(val) {
         if (val === undefined || val === null) return "PK 0+000";
         var num = Number(val);
@@ -1106,30 +1197,55 @@ export function InteractiveGisMap({
         });
       }
 
-      // Render Tronçons (Linear Referencing)
+      // Render Tronçons (Linear Referencing) with distinct deterministic palette & visual hierarchy
       var selectedTronconLayer = null;
       if (rawTroncons && rawTroncons.length > 0) {
+        var hasSelected = !!(selectedId && rawTroncons.some(function(t, i) {
+          return String(t.id) === String(selectedId) || String(i + 1) === String(selectedId);
+        }));
+
         rawTroncons.forEach(function(tr, idx) {
           if (!tr.geometry) return;
           var isSelected = selectedId && (String(tr.id) === String(selectedId) || String(idx + 1) === String(selectedId));
           var isPrimary = !!tr.isPrimary;
           var isSecondary = !!tr.isSecondary;
-          var color = tr.color || getStatusColor(tr.statut, idx);
 
+          // Deterministic color assignment: Tronçon 1 -> Green, 2 -> Blue, 3 -> Orange, 4 -> Red...
+          var color = tr.color || colors[idx % colors.length];
+
+          // 1. Selection halo for active tronçon
           if (isSelected) {
             L.geoJSON({
               type: "Feature",
               geometry: tr.geometry
             }, {
               style: {
-                color: "#FACC15",
-                weight: 14,
-                opacity: 0.45,
-                lineCap: "round"
-              }
+                color: "#FFFFFF",
+                weight: 15,
+                opacity: 0.5,
+                lineCap: "round",
+                lineJoin: "round"
+              },
+              interactive: false
             }).addTo(featureGroup);
           }
 
+          // 2. Basemap contrast casing (dark outline behind the colored line)
+          L.geoJSON({
+            type: "Feature",
+            geometry: tr.geometry
+          }, {
+            style: {
+              color: "#0F172A",
+              weight: isSelected ? 10 : (hasSelected ? 6 : 7.5),
+              opacity: isSelected ? 0.95 : (hasSelected ? 0.55 : 0.75),
+              lineCap: "round",
+              lineJoin: "round"
+            },
+            interactive: false
+          }).addTo(featureGroup);
+
+          // 3. Main colored tronçon line
           var tLayer = L.geoJSON({
             type: "Feature",
             geometry: tr.geometry,
@@ -1137,82 +1253,127 @@ export function InteractiveGisMap({
           }, {
             style: {
               color: color,
-              weight: isSelected || isPrimary ? 8 : (isSecondary ? 4 : 6),
-              opacity: isSecondary ? 0.55 : 0.95,
+              weight: isSelected || isPrimary ? 7 : (hasSelected ? 4.2 : 5.5),
+              opacity: isSecondary ? 0.55 : (isSelected ? 1.0 : (hasSelected ? 0.75 : 0.95)),
               dashArray: isSecondary ? "7, 8" : undefined,
-              lineCap: "round"
+              lineCap: "round",
+              lineJoin: "round"
             }
           }).addTo(featureGroup);
-          if (isSelected) selectedTronconLayer = tLayer;
 
-          tLayer.on("click", function() { sendToParent({ type: "SELECT_TRONCON", tronconId: tr.id }); });
+          if (isSelected) {
+            selectedTronconLayer = tLayer;
+          }
 
+          tLayer.on("click", function() {
+            sendToParent({ type: "SELECT_TRONCON", tronconId: tr.id });
+          });
+
+          // 4. Subtle inner progress line if progress exists (preserves tronçon color identity)
           var progressFraction = Math.max(0, Math.min(1, Number(tr.progress_percentage || 0) / 100));
           if (tr.showProgress !== false && !isSecondary && progressFraction > 0 && tr.geometry.type === 'LineString') {
             var completedGeometry = sliceLineByFraction(tr.geometry, progressFraction);
-            if (completedGeometry) L.geoJSON(completedGeometry, { style: {
-              color: '#16A34A', weight: isSelected ? 9 : 7, opacity: 1, lineCap: 'round'
-            }}).addTo(featureGroup);
+            if (completedGeometry) {
+              L.geoJSON(completedGeometry, {
+                style: {
+                  color: '#FFFFFF',
+                  weight: isSelected ? 2.5 : 2,
+                  opacity: 0.85,
+                  lineCap: 'round',
+                  lineJoin: 'round'
+                },
+                interactive: false
+              }).addTo(featureGroup);
+            }
           }
 
+          // 5. Selected Tronçon Start/End Node markers
+          if (isSelected) {
+            try {
+              var coords = tr.geometry.coordinates;
+              if (coords && coords.length > 0) {
+                var startPt = coords[0];
+                var endPt = coords[coords.length - 1];
+                while (Array.isArray(startPt) && Array.isArray(startPt[0])) startPt = startPt[0];
+                while (Array.isArray(endPt) && Array.isArray(endPt[0])) endPt = endPt[0];
+                if (Array.isArray(startPt) && typeof startPt[0] === 'number') {
+                  var startIcon = L.divIcon({
+                    className: "troncon-endpoint-icon",
+                    html: '<div style="width:10px;height:10px;border-radius:50%;background:#FFFFFF;border:2.5px solid ' + color + ';box-shadow:0 0 6px rgba(0,0,0,0.5);"></div>',
+                    iconSize: [10, 10],
+                    iconAnchor: [5, 5]
+                  });
+                  L.marker([startPt[1], startPt[0]], { icon: startIcon, interactive: false }).addTo(featureGroup);
+                }
+                if (Array.isArray(endPt) && typeof endPt[0] === 'number') {
+                  var endIcon = L.divIcon({
+                    className: "troncon-endpoint-icon",
+                    html: '<div style="width:10px;height:10px;border-radius:50%;background:#FFFFFF;border:2.5px solid ' + color + ';box-shadow:0 0 6px rgba(0,0,0,0.5);"></div>',
+                    iconSize: [10, 10],
+                    iconAnchor: [5, 5]
+                  });
+                  L.marker([endPt[1], endPt[0]], { icon: endIcon, interactive: false }).addTo(featureGroup);
+                }
+              }
+            } catch (e) {}
+          }
+
+          // 6. Compact Tronçon Label Tooltip
+          var tronconTitle = escapeHtml(tr.nom || ('Tronçon ' + (idx + 1)));
+          var hasPkInfo = tr.pk_debut !== undefined && tr.pk_debut !== null && tr.pk_fin !== undefined && tr.pk_fin !== null;
+          var pkLabelStr = hasPkInfo
+            ? ('PK ' + Number(tr.pk_debut).toFixed(3) + ' &ndash; ' + Number(tr.pk_fin).toFixed(3))
+            : '';
+
+          var tooltipHtml =
+            '<div class="troncon-badge-wrap">' +
+              '<div class="troncon-badge-header">' +
+                '<span class="troncon-badge-dot" style="background:' + color + ';"></span>' +
+                '<span class="troncon-badge-title" style="color:' + color + ';">' + tronconTitle + '</span>' +
+              '</div>' +
+              (pkLabelStr ? ('<div class="troncon-badge-pk">' + pkLabelStr + '</div>') : '') +
+            '</div>';
+
+          tLayer.bindTooltip(tooltipHtml, {
+            permanent: true,
+            direction: 'center',
+            className: 'troncon-leaflet-tooltip' + (isSelected ? ' troncon-tooltip-selected' : ''),
+            interactive: false
+          });
+
+          // 7. Rich detail popup for inspection
           var popupContent = '<div class="custom-popup">' +
-            '<div class="popup-title">' + (tr.nom || ('Tronçon ' + (idx + 1))) + '</div>' +
+            '<div class="popup-title" style="color:' + color + ';">' + tronconTitle + '</div>' +
             '<div class="popup-badge" style="background:' + color + '22; color:' + color + '">' +
-              formatPK(tr.pk_debut) + ' &rarr; ' + formatPK(tr.pk_fin) +
+              (pkLabelStr || (formatPK(tr.pk_debut) + ' &rarr; ' + formatPK(tr.pk_fin))) +
             '</div>' +
             '<div class="popup-detail"><b>Longueur :</b> ' + (tr.length_km ? parseFloat(tr.length_km).toFixed(2) + ' km' : '—') + '</div>' +
             (tr.statut ? ('<div class="popup-detail"><b>Statut :</b> ' + tr.statut + '</div>') : '') +
+            (tr.progress_percentage !== undefined ? ('<div class="popup-detail"><b>Avancement :</b> ' + tr.progress_percentage + '%</div>') : '') +
           '</div>';
 
           tLayer.bindPopup(popupContent);
-
-          if (!optimizePkLabels) try {
-            var coords = tr.geometry.coordinates;
-            if (coords && coords.length > 0) {
-              var firstCoord = coords[0];
-              while (Array.isArray(firstCoord) && Array.isArray(firstCoord[0])) firstCoord = firstCoord[0];
-              if (Array.isArray(firstCoord) && typeof firstCoord[0] === 'number') {
-                var pkIcon = L.divIcon({
-                  className: "custom-pk-icon",
-                  html: '<div class="pk-pill" style="background:' + color + ';' + (isSelected ? 'border:2px solid #FACC15; transform:scale(1.1);' : '') + '">' + formatPK(tr.pk_debut) + '</div>',
-                  iconSize: [60, 20],
-                  iconAnchor: [30, 10]
-                });
-                L.marker([firstCoord[1], firstCoord[0]], { icon: pkIcon }).addTo(featureGroup);
-              }
-            }
-          } catch(e) {}
         });
+
+        // Bring selected tronçon layer to top
+        if (selectedTronconLayer) {
+          try {
+            selectedTronconLayer.bringToFront();
+          } catch (e) {}
+        }
       }
 
-      // Minimalist AOI Drawing Mode
+      // Minimalist AOI Drawing Mode (Controls managed externally by React Native)
       var drawnPoints = [];
       var drawnMarkers = [];
       var drawingPolyline = null;
       var drawingPolygon = null;
 
-      if (enableDrawing) {
-        var toolbarDiv = document.createElement("div");
-        toolbarDiv.className = "aoi-toolbar";
-        toolbarDiv.innerHTML = 
-          '<div class="aoi-pill-status" id="aoiStatusPill">' +
-            '<span>✏️</span><span id="aoiStatusText">Mode dessin actif (min. 4 sommets)</span>' +
-          '</div>' +
-          '<div class="aoi-btn-group">' +
-            '<button class="aoi-circle-btn" id="btnUndo" title="Annuler le dernier sommet">↶</button>' +
-            '<button class="aoi-circle-btn aoi-circle-btn-danger" id="btnClear" title="Effacer la zone">↺</button>' +
-            '<button class="aoi-circle-btn aoi-circle-btn-primary" id="btnClose" title="Fermer le polygone">✓</button>' +
-          '</div>';
-        document.body.appendChild(toolbarDiv);
+      window.gisMapAction = function() {};
 
+      if (enableDrawing) {
         function updateDrawingUI() {
           var count = drawnPoints.length;
-          var statusText = document.getElementById("aoiStatusText");
-          if (statusText) {
-            if (count === 0) statusText.innerText = "Touchez la carte pour placer le 1er sommet";
-            else if (count < 4) statusText.innerText = count + " sommet(s) placé(s) (min. 4 requis)";
-            else statusText.innerText = count + " sommets — Touchez ✓ pour finaliser";
-          }
 
           if (drawingPolyline) map.removeLayer(drawingPolyline);
           if (drawingPolygon) map.removeLayer(drawingPolygon);
@@ -1244,7 +1405,9 @@ export function InteractiveGisMap({
             if (first[0] !== last[0] || first[1] !== last[1]) {
               coords.push([first[0], first[1]]);
             }
-            sendToParent({ type: "AOI_CHANGED", coordinates: coords });
+            sendToParent({ type: "AOI_CHANGED", coordinates: coords, pointCount: drawnPoints.length });
+          } else {
+            sendToParent({ type: "AOI_CHANGED", coordinates: drawnPoints.slice(), pointCount: drawnPoints.length });
           }
         }
 
@@ -1276,12 +1439,8 @@ export function InteractiveGisMap({
           notifyParentAOI();
         });
 
-        var btnUndo = document.getElementById("btnUndo");
-        var btnClear = document.getElementById("btnClear");
-        var btnClose = document.getElementById("btnClose");
-
-        if (btnUndo) {
-          btnUndo.onclick = function() {
+        window.gisMapAction = function(action) {
+          if (action === 'undo') {
             if (drawnPoints.length > 0) {
               drawnPoints.pop();
               var m = drawnMarkers.pop();
@@ -1289,26 +1448,37 @@ export function InteractiveGisMap({
               updateDrawingUI();
               notifyParentAOI();
             }
-          };
-        }
-
-        if (btnClear) {
-          btnClear.onclick = function() {
+          } else if (action === 'clear') {
             drawnPoints = [];
             drawnMarkers.forEach(function(m) { map.removeLayer(m); });
             drawnMarkers = [];
+            if (aoiLayerGroup) aoiLayerGroup.clearLayers();
             updateDrawingUI();
-            sendToParent({ type: "AOI_CHANGED", coordinates: [] });
-          };
-        }
-
-        if (btnClose) {
-          btnClose.onclick = function() {
+            sendToParent({ type: "AOI_CHANGED", coordinates: [], pointCount: 0 });
+          } else if (action === 'finish' || action === 'close') {
             if (drawnPoints.length >= 4) {
               notifyParentAOI();
             }
-          };
-        }
+          }
+        };
+
+        window.addEventListener('message', function(e) {
+          try {
+            var d = typeof e.data === 'string' ? JSON.parse(e.data) : e.data;
+            if (d && d.type === 'GIS_ACTION' && typeof window.gisMapAction === 'function') {
+              window.gisMapAction(d.action);
+            }
+          } catch(err) {}
+        });
+
+        document.addEventListener('message', function(e) {
+          try {
+            var d = typeof e.data === 'string' ? JSON.parse(e.data) : e.data;
+            if (d && d.type === 'GIS_ACTION' && typeof window.gisMapAction === 'function') {
+              window.gisMapAction(d.action);
+            }
+          } catch(err) {}
+        });
       }
 
       // Render real-to-projected offset lines before their markers.
@@ -1444,6 +1614,7 @@ export function InteractiveGisMap({
       onResponderRelease={() => onInteractionChange?.(false)}
     >
       <WebView
+        ref={webViewRef}
         originWhitelist={['*']}
         source={{
           html: leafletHtml,
@@ -1458,7 +1629,6 @@ export function InteractiveGisMap({
         allowFileAccess={true}
         allowUniversalAccessFromFileURLs={true}
         androidLayerType="hardware"
-        androidHardwareAccelerationDisabled={false}
         scalesPageToFit={false}
         renderLoading={() => (
           <View style={styles.loadingContainer}>
@@ -1469,6 +1639,8 @@ export function InteractiveGisMap({
     </View>
   );
 }
+
+export default InteractiveGisMap;
 
 const styles = StyleSheet.create({
   container: {

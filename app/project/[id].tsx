@@ -175,7 +175,7 @@ export default function ProjectDetailsScreen() {
 
   if (isLoading) {
     return (
-      <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
+      <SafeAreaView style={styles.container} edges={['top', 'bottom', 'left', 'right']}>
         <View style={styles.topNav}>
           <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
             <Ionicons name="chevron-back" size={24} color={Palette.primary} />
@@ -196,7 +196,7 @@ export default function ProjectDetailsScreen() {
 
   if (error || !project) {
     return (
-      <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
+      <SafeAreaView style={styles.container} edges={['top', 'bottom', 'left', 'right']}>
         <View style={styles.topNav}>
           <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
             <Ionicons name="chevron-back" size={24} color={Palette.primary} />
@@ -227,7 +227,7 @@ export default function ProjectDetailsScreen() {
   const responsable = project.chantiers?.[0]?.responsable_nom;
 
   return (
-    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
+    <SafeAreaView style={styles.container} edges={['top', 'bottom', 'left', 'right']}>
       {/* ── 1. Top Navigation Bar ── */}
       <View style={styles.topNav}>
         <TouchableOpacity

@@ -199,7 +199,7 @@ export default function ChantierAvancementScreen() {
 
   if (isLoading) {
     return (
-      <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
+      <SafeAreaView style={styles.container} edges={['top', 'bottom', 'left', 'right']}>
         <View style={styles.topNav}>
           <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
             <Ionicons name="chevron-back" size={24} color={Palette.primary} />
@@ -220,7 +220,7 @@ export default function ChantierAvancementScreen() {
 
   if (error || !chantier) {
     return (
-      <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
+      <SafeAreaView style={styles.container} edges={['top', 'bottom', 'left', 'right']}>
         <View style={styles.topNav}>
           <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
             <Ionicons name="chevron-back" size={24} color={Palette.primary} />
@@ -286,7 +286,7 @@ export default function ChantierAvancementScreen() {
   const areaPathD = `${linePathD} L ${coords[coords.length - 1].x},${paddingTop + plotHeight} L ${coords[0].x},${paddingTop + plotHeight} Z`;
 
   return (
-    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
+    <SafeAreaView style={styles.container} edges={['top', 'bottom', 'left', 'right']}>
       {/* ── 1. Header ── */}
       <View style={styles.topNav}>
         <TouchableOpacity

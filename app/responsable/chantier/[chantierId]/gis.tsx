@@ -32,8 +32,10 @@ import {
   GeoJSONCandidateCorridor,
   SupportedCrs,
   CrsDetectionResponse,
+  AoiConflictItem,
+  SiblingChantierAoiItem,
 } from '@/services/api';
-import { InteractiveGisMap, GisTronconSegment, GisCandidateCorridor } from '@/components/gis/InteractiveGisMap';
+import { InteractiveGisMap, InteractiveGisMapRef, GisTronconSegment, GisCandidateCorridor } from '@/components/gis/InteractiveGisMap';
 
 // Sample infrastructure GeoJSON geometry for quick testing
 const SAMPLE_INFRASTRUCTURE_GEOJSON = {
@@ -123,10 +125,24 @@ export default function GisSetupScreen() {
   const [mapZoom, setMapZoom] = useState<number>(11);
   const [aoiMode, setAoiMode] = useState<'draw' | 'coords'>('draw');
   const [aoiCoordinates, setAoiCoordinates] = useState<[number, number][]>([]);
+  const [aoiPointCount, setAoiPointCount] = useState<number>(0);
   const [manualCoordsText, setManualCoordsText] = useState<string>('');
   const [isSavingAoi, setIsSavingAoi] = useState(false);
   const [savedAoiGeometry, setSavedAoiGeometry] = useState<any>(null);
   const [savedAoiSurface, setSavedAoiSurface] = useState<number | null>(null);
+  const [siblingAois, setSiblingAois] = useState<SiblingChantierAoiItem[]>([]);
+  const [conflictData, setConflictData] = useState<AoiConflictItem[]>([]);
+  const [showConflictModal, setShowConflictModal] = useState<boolean>(false);
+  const mapRef = useRef<InteractiveGisMapRef>(null);
+
+  const drawingVerticesCount = useMemo(() => {
+    if (aoiPointCount > 0) return aoiPointCount;
+    if (!aoiCoordinates || aoiCoordinates.length === 0) return 0;
+    const isClosed = aoiCoordinates.length >= 4 &&
+      aoiCoordinates[0][0] === aoiCoordinates[aoiCoordinates.length - 1][0] &&
+      aoiCoordinates[0][1] === aoiCoordinates[aoiCoordinates.length - 1][1];
+    return isClosed ? aoiCoordinates.length - 1 : aoiCoordinates.length;
+  }, [aoiCoordinates, aoiPointCount]);
 
   // Step 3: Spatial Analysis & Candidate Corridors
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -177,6 +193,25 @@ export default function GisSetupScreen() {
         if (res.chantier.surface) {
           setSavedAoiSurface(res.chantier.surface);
         }
+        if (res.chantier.localisation.coordinates && res.chantier.localisation.coordinates[0]) {
+          const coords = res.chantier.localisation.coordinates[0];
+          setAoiCoordinates(coords);
+          const isClosed = coords.length >= 4 &&
+            coords[0][0] === coords[coords.length - 1][0] &&
+            coords[0][1] === coords[coords.length - 1][1];
+          setAoiPointCount(isClosed ? coords.length - 1 : coords.length);
+          setManualCoordsText(coords.map((c: any) => `${c[0]}, ${c[1]}`).join('\n'));
+        }
+      }
+
+      // Load sibling chantiers' AOIs in the same project for visual reference and awareness
+      try {
+        const siblingRes = await api.getSiblingChantierAois(token, chantierId);
+        if (siblingRes && siblingRes.chantiers) {
+          setSiblingAois(siblingRes.chantiers);
+        }
+      } catch (sibErr) {
+        console.warn('Could not load sibling AOIs:', sibErr);
       }
 
       // Check if reference alignment already exists
@@ -380,6 +415,7 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
 
   const handleUseSampleAOI = () => {
     setAoiCoordinates(SAMPLE_AOI_COORDINATES);
+    setAoiPointCount(4);
     setManualCoordsText(SAMPLE_AOI_COORDINATES.map((c) => `${c[0]}, ${c[1]}`).join('\n'));
   };
 
@@ -404,8 +440,16 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
   };
 
   // STEP 2: Handle AOI Coordinates from Map drawing or text input
-  const handleAoiMapDrawn = (coords: [number, number][]) => {
+  const handleAoiMapDrawn = (coords: [number, number][], pointCount?: number) => {
     setAoiCoordinates(coords);
+    if (typeof pointCount === 'number') {
+      setAoiPointCount(pointCount);
+    } else {
+      const isClosed = coords.length >= 4 &&
+        coords[0][0] === coords[coords.length - 1][0] &&
+        coords[0][1] === coords[coords.length - 1][1];
+      setAoiPointCount(isClosed ? coords.length - 1 : coords.length);
+    }
     setManualCoordsText(coords.map((c) => `${c[0]}, ${c[1]}`).join('\n'));
   };
 
@@ -419,12 +463,15 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
         parsed.push([parts[0], parts[1]]);
       }
     }
+    setAoiPointCount(parsed.length);
     if (parsed.length >= 4) {
       const first = parsed[0];
       const last = parsed[parsed.length - 1];
       if (first[0] !== last[0] || first[1] !== last[1]) {
         parsed.push([first[0], first[1]]);
       }
+      setAoiCoordinates(parsed);
+    } else {
       setAoiCoordinates(parsed);
     }
   };
@@ -440,6 +487,25 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
 
     setIsSavingAoi(true);
     try {
+      // 0. Pre-check conflict against sibling chantiers belonging to the same project
+      try {
+        const conflictCheck = await api.checkChantierAoiConflict(token, chantierId, aoiCoordinates);
+        if (conflictCheck.conflict && conflictCheck.conflicts && conflictCheck.conflicts.length > 0) {
+          setConflictData(conflictCheck.conflicts);
+          setShowConflictModal(true);
+          setIsSavingAoi(false);
+          return;
+        }
+      } catch (checkErr: any) {
+        if (checkErr?.status === 409 || checkErr?.data?.conflict) {
+          setConflictData(checkErr.data?.conflicts || []);
+          setShowConflictModal(true);
+          setIsSavingAoi(false);
+          return;
+        }
+        console.warn('Conflict pre-check warning:', checkErr.message);
+      }
+
       // 1. Save AOI geometry to Chantier (PostGIS ST_Area + localisation)
       const aoiRes = await api.saveChantierAoi(token, chantierId, aoiCoordinates);
       setSavedAoiGeometry(aoiRes.chantier.localisation);
@@ -463,6 +529,11 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
 
       setCurrentStep(3);
     } catch (err: any) {
+      if (err?.status === 409 || err?.data?.conflict) {
+        setConflictData(err.data?.conflicts || []);
+        setShowConflictModal(true);
+        return;
+      }
       Alert.alert('Erreur d\'analyse spatiale', err.message || 'Échec de l\'analyse spatiale PostGIS.');
     } finally {
       setIsSavingAoi(false);
@@ -769,7 +840,7 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
   }
 
   return (
-    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
+    <SafeAreaView style={styles.container} edges={['top', 'bottom', 'left', 'right']}>
       {/* Hidden File Input on Web */}
       {Platform.OS === 'web' && (
         <input
@@ -1175,10 +1246,13 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
               {/* Interactive Map with Source GeoJSON & Location Marker */}
               <View style={styles.mapWrapper}>
                 <InteractiveGisMap
+                  ref={mapRef}
+                  mapRef={mapRef}
                   rawGeoJson={geojsonData}
                   searchLocation={selectedLocation}
                   enableAoiDrawing={aoiMode === 'draw'}
                   aoiGeometry={currentAoiGeom}
+                  existingAois={siblingAois}
                   center={mapCenter}
                   zoom={mapZoom}
                   onAoiChange={handleAoiMapDrawn}
@@ -1186,6 +1260,142 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
                   height={320}
                 />
               </View>
+
+              {/* Sibling AOIs Reference Notice */}
+              {siblingAois.length > 0 && (
+                <View style={styles.siblingAoisNotice}>
+                  <Ionicons name="information-circle-outline" size={16} color="#4F46E5" />
+                  <Text style={styles.siblingAoisNoticeText}>
+                    {siblingAois.length === 1
+                      ? `1 chantier voisin configuré (${siblingAois[0].nom}) affiché en violet sur la carte. Les zones ne doivent pas se chevaucher.`
+                      : `${siblingAois.length} chantiers voisins configurés affichés en violet sur la carte. Les zones ne doivent pas se chevaucher.`}
+                  </Text>
+                </View>
+              )}
+
+              {/* DRAWING MODE CONTROLS: Mode Indicator + Action Buttons outside map */}
+              {aoiMode === 'draw' && (
+                <View style={styles.drawingControlsSection}>
+                  {/* Drawing Mode Indicator */}
+                  <View style={styles.drawingModeBar}>
+                    <View style={styles.drawingModeIconWrap}>
+                      <Ionicons name="brush" size={13} color="#D97706" />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.drawingModeTitle} weight="bold">
+                        Mode dessin actif
+                      </Text>
+                      <Text style={styles.drawingModeSubtitle}>
+                        {drawingVerticesCount === 0
+                          ? 'Minimum 4 sommets • Touchez la carte pour commencer'
+                          : drawingVerticesCount < 4
+                          ? `${drawingVerticesCount} sommet${drawingVerticesCount > 1 ? 's' : ''} placé${drawingVerticesCount > 1 ? 's' : ''} (min. 4 requis)`
+                          : `${drawingVerticesCount} sommets placés • Prêt à finaliser`}
+                      </Text>
+                    </View>
+                    <View
+                      style={[
+                        styles.drawingModeBadge,
+                        drawingVerticesCount >= 4 && styles.drawingModeBadgeSuccess,
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.drawingModeBadgeText,
+                          drawingVerticesCount >= 4 && styles.drawingModeBadgeTextSuccess,
+                        ]}
+                        weight="bold"
+                      >
+                        {drawingVerticesCount >= 4 ? '✓ Prêt' : `${drawingVerticesCount}/4`}
+                      </Text>
+                    </View>
+                  </View>
+
+                  {/* Drawing Action Buttons (Annuler, Effacer, Terminer) */}
+                  <View style={styles.drawingToolbarRow}>
+                    <TouchableOpacity
+                      style={[
+                        styles.drawingActionBtn,
+                        styles.drawingActionBtnUndo,
+                        drawingVerticesCount === 0 && styles.drawingActionBtnDisabled,
+                      ]}
+                      onPress={() => mapRef.current?.undo()}
+                      disabled={drawingVerticesCount === 0}
+                      activeOpacity={0.7}
+                    >
+                      <Ionicons
+                        name="arrow-undo-outline"
+                        size={16}
+                        color={drawingVerticesCount === 0 ? Palette.textLight : '#334155'}
+                      />
+                      <Text
+                        style={[
+                          styles.drawingActionText,
+                          styles.drawingActionTextUndo,
+                          drawingVerticesCount === 0 && styles.drawingActionTextDisabled,
+                        ]}
+                        weight="semibold"
+                      >
+                        Annuler
+                      </Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={[
+                        styles.drawingActionBtn,
+                        styles.drawingActionBtnClear,
+                        drawingVerticesCount === 0 && styles.drawingActionBtnDisabled,
+                      ]}
+                      onPress={() => mapRef.current?.clear()}
+                      disabled={drawingVerticesCount === 0}
+                      activeOpacity={0.7}
+                    >
+                      <Ionicons
+                        name="trash-outline"
+                        size={16}
+                        color={drawingVerticesCount === 0 ? Palette.textLight : '#DC2626'}
+                      />
+                      <Text
+                        style={[
+                          styles.drawingActionText,
+                          styles.drawingActionTextClear,
+                          drawingVerticesCount === 0 && styles.drawingActionTextDisabled,
+                        ]}
+                        weight="semibold"
+                      >
+                        Effacer
+                      </Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={[
+                        styles.drawingActionBtn,
+                        styles.drawingActionBtnFinish,
+                        drawingVerticesCount < 4 && styles.drawingActionBtnFinishDisabled,
+                      ]}
+                      onPress={() => mapRef.current?.finish()}
+                      disabled={drawingVerticesCount < 4}
+                      activeOpacity={0.7}
+                    >
+                      <Ionicons
+                        name="checkmark-circle"
+                        size={16}
+                        color={drawingVerticesCount < 4 ? Palette.textLight : '#FFFFFF'}
+                      />
+                      <Text
+                        style={[
+                          styles.drawingActionText,
+                          styles.drawingActionTextFinish,
+                          drawingVerticesCount < 4 && styles.drawingActionTextDisabled,
+                        ]}
+                        weight="bold"
+                      >
+                        Terminer
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              )}
 
               {aoiMode === 'coords' && (
                 <View style={{ marginVertical: 10 }}>
@@ -2108,6 +2318,90 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
           </View>
         </View>
       </Modal>
+
+      {/* ── AOI Overlap Conflict Resolution Modal ── */}
+      <Modal
+        visible={showConflictModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowConflictModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.conflictModalContainer}>
+            <View style={styles.conflictModalHeader}>
+              <View style={styles.conflictModalIconWrap}>
+                <Ionicons name="warning" size={24} color="#DC2626" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text variant="h2" style={styles.conflictModalTitle} weight="bold">
+                  Zone en Conflit
+                </Text>
+                <Text style={styles.conflictModalSubtitle}>
+                  Chevauchement d'emprise spatiale détecté
+                </Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => setShowConflictModal(false)}
+                style={styles.crsModalCloseBtn}
+              >
+                <Ionicons name="close" size={22} color={Palette.text} />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView style={{ maxHeight: 360 }} showsVerticalScrollIndicator={false}>
+              <View style={styles.conflictBanner}>
+                <Text style={styles.conflictBannerText}>
+                  {conflictData.length === 1
+                    ? `Cette zone chevauche le ${conflictData[0].chantierName}. Les zones des chantiers provenant du même fichier d'infrastructure ne peuvent pas se chevaucher.`
+                    : `Cette zone chevauche ${conflictData.length} chantiers existants du même projet. Les zones des chantiers provenant du même fichier d'infrastructure ne peuvent pas se chevaucher.`}
+                </Text>
+              </View>
+
+              <Text style={styles.conflictListHeading} weight="bold">
+                CHANTIERS EN CONFLIT :
+              </Text>
+
+              {conflictData.map((conf) => (
+                <View key={conf.chantierId} style={styles.conflictItemCard}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.conflictItemName} weight="bold">
+                      🏢 {conf.chantierName}
+                    </Text>
+                    <Text style={styles.conflictItemArea}>
+                      Surface de chevauchement :{' '}
+                      <Text weight="semibold" style={{ color: '#DC2626' }}>
+                        {Number(conf.overlapAreaM2 || 0).toLocaleString('fr-FR', { maximumFractionDigits: 1 })} m²
+                      </Text>
+                    </Text>
+                  </View>
+                  <Button
+                    title={`Reconfigurer ${conf.chantierName}`}
+                    variant="outline"
+                    size="sm"
+                    onPress={() => {
+                      setShowConflictModal(false);
+                      router.push(`/responsable/chantier/${conf.chantierId}/gis` as any);
+                    }}
+                  />
+                </View>
+              ))}
+
+              <Text style={styles.conflictHelpNotice}>
+                Deux chantiers contigus peuvent partager une limite commune (sommet ou segment mitoyen), mais ne doivent pas empiéter l'un sur l'autre.
+              </Text>
+            </ScrollView>
+
+            <View style={styles.conflictModalFooter}>
+              <Button
+                title={`Modifier le chantier actuel (${chantier?.nom || 'Chantier'})`}
+                variant="primary"
+                size="md"
+                onPress={() => setShowConflictModal(false)}
+              />
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -2378,6 +2672,110 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
     height: 80,
+  },
+  drawingControlsSection: {
+    marginTop: 10,
+    gap: 8,
+  },
+  drawingModeBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFBEB',
+    borderWidth: 1,
+    borderColor: '#FDE68A',
+    borderRadius: 8,
+    paddingVertical: 7,
+    paddingHorizontal: 10,
+    gap: 8,
+  },
+  drawingModeIconWrap: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: '#FEF3C7',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  drawingModeTitle: {
+    fontSize: 11.5,
+    color: '#92400E',
+    lineHeight: 15,
+  },
+  drawingModeSubtitle: {
+    fontSize: 10.5,
+    color: '#B45309',
+    lineHeight: 14,
+  },
+  drawingModeBadge: {
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 6,
+    backgroundColor: '#FEF3C7',
+    borderWidth: 1,
+    borderColor: '#FCD34D',
+  },
+  drawingModeBadgeSuccess: {
+    backgroundColor: '#DCFCE7',
+    borderColor: '#86EFAC',
+  },
+  drawingModeBadgeText: {
+    fontSize: 11,
+    color: '#92400E',
+  },
+  drawingModeBadgeTextSuccess: {
+    color: '#166534',
+  },
+  drawingToolbarRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  drawingActionBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    height: 44,
+    borderRadius: 10,
+    borderWidth: 1,
+    paddingHorizontal: 6,
+  },
+  drawingActionBtnUndo: {
+    backgroundColor: '#F8FAFC',
+    borderColor: '#CBD5E1',
+  },
+  drawingActionBtnClear: {
+    backgroundColor: '#FEF2F2',
+    borderColor: '#FECACA',
+  },
+  drawingActionBtnFinish: {
+    backgroundColor: Palette.primary,
+    borderColor: Palette.primary,
+  },
+  drawingActionBtnFinishDisabled: {
+    backgroundColor: '#F1F5F9',
+    borderColor: '#E2E8F0',
+  },
+  drawingActionBtnDisabled: {
+    backgroundColor: '#F8FAFC',
+    borderColor: '#E2E8F0',
+    opacity: 0.55,
+  },
+  drawingActionText: {
+    fontSize: 12.5,
+  },
+  drawingActionTextUndo: {
+    color: '#334155',
+  },
+  drawingActionTextClear: {
+    color: '#DC2626',
+  },
+  drawingActionTextFinish: {
+    color: '#FFFFFF',
+  },
+  drawingActionTextDisabled: {
+    color: Palette.textMuted,
   },
   aoiStatusBox: {
     padding: 10,
@@ -3261,5 +3659,114 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '700',
     color: Palette.primary,
+  },
+  conflictModalContainer: {
+    width: '92%',
+    maxWidth: 520,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 20,
+    maxHeight: '85%',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.25,
+    shadowRadius: 16,
+    elevation: 8,
+  },
+  conflictModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginBottom: 14,
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: Palette.border,
+  },
+  conflictModalIconWrap: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: '#FEE2E2',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  conflictModalTitle: {
+    fontSize: 18,
+    color: '#DC2626',
+  },
+  conflictModalSubtitle: {
+    fontSize: 12,
+    color: Palette.textMuted,
+    marginTop: 2,
+  },
+  conflictBanner: {
+    backgroundColor: '#FEF2F2',
+    borderLeftWidth: 4,
+    borderLeftColor: '#DC2626',
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 14,
+  },
+  conflictBannerText: {
+    fontSize: 13,
+    color: '#991B1B',
+    lineHeight: 18,
+  },
+  conflictListHeading: {
+    fontSize: 11,
+    letterSpacing: 0.6,
+    color: Palette.textMuted,
+    marginBottom: 8,
+  },
+  conflictItemCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 10,
+    gap: 10,
+  },
+  conflictItemName: {
+    fontSize: 13.5,
+    color: Palette.text,
+  },
+  conflictItemArea: {
+    fontSize: 11.5,
+    color: Palette.textMuted,
+    marginTop: 3,
+  },
+  conflictHelpNotice: {
+    fontSize: 11,
+    color: Palette.textMuted,
+    lineHeight: 15,
+    marginVertical: 10,
+    fontStyle: 'italic',
+  },
+  conflictModalFooter: {
+    marginTop: 14,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: Palette.border,
+  },
+  siblingAoisNotice: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    backgroundColor: '#EEF2FF',
+    borderWidth: 1,
+    borderColor: '#C7D2FE',
+    borderRadius: 8,
+    padding: 8,
+    marginTop: 8,
+  },
+  siblingAoisNoticeText: {
+    flex: 1,
+    fontSize: 11.5,
+    color: '#3730A3',
+    lineHeight: 16,
   },
 });

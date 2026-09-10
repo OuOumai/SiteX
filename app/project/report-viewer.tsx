@@ -109,7 +109,7 @@ export default function ReportViewerScreen() {
   const displayTitle = project?.nom || title || 'Rapport de suivi';
 
   return (
-    <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
+    <SafeAreaView style={styles.container} edges={['top', 'bottom', 'left', 'right']}>
       {/* ── Top Action Bar ── */}
       <View style={styles.topBar}>
         {/* Back Button */}

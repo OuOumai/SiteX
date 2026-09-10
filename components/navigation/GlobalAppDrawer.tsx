@@ -10,6 +10,7 @@ import {
   View,
   useWindowDimensions,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { Text } from '@/components/ui/text';
@@ -31,6 +32,7 @@ export function GlobalAppDrawer({
   const router = useRouter();
   const { user, logout } = useAuth();
   const { width } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
 
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
 
@@ -166,6 +168,8 @@ export function GlobalAppDrawer({
               {
                 width: drawerWidth,
                 transform: [{ translateX }],
+                paddingTop: Math.max(insets.top, Platform.OS === 'ios' ? 52 : 40),
+                paddingBottom: Math.max(insets.bottom, 24),
               },
             ]}
           >
