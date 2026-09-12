@@ -254,14 +254,14 @@ export default function ChantierDetailResponsableScreen() {
         <Card variant="elevated" style={styles.infoCard}>
           <Text style={styles.sectionLabel} weight="bold">Configuration de la position terrain</Text>
           <Input
-            label="Distance maximale recommandée par rapport à l'infrastructure (m)"
+            label="Distance maximale recommandée (m)"
             value={dMaxPosition}
             onChangeText={setDMaxPosition}
             keyboardType="numeric"
             leftIcon={<Ionicons name="resize-outline" size={18} color={Palette.textMuted} />}
           />
           <Text style={styles.dMaxHelp}>
-            {"Seuil recommandé entre la position GPS réelle de l'Agent de Terrain et l'infrastructure. Au-delà, une confirmation exceptionnelle sera exigée."}
+            {"Distance maximale entre la position GPS de l'agent et l'infrastructure."}
           </Text>
           <Button title="Enregistrer le seuil" size="sm" variant="secondary" loading={isSavingDMax} onPress={saveDMax} />
         </Card>

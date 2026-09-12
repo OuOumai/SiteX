@@ -191,7 +191,11 @@ async function getProjectDetails(req, res) {
         TO_CHAR(c.date_debut, 'YYYY-MM-DD') AS date_debut,
         TO_CHAR(c.date_fin_prevue, 'YYYY-MM-DD') AS date_fin_prevue,
         c.date_creation,
-        COALESCE(latest_avancement.pourcentage, 0)::int AS avancement,
+        COALESCE((
+          SELECT ROUND(AVG(COALESCE(t.avancement, 0)))::int
+          FROM public.troncon t
+          WHERE t.chantier_id = c.id
+        ), 0) AS avancement,
         latest_avancement.date AS avancement_date,
         latest_avancement.commentaire AS avancement_commentaire,
         TRIM(CONCAT(u.prenom, ' ', u.nom)) AS responsable_nom,
@@ -230,7 +234,7 @@ async function getProjectDetails(req, res) {
             AND assigned_a.agent_id = $3
             AND assigned_a.statut = 'ACTIF'
         ))
-      GROUP BY c.id, c.localisation, latest_avancement.pourcentage, latest_avancement.date, latest_avancement.commentaire, u.prenom, u.nom, ref.id, ref.nom, ref.geometry, ref.direction_reversed
+      GROUP BY c.id, c.localisation, latest_avancement.date, latest_avancement.commentaire, u.prenom, u.nom, ref.id, ref.nom, ref.geometry, ref.direction_reversed
       ORDER BY c.id ASC;
     `;
     const chantiersRes = await db.query(chantiersQuery, [id, isAgent, agentId]);

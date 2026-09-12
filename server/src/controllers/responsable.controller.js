@@ -156,7 +156,11 @@ async function getDashboardData(req, res) {
         c.date_creation,
         p.nom AS projet_nom,
         p.type_projet AS projet_type,
-        COALESCE(latest_avancement.pourcentage, 0)::int AS avancement,
+        COALESCE((
+          SELECT ROUND(AVG(COALESCE(t.avancement, 0)))::int
+          FROM public.troncon t
+          WHERE t.chantier_id = c.id
+        ), 0) AS avancement,
         ref.id AS reference_alignment_id,
         ref.nom AS reference_alignment_nom,
         ref.direction_reversed,
@@ -170,13 +174,6 @@ async function getDashboardData(req, res) {
       FROM public.chantier c
       LEFT JOIN public.projet p ON p.id = c.projet_id
       LEFT JOIN LATERAL (
-        SELECT a.pourcentage
-        FROM public.avancement a
-        WHERE a.chantier_id = c.id
-        ORDER BY a.date DESC, a.id DESC
-        LIMIT 1
-      ) latest_avancement ON true
-      LEFT JOIN LATERAL (
         SELECT ra.id, ra.nom, ra.geometry, ra.direction_reversed
         FROM public.reference_alignment ra
         WHERE ra.chantier_id = c.id
@@ -184,7 +181,7 @@ async function getDashboardData(req, res) {
         LIMIT 1
       ) ref ON true
       LEFT JOIN public.troncon t ON t.chantier_id = c.id
-      GROUP BY c.id, p.nom, p.type_projet, latest_avancement.pourcentage, ref.id, ref.nom, ref.geometry, ref.direction_reversed
+      GROUP BY c.id, p.nom, p.type_projet, ref.id, ref.nom, ref.geometry, ref.direction_reversed
       ORDER BY c.id ASC;
     `;
     const chantiersRes = await db.query(chantiersQuery);

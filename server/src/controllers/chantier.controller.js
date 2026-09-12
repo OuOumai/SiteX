@@ -209,10 +209,14 @@ async function getChantierDetails(req, res) {
       gis_status = 'ALIGNEMENT_IMPORTE';
     }
 
+    const tronconsAvancement = troncons.length > 0
+      ? Math.round(troncons.reduce((sum, t) => sum + (Number(t.avancement) || 0), 0) / troncons.length)
+      : 0;
+
     return res.status(200).json({
       chantier: {
         ...chantier,
-        avancement: latestAvancement ? latestAvancement.pourcentage : 0,
+        avancement: tronconsAvancement,
         avancement_date: latestAvancement ? latestAvancement.date : null,
         avancement_commentaire: latestAvancement ? latestAvancement.commentaire : null,
         pk_debut,
