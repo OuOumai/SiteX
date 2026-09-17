@@ -159,7 +159,10 @@ async function getChantierDetails(req, res) {
         TO_CHAR(date_import, 'YYYY-MM-DD HH24:MI') AS date_import,
         ROUND(ST_Length(geometry::geography)::numeric, 2) AS length_meters,
         ROUND((ST_Length(geometry::geography) / 1000.0)::numeric, 3) AS length_km,
-        ST_AsGeoJSON(geometry)::json AS geometry
+        ROUND(ST_Length(COALESCE(original_geometry, geometry)::geography)::numeric, 2) AS original_length_meters,
+        ROUND((ST_Length(COALESCE(original_geometry, geometry)::geography) / 1000.0)::numeric, 3) AS original_length_km,
+        ST_AsGeoJSON(geometry)::json AS geometry,
+        ST_AsGeoJSON(COALESCE(original_geometry, geometry))::json AS original_geometry
       FROM public.reference_alignment
       WHERE chantier_id = $1
       ORDER BY id DESC
@@ -175,19 +178,33 @@ async function getChantierDetails(req, res) {
     try {
       const tronconQuery = `
         SELECT 
-          id,
-          nom,
-          pk_debut,
-          pk_fin,
-          COALESCE(statut, 'NON_COMMENCE') AS statut,
-          COALESCE(avancement, 0)::int AS avancement,
-          ROUND(ST_Length(geometry::geography)::numeric, 2) AS length_meters,
-          ROUND((ST_Length(geometry::geography) / 1000.0)::numeric, 3) AS length_km,
-          ST_AsGeoJSON(geometry)::json AS geometry,
-          date_creation
-        FROM public.troncon
-        WHERE chantier_id = $1
-        ORDER BY pk_debut ASC;
+          t.id,
+          t.nom,
+          t.pk_debut,
+          t.pk_fin,
+          COALESCE(t.statut, 'NON_COMMENCE') AS statut,
+          COALESCE(t.avancement, 0)::int AS avancement,
+          ROUND(ST_Length(t.geometry::geography)::numeric, 2) AS length_meters,
+          ROUND((ST_Length(t.geometry::geography) / 1000.0)::numeric, 3) AS length_km,
+          ROUND(COALESCE(t.authoritative_progress_meters, 0)::numeric, 2) AS authoritative_progress_meters,
+          ST_AsGeoJSON(t.geometry)::json AS geometry,
+          t.date_creation,
+          u.id AS agent_id,
+          u.nom AS agent_nom,
+          u.prenom AS agent_prenom,
+          NULLIF(TRIM(CONCAT(u.prenom, ' ', u.nom)), '') AS agent_nom_complet,
+          u.photo_url AS agent_photo_url
+        FROM public.troncon t
+        LEFT JOIN LATERAL (
+          SELECT u2.id, u2.nom, u2.prenom, u2.photo_url
+          FROM public.affectation_troncon a
+          JOIN public.utilisateur u2 ON u2.id = a.agent_id
+          WHERE a.troncon_id = t.id AND a.statut = 'ACTIF'
+          ORDER BY a.date_affectation DESC, a.id DESC
+          LIMIT 1
+        ) u ON true
+        WHERE t.chantier_id = $1
+        ORDER BY t.pk_debut ASC;
       `;
       const tronconRes = await db.query(tronconQuery, [id]);
       troncons = tronconRes.rows;
@@ -993,7 +1010,8 @@ async function uploadReferenceAlignment(req, res) {
     const alignmentName = req.body.nom || `Alignement Référence - ${chantier.nom}`;
     const source = req.body.source || 'GeoJSON';
 
-    // 2. PostGIS validation query: transform to WGS84, clip to Chantier AOI (Zone d'étude) if present, and validate continuous ST_LineString
+    // 2. PostGIS validation query: transform to WGS84, preserve unclipped original geometry,
+    // clip to Chantier AOI (Zone d'étude) if present, and validate continuous ST_LineString
     const validateAndInsertQuery = `
       WITH raw_input AS (
         SELECT ST_SetSRID(ST_GeomFromGeoJSON($1), $2) AS src_geom
@@ -1005,17 +1023,30 @@ async function uploadReferenceAlignment(req, res) {
         END AS raw_geom
         FROM raw_input
       ),
+      orig_merged AS (
+        SELECT 
+          CASE 
+            WHEN ST_GeometryType(raw_geom) = 'ST_MultiLineString' THEN (
+              SELECT d.geom 
+              FROM ST_Dump(raw_geom) d 
+              ORDER BY ST_Length(d.geom::geography) DESC 
+              LIMIT 1
+            )
+            ELSE raw_geom
+          END AS orig_geom
+        FROM parsed
+      ),
       aoi_src AS (
         SELECT localisation AS aoi_geom FROM public.chantier WHERE id = $3
       ),
       clipped AS (
         SELECT 
           CASE 
-            WHEN a.aoi_geom IS NOT NULL AND ST_Intersects(p.raw_geom, a.aoi_geom) THEN
-              ST_LineMerge(ST_CollectionExtract(ST_Intersection(p.raw_geom, a.aoi_geom), 2))
-            ELSE p.raw_geom
+            WHEN a.aoi_geom IS NOT NULL AND ST_Intersects(o.orig_geom, a.aoi_geom) THEN
+              ST_LineMerge(ST_CollectionExtract(ST_Intersection(o.orig_geom, a.aoi_geom), 2))
+            ELSE o.orig_geom
           END AS geom
-        FROM parsed p
+        FROM orig_merged o
         CROSS JOIN aoi_src a
       ),
       merged AS (
@@ -1032,12 +1063,17 @@ async function uploadReferenceAlignment(req, res) {
         FROM clipped
       )
       SELECT 
-        ST_GeometryType(geom) AS geom_type,
-        ST_NumGeometries(geom) AS num_geoms,
-        ROUND(ST_Length(geom::geography)::numeric, 2) AS length_meters,
-        ROUND((ST_Length(geom::geography) / 1000.0)::numeric, 3) AS length_km,
-        ST_AsGeoJSON(geom)::json AS geometry
-      FROM merged;
+        ST_GeometryType(m.geom) AS geom_type,
+        ST_NumGeometries(m.geom) AS num_geoms,
+        ROUND(ST_Length(m.geom::geography)::numeric, 2) AS length_meters,
+        ROUND((ST_Length(m.geom::geography) / 1000.0)::numeric, 3) AS length_km,
+        ST_AsGeoJSON(m.geom)::json AS geometry,
+        ST_GeometryType(o.orig_geom) AS orig_geom_type,
+        ROUND(ST_Length(o.orig_geom::geography)::numeric, 2) AS original_length_meters,
+        ROUND((ST_Length(o.orig_geom::geography) / 1000.0)::numeric, 3) AS original_length_km,
+        ST_AsGeoJSON(o.orig_geom)::json AS original_geometry
+      FROM merged m
+      CROSS JOIN orig_merged o;
     `;
 
     const checkRes = await db.query(validateAndInsertQuery, [JSON.stringify(targetGeom), sourceSrid, chantierId]);
@@ -1063,6 +1099,7 @@ async function uploadReferenceAlignment(req, res) {
     }
 
     // 3. Insert validated canonical LineString (EPSG:4326) into public.reference_alignment with CRS audit metadata
+    // Preserves BOTH the original imported geometry (unclipped) and the AOI-clipped geometry
     const insertQuery = `
       INSERT INTO public.reference_alignment (
         chantier_id,
@@ -1070,6 +1107,7 @@ async function uploadReferenceAlignment(req, res) {
         source,
         original_filename,
         geometry,
+        original_geometry,
         direction_reversed,
         source_srid,
         source_crs_name,
@@ -1078,9 +1116,10 @@ async function uploadReferenceAlignment(req, res) {
       VALUES (
         $1, $2, $3, $4,
         ST_SetSRID(ST_GeomFromGeoJSON($5), 4326),
+        ST_SetSRID(ST_GeomFromGeoJSON($6), 4326),
         false,
-        $6,
         $7,
+        $8,
         NOW()
       )
       RETURNING 
@@ -1095,7 +1134,10 @@ async function uploadReferenceAlignment(req, res) {
         TO_CHAR(date_import, 'YYYY-MM-DD HH24:MI:SS') AS date_import,
         ROUND(ST_Length(geometry::geography)::numeric, 2) AS length_meters,
         ROUND((ST_Length(geometry::geography) / 1000.0)::numeric, 3) AS length_km,
+        ROUND(ST_Length(COALESCE(original_geometry, geometry)::geography)::numeric, 2) AS original_length_meters,
+        ROUND((ST_Length(COALESCE(original_geometry, geometry)::geography) / 1000.0)::numeric, 3) AS original_length_km,
         ST_AsGeoJSON(geometry)::json AS geometry,
+        ST_AsGeoJSON(COALESCE(original_geometry, geometry))::json AS original_geometry,
         ST_X(ST_StartPoint(geometry)) AS start_lng,
         ST_Y(ST_StartPoint(geometry)) AS start_lat,
         ST_X(ST_EndPoint(geometry)) AS end_lng,
@@ -1108,6 +1150,7 @@ async function uploadReferenceAlignment(req, res) {
       source,
       originalFilename,
       JSON.stringify(checked.geometry),
+      JSON.stringify(checked.original_geometry),
       sourceSrid,
       sourceCrsName,
     ]);
@@ -1147,7 +1190,10 @@ async function getReferenceAlignment(req, res) {
         TO_CHAR(date_import, 'YYYY-MM-DD HH24:MI:SS') AS date_import,
         ROUND(ST_Length(geometry::geography)::numeric, 2) AS length_meters,
         ROUND((ST_Length(geometry::geography) / 1000.0)::numeric, 3) AS length_km,
+        ROUND(ST_Length(COALESCE(original_geometry, geometry)::geography)::numeric, 2) AS original_length_meters,
+        ROUND((ST_Length(COALESCE(original_geometry, geometry)::geography) / 1000.0)::numeric, 3) AS original_length_km,
         ST_AsGeoJSON(geometry)::json AS geometry,
+        ST_AsGeoJSON(COALESCE(original_geometry, geometry))::json AS original_geometry,
         ST_X(ST_StartPoint(geometry)) AS start_lng,
         ST_Y(ST_StartPoint(geometry)) AS start_lat,
         ST_X(ST_EndPoint(geometry)) AS end_lng,
@@ -1186,6 +1232,10 @@ async function toggleAlignmentDirection(req, res) {
     const updateRes = await db.query(
       `UPDATE public.reference_alignment
        SET geometry = ST_Reverse(geometry),
+           original_geometry = CASE 
+             WHEN original_geometry IS NOT NULL THEN ST_Reverse(original_geometry) 
+             ELSE NULL 
+           END,
            direction_reversed = NOT COALESCE(direction_reversed, false)
        WHERE chantier_id = $1
        RETURNING 
@@ -1198,7 +1248,10 @@ async function toggleAlignmentDirection(req, res) {
          TO_CHAR(date_import, 'YYYY-MM-DD HH24:MI:SS') AS date_import,
          ROUND(ST_Length(geometry::geography)::numeric, 2) AS length_meters,
          ROUND((ST_Length(geometry::geography) / 1000.0)::numeric, 3) AS length_km,
+         ROUND(ST_Length(COALESCE(original_geometry, geometry)::geography)::numeric, 2) AS original_length_meters,
+         ROUND((ST_Length(COALESCE(original_geometry, geometry)::geography) / 1000.0)::numeric, 3) AS original_length_km,
          ST_AsGeoJSON(geometry)::json AS geometry,
+         ST_AsGeoJSON(COALESCE(original_geometry, geometry))::json AS original_geometry,
          ST_X(ST_StartPoint(geometry)) AS start_lng,
          ST_Y(ST_StartPoint(geometry)) AS start_lat,
          ST_X(ST_EndPoint(geometry)) AS end_lng,
@@ -1773,21 +1826,34 @@ async function getChantierTroncons(req, res) {
 
     const query = `
       SELECT 
-        id,
-        chantier_id,
-        reference_alignment_id,
-        nom,
-        pk_debut,
-        pk_fin,
-        COALESCE(statut, 'NON_COMMENCE') AS statut,
-        COALESCE(avancement, 0)::int AS avancement,
-        ROUND(ST_Length(geometry::geography)::numeric, 2) AS length_meters,
-        ROUND((ST_Length(geometry::geography) / 1000.0)::numeric, 3) AS length_km,
-        ST_AsGeoJSON(geometry)::json AS geometry,
-        date_creation
-      FROM public.troncon
-      WHERE chantier_id = $1
-      ORDER BY pk_debut ASC;
+        t.id,
+        t.chantier_id,
+        t.reference_alignment_id,
+        t.nom,
+        t.pk_debut,
+        t.pk_fin,
+        COALESCE(t.statut, 'NON_COMMENCE') AS statut,
+        COALESCE(t.avancement, 0)::int AS avancement,
+        ROUND(ST_Length(t.geometry::geography)::numeric, 2) AS length_meters,
+        ROUND((ST_Length(t.geometry::geography) / 1000.0)::numeric, 3) AS length_km,
+        ST_AsGeoJSON(t.geometry)::json AS geometry,
+        t.date_creation,
+        u.id AS agent_id,
+        u.nom AS agent_nom,
+        u.prenom AS agent_prenom,
+        NULLIF(TRIM(CONCAT(u.prenom, ' ', u.nom)), '') AS agent_nom_complet,
+        u.photo_url AS agent_photo_url
+      FROM public.troncon t
+      LEFT JOIN LATERAL (
+        SELECT u2.id, u2.nom, u2.prenom, u2.photo_url
+        FROM public.affectation_troncon a
+        JOIN public.utilisateur u2 ON u2.id = a.agent_id
+        WHERE a.troncon_id = t.id AND a.statut = 'ACTIF'
+        ORDER BY a.date_affectation DESC, a.id DESC
+        LIMIT 1
+      ) u ON true
+      WHERE t.chantier_id = $1
+      ORDER BY t.pk_debut ASC;
     `;
 
     const result = await db.query(query, [chantierId]);
@@ -1799,6 +1865,277 @@ async function getChantierTroncons(req, res) {
     console.error('❌ GetChantierTroncons error:', error.message);
     return res.status(500).json({
       message: 'Erreur lors de la récupération des tronçons.',
+    });
+  }
+}
+
+/**
+ * Helper to format a date to French format e.g. "31 août 2026"
+ */
+function formatFrenchDate(dateVal) {
+  if (!dateVal) return null;
+  const d = new Date(dateVal);
+  if (isNaN(d.getTime())) return null;
+  const months = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
+  return `${d.getDate()} ${months[d.getMonth()]} ${d.getFullYear()}`;
+}
+
+/**
+ * GET /chantiers/:id/avancement
+ * Returns consolidated avancement statistics, equal-angle segmented tronçon breakdown,
+ * operational statistics, daily consolidated timeline (Model A), and field observation feed.
+ * Strictly enforces Responsable ownership / Admin privileges.
+ */
+async function getChantierAvancementStats(req, res) {
+  try {
+    const { id } = req.params;
+    const userId = req.user?.id;
+    const isAdmin = req.user?.role_nom === 'Administrateur' || req.user?.role_id === 1;
+
+    // 1. Enforce Responsable ownership / Admin scope
+    const chantierRes = await db.query(`
+      SELECT 
+        c.id,
+        c.projet_id,
+        c.responsable_id,
+        c.nom,
+        c.statut,
+        TO_CHAR(c.date_debut, 'YYYY-MM-DD') AS date_debut,
+        TO_CHAR(c.date_fin_prevue, 'YYYY-MM-DD') AS date_fin_prevue,
+        c.date_creation
+      FROM public.chantier c
+      WHERE c.id = $1 AND (c.responsable_id = $2 OR $3 = true);
+    `, [id, userId, isAdmin]);
+
+    if (chantierRes.rows.length === 0) {
+      const existsCheck = await db.query('SELECT id FROM public.chantier WHERE id = $1', [id]);
+      if (existsCheck.rows.length === 0) {
+        return res.status(404).json({ message: 'Chantier introuvable.' });
+      }
+      return res.status(403).json({ message: "Accès interdit : vous n'êtes pas le responsable de ce chantier." });
+    }
+
+    const chantier = chantierRes.rows[0];
+
+    // 2. Fetch tronçons with bounded physical métrage and active assignments
+    const tronconQuery = `
+      SELECT 
+        t.id,
+        t.nom,
+        'T' || ROW_NUMBER() OVER (ORDER BY t.pk_debut ASC, t.id ASC) AS code,
+        t.pk_debut,
+        t.pk_fin,
+        COALESCE(t.statut, 'NON_COMMENCE') AS statut,
+        COALESCE(t.avancement, 0)::int AS avancement,
+        ROUND(ST_Length(t.geometry::geography)::numeric, 2) AS planned_meters,
+        ROUND(LEAST(COALESCE(t.authoritative_progress_meters, 0), ST_Length(t.geometry::geography))::numeric, 2) AS completed_meters,
+        ROUND(GREATEST(ST_Length(t.geometry::geography) - LEAST(COALESCE(t.authoritative_progress_meters, 0), ST_Length(t.geometry::geography)), 0)::numeric, 2) AS remaining_meters,
+        ROUND((ST_Length(t.geometry::geography) / 1000.0)::numeric, 3) AS length_km,
+        u.id AS agent_id,
+        NULLIF(TRIM(CONCAT(u.prenom, ' ', u.nom)), '') AS agent_nom_complet,
+        u.photo_url AS agent_photo_url,
+        COALESCE(obs_meta.observations_count, 0)::int AS observations_count,
+        obs_meta.latest_observation_date
+      FROM public.troncon t
+      LEFT JOIN LATERAL (
+        SELECT u2.id, u2.nom, u2.prenom, u2.photo_url
+        FROM public.affectation_troncon a
+        JOIN public.utilisateur u2 ON u2.id = a.agent_id
+        WHERE a.troncon_id = t.id AND a.statut = 'ACTIF'
+        ORDER BY a.date_affectation DESC, a.id DESC
+        LIMIT 1
+      ) u ON true
+      LEFT JOIN LATERAL (
+        SELECT 
+          COUNT(*)::int AS observations_count,
+          TO_CHAR(MAX(date_heure), 'YYYY-MM-DD HH24:MI') AS latest_observation_date
+        FROM public.observation_terrain
+        WHERE troncon_id = t.id
+      ) obs_meta ON true
+      WHERE t.chantier_id = $1
+      ORDER BY t.pk_debut ASC, t.id ASC;
+    `;
+    const tronconsRes = await db.query(tronconQuery, [id]);
+    const troncons = tronconsRes.rows.map(t => ({
+      ...t,
+      avancement: Number(t.avancement) || 0,
+      planned_meters: Number(t.planned_meters) || 0,
+      completed_meters: Number(t.completed_meters) || 0,
+      remaining_meters: Number(t.remaining_meters) || 0,
+      length_km: Number(t.length_km) || 0,
+      observations_count: Number(t.observations_count) || 0,
+    }));
+
+    // 3. Compute Chantier aggregate physical métrage and arithmetic average avancement
+    const N = troncons.length;
+    const total_planned_meters = Math.round(troncons.reduce((acc, t) => acc + t.planned_meters, 0) * 100) / 100;
+    const total_completed_meters = Math.round(troncons.reduce((acc, t) => acc + t.completed_meters, 0) * 100) / 100;
+    const total_remaining_meters = Math.round(Math.max(total_planned_meters - total_completed_meters, 0) * 100) / 100;
+    const avancement = N > 0 ? Math.round(troncons.reduce((acc, t) => acc + t.avancement, 0) / N) : 0;
+
+    // 4. Fetch operational statistics
+    const statsQuery = `
+      SELECT 
+        COUNT(DISTINCT DATE(date_heure))::int AS jours_avec_releves,
+        MAX(date_heure) AS dernier_releve_date,
+        COUNT(*)::int AS nombre_total_observations
+      FROM public.observation_terrain
+      WHERE chantier_id = $1;
+    `;
+    const statsRes = await db.query(statsQuery, [id]);
+    const rawStats = statsRes.rows[0] || {};
+    const stats = {
+      jours_avec_releves: Number(rawStats.jours_avec_releves) || 0,
+      dernier_releve_date: rawStats.dernier_releve_date ? new Date(rawStats.dernier_releve_date).toISOString() : null,
+      dernier_releve_label: rawStats.dernier_releve_date ? formatFrenchDate(rawStats.dernier_releve_date) : 'Aucun relevé',
+      nombre_total_observations: Number(rawStats.nombre_total_observations) || 0,
+      total_planned_meters,
+      total_completed_meters,
+      total_remaining_meters,
+    };
+
+    // 5. Build daily consolidated timeline (Model A)
+    const distinctDatesQuery = `
+      SELECT 
+        DATE(date_heure) AS obs_date,
+        TO_CHAR(DATE(date_heure), 'YYYY-MM-DD') AS date_str,
+        COUNT(*)::int AS obs_count
+      FROM public.observation_terrain
+      WHERE chantier_id = $1
+      GROUP BY DATE(date_heure)
+      ORDER BY obs_date ASC;
+    `;
+    const distinctDatesRes = await db.query(distinctDatesQuery, [id]);
+    const timeline = [];
+
+    if (distinctDatesRes.rows.length > 0 && N > 0) {
+      const firstObsDateStr = distinctDatesRes.rows[0].date_str;
+
+      // Synthetic 0% baseline if date_debut is strictly before first observation
+      if (chantier.date_debut && chantier.date_debut < firstObsDateStr) {
+        const dObj = new Date(chantier.date_debut);
+        const dayOfMonth = String(dObj.getDate()).padStart(2, '0');
+        const months = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
+        const monthLabel = months[dObj.getMonth()];
+        timeline.push({
+          date: chantier.date_debut,
+          dayOfMonth,
+          monthLabel,
+          fullLabel: `${dayOfMonth} ${monthLabel} ${dObj.getFullYear()} (Démarrage)`,
+          avancement: 0,
+          observations_count: 0,
+          is_synthetic_baseline: true,
+        });
+      }
+
+      // Query daily latest observation per tronçon up to each observation date
+      const dailySnapshotQuery = `
+        WITH daily_latest_obs AS (
+          SELECT DISTINCT ON (d.obs_date, o.troncon_id)
+            d.obs_date,
+            o.troncon_id,
+            COALESCE(o.progress_percentage, 0)::int AS progress_percentage
+          FROM (
+            SELECT DISTINCT DATE(date_heure) AS obs_date
+            FROM public.observation_terrain
+            WHERE chantier_id = $1
+          ) d
+          JOIN public.observation_terrain o 
+            ON o.chantier_id = $1 
+           AND o.date_heure <= (d.obs_date + time '23:59:59')
+          ORDER BY d.obs_date, o.troncon_id, o.date_heure DESC, o.id DESC
+        )
+        SELECT 
+          obs_date,
+          TO_CHAR(obs_date, 'YYYY-MM-DD') AS date_str,
+          ROUND(SUM(progress_percentage)::numeric / $2)::int AS consolidated_avancement
+        FROM daily_latest_obs
+        GROUP BY obs_date
+        ORDER BY obs_date ASC;
+      `;
+      const dailySnapshotRes = await db.query(dailySnapshotQuery, [id, N]);
+
+      const dateCountsMap = {};
+      distinctDatesRes.rows.forEach(r => {
+        dateCountsMap[r.date_str] = Number(r.obs_count) || 0;
+      });
+
+      const months = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
+      for (const row of dailySnapshotRes.rows) {
+        const dObj = new Date(row.date_str);
+        const dayOfMonth = String(dObj.getDate()).padStart(2, '0');
+        const monthLabel = months[dObj.getMonth()];
+        timeline.push({
+          date: row.date_str,
+          dayOfMonth,
+          monthLabel,
+          fullLabel: `${dayOfMonth} ${monthLabel} ${dObj.getFullYear()}`,
+          avancement: Number(row.consolidated_avancement) || 0,
+          observations_count: dateCountsMap[row.date_str] || 0,
+          is_synthetic_baseline: false,
+        });
+      }
+    }
+
+    // 6. Fetch chronological field observations feed
+    const obsQuery = `
+      SELECT 
+        o.id,
+        o.troncon_id,
+        t.nom AS troncon_nom,
+        'T' || t_rank.code_num AS troncon_code,
+        NULLIF(TRIM(CONCAT(u.prenom, ' ', u.nom)), '') AS agent_nom,
+        TO_CHAR(o.date_heure, 'YYYY-MM-DD HH24:MI') AS date_heure,
+        o.chainage,
+        COALESCE(o.progress_percentage, 0)::int AS progress_percentage,
+        o.phase,
+        o.phase_statut,
+        o.commentaire,
+        COALESCE(photos.list, '[]'::json) AS photos
+      FROM public.observation_terrain o
+      JOIN public.troncon t ON t.id = o.troncon_id
+      LEFT JOIN public.utilisateur u ON u.id = o.agent_id
+      LEFT JOIN (
+        SELECT id, ROW_NUMBER() OVER (ORDER BY pk_debut ASC, id ASC) AS code_num
+        FROM public.troncon 
+        WHERE chantier_id = $1
+      ) t_rank ON t_rank.id = t.id
+      LEFT JOIN LATERAL (
+        SELECT json_agg(json_build_object('id', p.id, 'url', p.fichier, 'description', p.description)) AS list
+        FROM public.photo_terrain p 
+        WHERE p.observation_id = o.id
+      ) photos ON true
+      WHERE o.chantier_id = $1
+      ORDER BY o.date_heure DESC, o.id DESC;
+    `;
+    const obsRes = await db.query(obsQuery, [id]);
+    const observations = obsRes.rows.map(o => ({
+      ...o,
+      progress_percentage: Number(o.progress_percentage) || 0,
+      photos: Array.isArray(o.photos) ? o.photos : [],
+    }));
+
+    return res.status(200).json({
+      chantier: {
+        id: chantier.id,
+        nom: chantier.nom,
+        statut: chantier.statut,
+        date_debut: chantier.date_debut,
+        date_fin_prevue: chantier.date_fin_prevue,
+        date_creation: chantier.date_creation,
+        avancement,
+      },
+      troncons,
+      stats,
+      historique: {
+        timeline,
+        observations,
+      },
+    });
+  } catch (error) {
+    console.error('❌ GetChantierAvancementStats error:', error.message);
+    return res.status(500).json({
+      message: "Erreur lors de la récupération des statistiques d'avancement du chantier.",
     });
   }
 }
@@ -1819,4 +2156,5 @@ module.exports = {
   recalculateTronconsChainage,
   saveTroncons,
   getChantierTroncons,
+  getChantierAvancementStats,
 };

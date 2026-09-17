@@ -8,6 +8,7 @@ import {
   RefreshControl,
   Alert,
   Platform,
+  TextInput,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -30,6 +31,12 @@ function formatPK(val?: number | null): string {
   return `PK ${km}+${mStr}`;
 }
 
+function formatDate(val?: string | null): string {
+  if (!val) return '—';
+  if (val.includes('T')) return val.split('T')[0];
+  return val;
+}
+
 export default function ChantierDetailResponsableScreen() {
   const { chantierId } = useLocalSearchParams<{ chantierId: string }>();
   const router = useRouter();
@@ -44,6 +51,8 @@ export default function ChantierDetailResponsableScreen() {
   const [isRenaming, setIsRenaming] = useState(false);
   const [newName, setNewName] = useState('');
   const [isManaging, setIsManaging] = useState(false);
+  const [infoExpanded, setInfoExpanded] = useState(false);
+  const [tronconsExpanded, setTronconsExpanded] = useState(true);
   const showChantierList = () => {
     if (chantier?.projet_id) router.replace(`/responsable/projet/${chantier.projet_id}` as any);
     else router.replace('/(tabs)/projects' as any);
@@ -251,68 +260,208 @@ export default function ChantierDetailResponsableScreen() {
           )}
         </Card>
 
-        <Card variant="elevated" style={styles.infoCard}>
-          <Text style={styles.sectionLabel} weight="bold">Configuration de la position terrain</Text>
-          <Input
-            label="Distance maximale recommandée (m)"
-            value={dMaxPosition}
-            onChangeText={setDMaxPosition}
-            keyboardType="numeric"
-            leftIcon={<Ionicons name="resize-outline" size={18} color={Palette.textMuted} />}
-          />
-          <Text style={styles.dMaxHelp}>
-            {"Distance maximale entre la position GPS de l'agent et l'infrastructure."}
-          </Text>
-          <Button title="Enregistrer le seuil" size="sm" variant="secondary" loading={isSavingDMax} onPress={saveDMax} />
+        {/* Informations Générales (Collapsible, DEFAULT: COLLAPSED) */}
+        <Card variant="elevated" style={styles.sectionCard}>
+          <TouchableOpacity
+            style={styles.collapsibleHeader}
+            activeOpacity={0.7}
+            onPress={() => setInfoExpanded((prev) => !prev)}
+          >
+            <View style={styles.collapsibleTitleRow}>
+              <Ionicons name="document-text-outline" size={18} color="#0F766E" />
+              <Text style={styles.collapsibleTitle} weight="bold">
+                Informations Générales
+              </Text>
+            </View>
+            <Ionicons
+              name={infoExpanded ? 'chevron-up' : 'chevron-down'}
+              size={20}
+              color={Palette.textMuted}
+            />
+          </TouchableOpacity>
+
+          {infoExpanded && (
+            <View style={styles.collapsibleContent}>
+              <View style={styles.infoGrid}>
+                <View style={styles.infoRow}>
+                  <Ionicons name="folder-outline" size={16} color={Palette.textMuted} />
+                  <Text style={styles.infoRowLabel}>Projet</Text>
+                  <Text style={styles.infoRowValue} weight="bold">
+                    {chantier?.projet_nom || '—'}
+                  </Text>
+                </View>
+
+                {chantier?.date_debut ? (
+                  <View style={styles.infoRow}>
+                    <Ionicons name="calendar-outline" size={16} color={Palette.textMuted} />
+                    <Text style={styles.infoRowLabel}>Début</Text>
+                    <Text style={styles.infoRowValue} weight="bold">
+                      {formatDate(chantier.date_debut)}
+                    </Text>
+                  </View>
+                ) : null}
+
+                {chantier?.date_fin_prevue ? (
+                  <View style={styles.infoRow}>
+                    <Ionicons name="calendar-outline" size={16} color={Palette.textMuted} />
+                    <Text style={styles.infoRowLabel}>Fin prévue</Text>
+                    <Text style={styles.infoRowValue} weight="bold">
+                      {formatDate(chantier.date_fin_prevue)}
+                    </Text>
+                  </View>
+                ) : null}
+
+                {chantier?.surface_reference ? (
+                  <View style={styles.infoRow}>
+                    <Ionicons name="cube-outline" size={16} color={Palette.textMuted} />
+                    <Text style={styles.infoRowLabel}>Surface réf.</Text>
+                    <Text style={styles.infoRowValue} weight="bold">
+                      {chantier.surface_reference} m²
+                    </Text>
+                  </View>
+                ) : null}
+              </View>
+            </View>
+          )}
         </Card>
 
-        {/* General Information */}
-        <Card variant="elevated" style={styles.infoCard}>
-          <Text style={styles.sectionLabel} weight="bold">
-            Informations Générales
-          </Text>
-          <View style={styles.infoGrid}>
-            <View style={styles.infoRow}>
-              <Ionicons name="folder-outline" size={14} color={Palette.textMuted} />
-              <Text style={styles.infoRowLabel}>Projet</Text>
-              <Text style={styles.infoRowValue} weight="semibold">
-                {chantier?.projet_nom || '—'}
+        {/* Tronçons & Agents de Terrain (Collapsible) */}
+        <Card variant="elevated" style={styles.sectionCard}>
+          <TouchableOpacity
+            style={styles.collapsibleHeader}
+            activeOpacity={0.7}
+            onPress={() => setTronconsExpanded((prev) => !prev)}
+          >
+            <View style={styles.collapsibleTitleRow}>
+              <Ionicons name="people-outline" size={18} color="#0F766E" />
+              <Text style={styles.collapsibleTitle} weight="bold">
+                Tronçons & Agents de Terrain
               </Text>
             </View>
-            <View style={styles.infoRow}>
-              <Ionicons name="person-outline" size={14} color={Palette.textMuted} />
-              <Text style={styles.infoRowLabel}>Responsable</Text>
-              <Text style={styles.infoRowValue} weight="semibold">
-                {chantier?.responsable_nom || 'Non assigné'}
-              </Text>
+            <Ionicons
+              name={tronconsExpanded ? 'chevron-up' : 'chevron-down'}
+              size={20}
+              color={Palette.textMuted}
+            />
+          </TouchableOpacity>
+
+          {tronconsExpanded && (
+            <View style={styles.collapsibleContent}>
+              {troncons.length > 0 ? (
+                <View style={styles.agentTable}>
+                  <View style={styles.agentTableHeader}>
+                    <Text style={styles.agentTableColHeaderTroncon} weight="semibold">
+                      Tronçon
+                    </Text>
+                    <Text style={styles.agentTableColHeaderAgent} weight="semibold">
+                      Agent de Terrain
+                    </Text>
+                  </View>
+
+                  {troncons.map((t: ChantierTroncon, index: number) => {
+                    const agentName =
+                      t.agent_nom_complet ||
+                      (t.agent_prenom && t.agent_nom
+                        ? `${t.agent_prenom} ${t.agent_nom}`
+                        : t.agent_nom || null);
+                    const isAssigned = !!(t.agent_id && agentName);
+
+                    const avatarColors = [
+                      { bg: '#DCFCE7', text: '#16A34A' },
+                      { bg: '#E0F2FE', text: '#0284C7' },
+                      { bg: '#F3E8FF', text: '#9333EA' },
+                      { bg: '#FEF3C7', text: '#D97706' },
+                    ];
+                    const color = isAssigned
+                      ? avatarColors[index % avatarColors.length]
+                      : { bg: '#F1F5F9', text: '#94A3B8' };
+
+                    return (
+                      <View
+                        key={t.id || index}
+                        style={[
+                          styles.agentTableRow,
+                          index === troncons.length - 1 && styles.agentTableRowLast,
+                        ]}
+                      >
+                        <View style={styles.agentTableTronconCol}>
+                          <Text style={styles.agentTronconName} numberOfLines={1}>
+                            {t.nom}
+                          </Text>
+                        </View>
+
+                        <View style={styles.agentTableAgentCol}>
+                          <View style={[styles.agentAvatarCircle, { backgroundColor: color.bg }]}>
+                            <Ionicons name="person" size={12} color={color.text} />
+                          </View>
+                          <Text
+                            style={[
+                              styles.agentNameText,
+                              !isAssigned && styles.agentUnassignedText,
+                            ]}
+                            numberOfLines={1}
+                          >
+                            {isAssigned ? agentName : 'Non affecté'}
+                          </Text>
+                        </View>
+                      </View>
+                    );
+                  })}
+                </View>
+              ) : (
+                <Text style={styles.emptyAgentListText}>
+                  Aucun tronçon configuré pour ce chantier.
+                </Text>
+              )}
             </View>
-            {chantier?.date_debut && (
-              <View style={styles.infoRow}>
-                <Ionicons name="calendar-outline" size={14} color={Palette.textMuted} />
-                <Text style={styles.infoRowLabel}>Début</Text>
-                <Text style={styles.infoRowValue} weight="semibold">
-                  {chantier.date_debut}
-                </Text>
+          )}
+        </Card>
+
+        {/* Configuration de la position terrain */}
+        <Card variant="elevated" style={styles.sectionCard}>
+          <View style={styles.cardHeaderWithIcon}>
+            <Ionicons name="locate-outline" size={18} color="#0F766E" />
+            <Text style={styles.collapsibleTitle} weight="bold">
+              Configuration de la position terrain
+            </Text>
+          </View>
+          <View style={styles.dMaxContent}>
+            <Text style={styles.dMaxInputLabel}>Distance maximale recommandée (m)</Text>
+            <View style={styles.dMaxRow}>
+              <View style={styles.dMaxInputContainer}>
+                <Ionicons
+                  name="resize-outline"
+                  size={16}
+                  color={Palette.textMuted}
+                  style={styles.dMaxInputIcon}
+                />
+                <TextInput
+                  style={styles.dMaxTextInput}
+                  value={dMaxPosition}
+                  onChangeText={setDMaxPosition}
+                  keyboardType="numeric"
+                  placeholder="50"
+                  placeholderTextColor={Palette.textMuted}
+                />
               </View>
-            )}
-            {chantier?.date_fin_prevue && (
-              <View style={styles.infoRow}>
-                <Ionicons name="flag-outline" size={14} color={Palette.textMuted} />
-                <Text style={styles.infoRowLabel}>Fin prévue</Text>
-                <Text style={styles.infoRowValue} weight="semibold">
-                  {chantier.date_fin_prevue}
-                </Text>
-              </View>
-            )}
-            {chantier?.surface_reference ? (
-              <View style={styles.infoRow}>
-                <Ionicons name="cube-outline" size={14} color={Palette.textMuted} />
-                <Text style={styles.infoRowLabel}>Surface réf.</Text>
-                <Text style={styles.infoRowValue} weight="semibold">
-                  {chantier.surface_reference} m²
-                </Text>
-              </View>
-            ) : null}
+              <TouchableOpacity
+                style={[styles.dMaxSaveBtn, isSavingDMax && { opacity: 0.7 }]}
+                onPress={saveDMax}
+                disabled={isSavingDMax}
+                activeOpacity={0.8}
+              >
+                {isSavingDMax ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <Text style={styles.dMaxSaveBtnText} weight="bold">
+                    Enregistrer le seuil
+                  </Text>
+                )}
+              </TouchableOpacity>
+            </View>
+            <Text style={styles.dMaxHelp}>
+              {"Distance maximale entre la position GPS de l'agent et l'infrastructure."}
+            </Text>
           </View>
         </Card>
 
@@ -626,7 +775,162 @@ const styles = StyleSheet.create({
   gisBadgeText: {
     fontSize: 10,
   },
-  // Info Card
+  // Info & Collapsible Sections
+  sectionCard: {
+    padding: 16,
+    borderRadius: 14,
+    backgroundColor: '#FFFFFF',
+    marginBottom: 14,
+  },
+  collapsibleHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  collapsibleTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  collapsibleTitle: {
+    fontSize: 15,
+    color: Palette.text,
+  },
+  collapsibleContent: {
+    marginTop: 14,
+    borderTopWidth: 1,
+    borderTopColor: '#F1F5F9',
+    paddingTop: 12,
+  },
+  cardHeaderWithIcon: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: 12,
+  },
+  dMaxContent: {
+    gap: 6,
+  },
+  dMaxInputLabel: {
+    fontSize: 12,
+    color: Palette.textMuted,
+  },
+  dMaxRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  dMaxInputContainer: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+    borderRadius: 10,
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 12,
+    height: 44,
+  },
+  dMaxInputIcon: {
+    marginRight: 8,
+  },
+  dMaxTextInput: {
+    flex: 1,
+    fontSize: 14,
+    color: Palette.text,
+    height: '100%',
+    padding: 0,
+  },
+  dMaxSaveBtn: {
+    backgroundColor: '#2A9D8F',
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  dMaxSaveBtnText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+  },
+  dMaxHelp: {
+    fontSize: 11,
+    lineHeight: 16,
+    color: Palette.textMuted,
+    marginTop: 4,
+  },
+  // Tronçons & Agents table
+  agentTable: {
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#F1F5F9',
+    overflow: 'hidden',
+  },
+  agentTableHeader: {
+    flexDirection: 'row',
+    backgroundColor: '#F8FAFC',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F1F5F9',
+  },
+  agentTableColHeaderTroncon: {
+    width: '42%',
+    fontSize: 12,
+    color: '#64748B',
+  },
+  agentTableColHeaderAgent: {
+    width: '58%',
+    fontSize: 12,
+    color: '#64748B',
+  },
+  agentTableRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F8FAFC',
+    backgroundColor: '#FFFFFF',
+  },
+  agentTableRowLast: {
+    borderBottomWidth: 0,
+  },
+  agentTableTronconCol: {
+    width: '42%',
+    paddingRight: 8,
+  },
+  agentTronconName: {
+    fontSize: 13,
+    color: Palette.text,
+  },
+  agentTableAgentCol: {
+    width: '58%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  agentAvatarCircle: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  agentNameText: {
+    fontSize: 13,
+    color: Palette.text,
+    flexShrink: 1,
+  },
+  agentUnassignedText: {
+    color: Palette.textMuted,
+  },
+  emptyAgentListText: {
+    fontSize: 12,
+    color: Palette.textMuted,
+    fontStyle: 'italic',
+    paddingVertical: 8,
+  },
   infoCard: {
     padding: 14,
     borderRadius: 14,
@@ -639,27 +943,20 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   infoGrid: {
-    gap: 8,
-  },
-  dMaxHelp: {
-    fontSize: 11,
-    lineHeight: 16,
-    color: Palette.textMuted,
-    marginTop: -6,
-    marginBottom: 12,
+    gap: 12,
   },
   infoRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 12,
   },
   infoRowLabel: {
-    fontSize: 12,
+    fontSize: 13,
     color: Palette.textMuted,
-    width: 85,
+    width: 90,
   },
   infoRowValue: {
-    fontSize: 12,
+    fontSize: 13,
     color: Palette.text,
     flex: 1,
   },

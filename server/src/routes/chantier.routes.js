@@ -17,6 +17,7 @@ const router = express.Router();
 
 // General Chantier Details
 router.get('/:id', authenticateToken, chantierController.getChantierDetails);
+router.get('/:id/avancement', authenticateToken, requireResponsableOrAdmin, chantierController.getChantierAvancementStats);
 
 // Chantier Creation (Responsable / Admin)
 router.post('/', authenticateToken, requireResponsableOrAdmin, chantierController.createChantier);

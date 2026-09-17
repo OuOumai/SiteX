@@ -59,13 +59,23 @@ async function runMigration() {
     `);
     console.log('  └─ Table public.demande_role ready');
 
-    // 3. Add CRS tracking columns to public.reference_alignment if table exists
+    // 3. Add CRS tracking and original_geometry columns to public.reference_alignment if table exists
     await client.query(`
       ALTER TABLE public.reference_alignment
       ADD COLUMN IF NOT EXISTS source_srid INTEGER DEFAULT 4326,
-      ADD COLUMN IF NOT EXISTS source_crs_name VARCHAR(100) DEFAULT 'WGS 84';
+      ADD COLUMN IF NOT EXISTS source_crs_name VARCHAR(100) DEFAULT 'WGS 84',
+      ADD COLUMN IF NOT EXISTS original_geometry GEOMETRY(LineString, 4326);
     `);
-    console.log('  └─ Columns source_srid, source_crs_name in public.reference_alignment ready');
+    console.log('  └─ Columns source_srid, source_crs_name, original_geometry in public.reference_alignment ready');
+
+    // Backfill existing records for backward compatibility
+    await client.query(`
+      UPDATE public.reference_alignment
+      SET original_geometry = geometry
+      WHERE original_geometry IS NULL;
+    `);
+    console.log('  └─ Existing reference_alignment records backfilled (original_geometry initialized)');
+
 
     // 4. Create public.affectation_troncon table for Agent de Terrain assignments
     await client.query(`

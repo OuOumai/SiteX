@@ -198,8 +198,86 @@ export interface ChantierTroncon {
   avancement?: number;
   length_meters?: number | null;
   length_km?: number | null;
+  authoritative_progress_meters?: number | null;
   geometry?: any;
   date_creation?: string;
+  agent_id?: number | null;
+  agent_nom?: string | null;
+  agent_prenom?: string | null;
+  agent_nom_complet?: string | null;
+  agent_photo_url?: string | null;
+}
+
+export interface ChantierAvancementTroncon {
+  id: number;
+  nom: string;
+  code: string;
+  pk_debut?: number | null;
+  pk_fin?: number | null;
+  statut: string;
+  avancement: number;
+  planned_meters: number;
+  completed_meters: number;
+  remaining_meters: number;
+  length_km: number;
+  agent_id?: number | null;
+  agent_nom_complet?: string | null;
+  agent_photo_url?: string | null;
+  observations_count: number;
+  latest_observation_date?: string | null;
+}
+
+export interface ChantierOperationalStats {
+  jours_avec_releves: number;
+  dernier_releve_date?: string | null;
+  dernier_releve_label: string;
+  nombre_total_observations: number;
+  total_planned_meters: number;
+  total_completed_meters: number;
+  total_remaining_meters: number;
+}
+
+export interface ChantierDailyHistoryPoint {
+  date: string;
+  dayOfMonth: string;
+  monthLabel: string;
+  fullLabel: string;
+  avancement: number;
+  observations_count: number;
+  is_synthetic_baseline: boolean;
+}
+
+export interface ChantierObservationHistoryItem {
+  id: number;
+  troncon_id: number;
+  troncon_nom: string;
+  troncon_code: string;
+  agent_nom: string | null;
+  date_heure: string;
+  chainage?: string | number | null;
+  progress_percentage: number;
+  phase?: string | null;
+  phase_statut?: string | null;
+  commentaire?: string | null;
+  photos: Array<{ id: number; url: string; description?: string | null }>;
+}
+
+export interface ChantierAvancementResponse {
+  chantier: {
+    id: number;
+    nom: string;
+    statut: string;
+    date_debut?: string | null;
+    date_fin_prevue?: string | null;
+    date_creation: string;
+    avancement: number;
+  };
+  troncons: ChantierAvancementTroncon[];
+  stats: ChantierOperationalStats;
+  historique: {
+    timeline: ChantierDailyHistoryPoint[];
+    observations: ChantierObservationHistoryItem[];
+  };
 }
 
 export interface ChantierDetails {
@@ -1137,6 +1215,15 @@ class ApiClient {
 
   async getChantierDetails(token: string, id: number | string): Promise<{ chantier: ChantierDetails }> {
     return this.request<{ chantier: ChantierDetails }>(`/chantiers/${id}`, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+  }
+
+  async getChantierAvancement(token: string, id: number | string): Promise<ChantierAvancementResponse> {
+    return this.request<ChantierAvancementResponse>(`/chantiers/${id}/avancement`, {
       method: 'GET',
       headers: {
         Authorization: `Bearer ${token}`,

@@ -202,7 +202,7 @@ async function getProjectDetails(req, res) {
         ref.id AS reference_alignment_id,
         ref.nom AS reference_alignment_nom,
         ref.direction_reversed,
-        ROUND((ST_Length(ref.geometry::geography) / 1000.0)::numeric, 2) AS length_km,
+        ROUND((ST_Length(COALESCE(ref.original_geometry, ref.geometry)::geography) / 1000.0)::numeric, 2) AS length_km,
         COUNT(t.id)::int AS nombre_troncons,
         CASE 
           WHEN COUNT(t.id) > 0 THEN 'PRET_POUR_SUIVI'
@@ -219,7 +219,7 @@ async function getProjectDetails(req, res) {
       ) latest_avancement ON true
       LEFT JOIN public.utilisateur u ON u.id = c.responsable_id
       LEFT JOIN LATERAL (
-        SELECT ra.id, ra.nom, ra.geometry, ra.direction_reversed
+        SELECT ra.id, ra.nom, ra.geometry, ra.original_geometry, ra.direction_reversed
         FROM public.reference_alignment ra
         WHERE ra.chantier_id = c.id
         ORDER BY ra.id DESC
@@ -234,7 +234,7 @@ async function getProjectDetails(req, res) {
             AND assigned_a.agent_id = $3
             AND assigned_a.statut = 'ACTIF'
         ))
-      GROUP BY c.id, c.localisation, latest_avancement.date, latest_avancement.commentaire, u.prenom, u.nom, ref.id, ref.nom, ref.geometry, ref.direction_reversed
+      GROUP BY c.id, c.localisation, latest_avancement.date, latest_avancement.commentaire, u.prenom, u.nom, ref.id, ref.nom, ref.geometry, ref.original_geometry, ref.direction_reversed
       ORDER BY c.id ASC;
     `;
     const chantiersRes = await db.query(chantiersQuery, [id, isAgent, agentId]);

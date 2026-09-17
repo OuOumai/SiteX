@@ -164,7 +164,7 @@ async function getDashboardData(req, res) {
         ref.id AS reference_alignment_id,
         ref.nom AS reference_alignment_nom,
         ref.direction_reversed,
-        ROUND((ST_Length(ref.geometry::geography) / 1000.0)::numeric, 2) AS length_km,
+        ROUND((ST_Length(COALESCE(ref.original_geometry, ref.geometry)::geography) / 1000.0)::numeric, 2) AS length_km,
         COUNT(t.id)::int AS nombre_troncons,
         CASE 
           WHEN COUNT(t.id) > 0 THEN 'PRET_POUR_SUIVI'
@@ -174,14 +174,14 @@ async function getDashboardData(req, res) {
       FROM public.chantier c
       LEFT JOIN public.projet p ON p.id = c.projet_id
       LEFT JOIN LATERAL (
-        SELECT ra.id, ra.nom, ra.geometry, ra.direction_reversed
+        SELECT ra.id, ra.nom, ra.geometry, ra.original_geometry, ra.direction_reversed
         FROM public.reference_alignment ra
         WHERE ra.chantier_id = c.id
         ORDER BY ra.id DESC
         LIMIT 1
       ) ref ON true
       LEFT JOIN public.troncon t ON t.chantier_id = c.id
-      GROUP BY c.id, p.nom, p.type_projet, ref.id, ref.nom, ref.geometry, ref.direction_reversed
+      GROUP BY c.id, p.nom, p.type_projet, ref.id, ref.nom, ref.geometry, ref.original_geometry, ref.direction_reversed
       ORDER BY c.id ASC;
     `;
     const chantiersRes = await db.query(chantiersQuery);
