@@ -655,7 +655,13 @@ async function createObservation(req, res) {
     await db.query(`
       UPDATE public.troncon
       SET authoritative_progress_meters = GREATEST(COALESCE(authoritative_progress_meters, 0), $2),
-          avancement = GREATEST(COALESCE(avancement, 0), $3)
+          avancement = GREATEST(COALESCE(avancement, 0), $3),
+          statut = CASE 
+            WHEN statut = 'PROBLEME' THEN 'PROBLEME'
+            WHEN GREATEST(COALESCE(avancement, 0), $3) >= 100 THEN 'TERMINE'
+            WHEN GREATEST(COALESCE(avancement, 0), $3) > 0 THEN 'EN_COURS'
+            ELSE COALESCE(statut, 'NON_COMMENCE')
+          END
       WHERE id = $1
     `, [id, authoritativeProgressMeters, Math.round(authoritativeProgressPercentage)]);
     const savedPhotos = [];
@@ -771,6 +777,220 @@ async function getObservationHistory(req, res) {
   }
 }
 
+/**
+ * POST /agent/justifications/:id/repondre
+ * Allows an Agent de Terrain to respond to an explanation request with motif and justification.
+ */
+async function respondExplanation(req, res) {
+  try {
+    const { id } = req.params;
+    const { motif, reponse } = req.body;
+    const userId = req.user.id;
+    const isAdmin = req.user.role_nom === 'Administrateur' || req.user.role_id === 1;
+
+    if (!motif || !reponse) {
+      return res.status(400).json({ message: 'Le motif et le détail de l’explication sont requis.' });
+    }
+
+    const demandeRes = await db.query(`
+      SELECT d.*, c.nom AS chantier_nom, t.nom AS troncon_nom
+      FROM public.demande_explication d
+      JOIN public.chantier c ON c.id = d.chantier_id
+      JOIN public.troncon t ON t.id = d.troncon_id
+      WHERE d.id = $1 AND (d.agent_id = $2 OR $3 = true);
+    `, [id, userId, isAdmin]);
+
+    if (demandeRes.rows.length === 0) {
+      return res.status(404).json({ message: 'Demande d’explication introuvable ou non autorisée.' });
+    }
+
+    const demande = demandeRes.rows[0];
+
+    const updateRes = await db.query(`
+      UPDATE public.demande_explication
+      SET 
+        motif_agent = $1,
+        reponse_agent = $2,
+        statut = 'REPONDUE',
+        date_reponse = CURRENT_TIMESTAMP
+      WHERE id = $3
+      RETURNING *;
+    `, [motif, reponse, id]);
+
+    const updatedDemande = updateRes.rows[0];
+
+    // Send in-app notification to Responsable
+    try {
+      const agentNom = req.user.prenom ? `${req.user.prenom} ${req.user.nom}` : 'Agent de terrain';
+      const metadataJson = JSON.stringify({
+        chantier_id: demande.chantier_id,
+        chantier_nom: demande.chantier_nom,
+        troncon_id: demande.troncon_id,
+        troncon_nom: demande.troncon_nom,
+        date_concernee: demande.date_concernee,
+        demande_id: demande.id,
+        agent_nom: agentNom,
+        motif: motif,
+        reponse: reponse,
+      });
+
+      await db.query(`
+        INSERT INTO public.notification (
+          utilisateur_id,
+          titre,
+          message,
+          type,
+          related_entity_type,
+          related_entity_id,
+          metadata,
+          date_envoi,
+          lu
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP, false)
+      `, [
+        demande.responsable_id,
+        "Justification reçue",
+        `L'agent de terrain a fourni une explication pour le ${demande.date_concernee} sur le tronçon ${demande.troncon_nom} (${demande.chantier_nom}).`,
+        'EXPLICATION_FOURNIE',
+        'demande_explication',
+        demande.id,
+        metadataJson,
+      ]);
+    } catch (notifErr) {
+      console.warn('⚠️ Could not insert notification for responsable:', notifErr.message);
+    }
+
+    return res.status(200).json({
+      message: 'Votre explication a été enregistrée avec succès.',
+      demande: updatedDemande,
+    });
+  } catch (error) {
+    console.error('❌ RespondExplanation error:', error.message);
+    return res.status(500).json({ message: "Erreur lors de l'enregistrement de la réponse." });
+  }
+}
+
+/**
+ * GET /agent/justifications/:id
+ * Fetches explanation request details for authorized A.T. or Responsable.
+ */
+async function getExplanationDetails(req, res) {
+  try {
+    const { id } = req.params;
+    const userId = req.user.id;
+    const isAdmin = req.user.role_nom === 'Administrateur' || req.user.role_id === 1;
+
+    const result = await db.query(`
+      SELECT 
+        d.*,
+        c.nom AS chantier_nom,
+        t.nom AS troncon_nom,
+        t.code AS troncon_code,
+        TRIM(CONCAT(resp.prenom, ' ', resp.nom)) AS responsable_nom,
+        TRIM(CONCAT(ag.prenom, ' ', ag.nom)) AS agent_nom
+      FROM public.demande_explication d
+      JOIN public.chantier c ON c.id = d.chantier_id
+      JOIN public.troncon t ON t.id = d.troncon_id
+      LEFT JOIN public.utilisateur resp ON resp.id = d.responsable_id
+      LEFT JOIN public.utilisateur ag ON ag.id = d.agent_id
+      WHERE d.id = $1 AND (d.agent_id = $2 OR d.responsable_id = $2 OR $3 = true)
+    `, [id, userId, isAdmin]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'Demande d’explication introuvable ou non autorisée.' });
+    }
+
+    return res.json({ demande: result.rows[0] });
+  } catch (error) {
+    console.error('❌ GetExplanationDetails error:', error.message);
+    return res.status(500).json({ message: 'Erreur lors de la récupération de la demande.' });
+  }
+}
+
+/**
+ * GET /agent/absences
+ * Fetches declared absences for the authenticated agent or target agent.
+ */
+async function getAgentAbsences(req, res) {
+  try {
+    const userId = req.user.id;
+    const isAdmin = req.user.role_nom === 'Administrateur' || req.user.role_id === 1;
+    const isResponsable = req.user.role_nom === 'Responsable' || req.user.role_id === 2;
+
+    let targetAgentId = userId;
+    if ((isAdmin || isResponsable) && req.query.agent_id) {
+      targetAgentId = parseInt(req.query.agent_id, 10);
+    }
+
+    const query = `
+      SELECT 
+        a.id,
+        a.agent_id,
+        TO_CHAR(a.date_debut, 'YYYY-MM-DD') AS date_debut,
+        TO_CHAR(a.date_fin, 'YYYY-MM-DD') AS date_fin,
+        a.motif,
+        a.statut,
+        a.justificatif_url,
+        a.commentaire_traitement,
+        TO_CHAR(a.date_creation, 'YYYY-MM-DD HH24:MI') AS date_creation,
+        TRIM(CONCAT(u.prenom, ' ', u.nom)) AS agent_nom
+      FROM public.agent_absence a
+      JOIN public.utilisateur u ON u.id = a.agent_id
+      WHERE a.agent_id = $1
+      ORDER BY a.date_debut DESC, a.id DESC;
+    `;
+    const result = await db.query(query, [targetAgentId]);
+    return res.status(200).json({ absences: result.rows });
+  } catch (error) {
+    console.error('❌ GetAgentAbsences error:', error.message);
+    return res.status(500).json({ message: 'Impossible de charger les déclarations d’absence.' });
+  }
+}
+
+/**
+ * POST /agent/absences
+ * Declares a planned absence period for the authenticated agent.
+ */
+async function createAgentAbsence(req, res) {
+  try {
+    const userId = req.user.id;
+    const isAdmin = req.user.role_nom === 'Administrateur' || req.user.role_id === 1;
+    const { date_debut, date_fin, motif, justificatif_url } = req.body;
+
+    if (!date_debut || !date_fin || !motif) {
+      return res.status(400).json({ message: 'Les dates de début, de fin et le motif sont requis.' });
+    }
+
+    if (date_fin < date_debut) {
+      return res.status(400).json({ message: 'La date de fin ne peut pas être antérieure à la date de début.' });
+    }
+
+    const statut = isAdmin ? 'VALIDE' : 'EN_ATTENTE';
+
+    const insertRes = await db.query(`
+      INSERT INTO public.agent_absence (
+        agent_id,
+        date_debut,
+        date_fin,
+        motif,
+        statut,
+        justificatif_url,
+        date_creation
+      )
+      VALUES ($1, $2::date, $3::date, $4, $5, $6, CURRENT_TIMESTAMP)
+      RETURNING *;
+    `, [userId, date_debut, date_fin, motif, statut, justificatif_url || null]);
+
+    return res.status(201).json({
+      message: 'Déclaration d’absence enregistrée avec succès.',
+      absence: insertRes.rows[0],
+    });
+  } catch (error) {
+    console.error('❌ CreateAgentAbsence error:', error.message);
+    return res.status(500).json({ message: 'Erreur lors de la déclaration d’absence.' });
+  }
+}
+
 module.exports = {
   ALLOWED_PHASES,
   ALLOWED_PHASE_STATUSES,
@@ -779,4 +999,9 @@ module.exports = {
   calculateProjection,
   createObservation,
   getObservationHistory,
+  respondExplanation,
+  getExplanationDetails,
+  getAgentAbsences,
+  createAgentAbsence,
 };
+

@@ -22,4 +22,11 @@ router.post('/troncon/:id/calculate-projection',    authenticateToken, requireAg
 router.post('/troncon/:id/observations',            authenticateToken, requireAgentOrAdmin, observationUpload.array('photos', 10), agentController.createObservation);
 router.get('/troncon/:id/observations',             authenticateToken, requireAgentOrAdmin, agentController.getObservationHistory);
 
+// Operational Justifications & Absences
+router.get('/justifications/:id',                  authenticateToken, agentController.getExplanationDetails);
+router.post('/justifications/:id/repondre',         authenticateToken, requireAgentOrAdmin, agentController.respondExplanation);
+router.get('/absences',                             authenticateToken, agentController.getAgentAbsences);
+router.post('/absences',                            authenticateToken, requireAgentOrAdmin, agentController.createAgentAbsence);
+
 module.exports = router;
+

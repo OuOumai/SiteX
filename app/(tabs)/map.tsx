@@ -39,7 +39,12 @@ function chooseDefaultChantier(chantiers: ResponsableChantierItem[]) {
 }
 
 export default function MapScreen() {
-  const params = useLocalSearchParams<{ chantierId?: string; tronconId?: string; projectId?: string }>();
+  const params = useLocalSearchParams<{
+    chantierId?: string;
+    tronconId?: string;
+    projectId?: string;
+    observationId?: string;
+  }>();
   const router = useRouter();
   const { token, user } = useAuth();
   const { width, height } = useWindowDimensions();
@@ -270,12 +275,23 @@ export default function MapScreen() {
         const details = isAgent
           ? await api.getAgentTronconDetails(token, selectedTronconId)
           : await api.getTronconDetails(token, selectedTronconId);
-        if (active) setStationObservations(details.observations || []);
+        if (active) {
+          const obsList = details.observations || [];
+          setStationObservations(obsList);
+          if (params.observationId) {
+            const obsNum = Number(params.observationId);
+            const matchingObs = obsList.find((o) => Number(o.id) === obsNum);
+            if (matchingObs) {
+              setFocusedStationId(matchingObs.id);
+              setSelectedObservation(matchingObs);
+            }
+          }
+        }
       } catch { if (active) setStationObservations([]); }
     }
     loadStations();
     return () => { active = false; };
-  }, [token, selectedTronconId, user?.role_id, user?.role_nom]);
+  }, [token, selectedTronconId, params.observationId, user?.role_id, user?.role_nom]);
 
   const projects = useMemo(() => dashboardData?.projects || [], [dashboardData]);
   const allChantiers = useMemo(() => dashboardData?.chantiers || [], [dashboardData]);

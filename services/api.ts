@@ -259,6 +259,11 @@ export interface ChantierObservationHistoryItem {
   phase?: string | null;
   phase_statut?: string | null;
   commentaire?: string | null;
+  agent_lat?: number | null;
+  agent_lng?: number | null;
+  projected_lat?: number | null;
+  projected_lng?: number | null;
+  distance_from_start?: number | null;
   photos: Array<{ id: number; url: string; description?: string | null }>;
 }
 
@@ -280,7 +285,120 @@ export interface ChantierAvancementResponse {
   };
 }
 
+export interface ChantierJournalTronconObservation {
+  id: number;
+  heure_str: string;
+  progress_percentage: number;
+  authoritative_progress_percentage: number;
+  chainage?: number | null;
+  phase?: string | null;
+  phase_statut?: string | null;
+  commentaire?: string | null;
+  photo_count: number;
+  agent_nom?: string | null;
+}
+
+export interface ChantierJournalTronconDay {
+  troncon_id: number;
+  nom: string;
+  code: string;
+  statut: 'RELEVE' | 'NON_TRAVAILLE' | 'ABSENCE_AGENT' | 'CHANTIER_ARRETE' | 'SANS_RELEVE' | 'A_VENIR' | string;
+  statut_label: string;
+  avancement: number;
+  planned_meters: number;
+  agent_id?: number | null;
+  agent_nom?: string | null;
+  agent_photo_url?: string | null;
+  observations_count: number;
+  derniere_heure?: string | null;
+  max_progression_jour?: number | null;
+  absence_info?: {
+    id: number;
+    motif: string;
+    statut: string;
+    date_debut: string;
+    date_fin: string;
+  } | null;
+  demande_explication?: {
+    id: number;
+    statut: 'EN_ATTENTE' | 'REPONDUE' | 'ACCEPTEE' | 'REJETEE' | 'ANNULEE' | string;
+    message_responsable?: string | null;
+    motif_agent?: string | null;
+    reponse_agent?: string | null;
+    date_demande?: string | null;
+    date_reponse?: string | null;
+    responsable_nom?: string | null;
+    agent_nom?: string | null;
+  } | null;
+  observations?: ChantierJournalTronconObservation[];
+}
+
+export interface ChantierJournalDay {
+  date: string;
+  day_of_month: number;
+  day_of_week: number;
+  day_label: string;
+  is_today: boolean;
+  is_future: boolean;
+  is_prior_to_start: boolean;
+  is_non_travaille: boolean;
+  is_ferie: boolean;
+  ferie_nom?: string | null;
+  statut_jour: 'ACTIVITE' | 'ACTIVITE_PARTIELLE' | 'NON_TRAVAILLE' | 'ABSENCE' | 'CHANTIER_ARRETE' | 'INACTIVITE_A_VERIFIER' | 'A_VENIR' | string;
+  statut_jour_label: string;
+  consolidated_progress: number;
+  observations_count: number;
+  troncons: ChantierJournalTronconDay[];
+}
+
+export interface ChantierJournalResponse {
+  chantier: {
+    id: number;
+    nom: string;
+    statut: string;
+    date_debut?: string | null;
+    date_fin_prevue?: string | null;
+  };
+  month: string;
+  troncons_count: number;
+  summary: {
+    total_jours_calendrier: number;
+    jours_travailles_passes: number;
+    jours_avec_activite: number;
+    jours_sans_releve: number;
+    jours_feries_chomes: number;
+    jours_absence_agent: number;
+    demandes_en_attente: number;
+  };
+  days: ChantierJournalDay[];
+}
+
+export interface DemandeExplicationPayload {
+  troncon_id: number;
+  date_concernee: string;
+  message: string;
+}
+
+export interface ReponseExplicationPayload {
+  motif: string;
+  reponse: string;
+}
+
+export interface AgentAbsenceItem {
+  id: number;
+  agent_id: number;
+  date_debut: string;
+  date_fin: string;
+  motif: string;
+  statut: 'EN_ATTENTE' | 'VALIDE' | 'REFUSE' | string;
+  justificatif_url?: string | null;
+  commentaire_traitement?: string | null;
+  date_creation: string;
+  agent_nom?: string | null;
+}
+
 export interface ChantierDetails {
+
   id: number;
   projet_id: number;
   responsable_id?: number | null;
@@ -1230,6 +1348,87 @@ class ApiClient {
       },
     });
   }
+
+  async getChantierJournal(
+    token: string,
+    id: number | string,
+    month?: string
+  ): Promise<ChantierJournalResponse> {
+    const query = month ? `?month=${encodeURIComponent(month)}` : '';
+    return this.request<ChantierJournalResponse>(`/chantiers/${id}/journal${query}`, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+  }
+
+  async requestJustification(
+    token: string,
+    chantierId: number | string,
+    payload: DemandeExplicationPayload
+  ): Promise<{ message: string; demande: any }> {
+    return this.request<{ message: string; demande: any }>(`/chantiers/${chantierId}/justifications/demander`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async respondJustification(
+    token: string,
+    demandeId: number | string,
+    payload: ReponseExplicationPayload
+  ): Promise<{ message: string; demande: any }> {
+    return this.request<{ message: string; demande: any }>(`/agent/justifications/${demandeId}/repondre`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async getJustificationDetails(
+    token: string,
+    demandeId: number | string
+  ): Promise<{ demande: any }> {
+    return this.request<{ demande: any }>(`/agent/justifications/${demandeId}`, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+  }
+
+  async getAgentAbsences(
+    token: string,
+    agentId?: number | string
+  ): Promise<{ absences: AgentAbsenceItem[] }> {
+    const query = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : '';
+    return this.request<{ absences: AgentAbsenceItem[] }>(`/agent/absences${query}`, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+  }
+
+  async createAgentAbsence(
+    token: string,
+    payload: { date_debut: string; date_fin: string; motif: string; justificatif_url?: string }
+  ): Promise<{ message: string; absence: AgentAbsenceItem }> {
+    return this.request<{ message: string; absence: AgentAbsenceItem }>(`/agent/absences`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(payload),
+    });
+  }
+
 
   async createProject(token: string, payload: CreateProjectPayload): Promise<{ message: string; project: Project }> {
     return this.request<{ message: string; project: Project }>('/projects', {

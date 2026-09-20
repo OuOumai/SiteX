@@ -4,11 +4,13 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
+  Pressable,
   ActivityIndicator,
   RefreshControl,
   Image,
   Modal,
   Dimensions,
+  TextInput,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -33,7 +35,11 @@ import {
   ChantierAvancementTroncon,
   ChantierDailyHistoryPoint,
   ChantierObservationHistoryItem,
+  ChantierJournalResponse,
+  ChantierJournalDay,
+  ChantierJournalTronconDay,
 } from '@/services/api';
+
 
 /** Deterministic palette for N tronçons in the segmented diagram and breakdown */
 const TRONCON_COLORS = [
@@ -101,6 +107,105 @@ function getStatusBadge(statut?: string) {
   }
 }
 
+/** Operational Journal Day Status Helper */
+function getDayStatusMeta(status?: string) {
+  switch (status) {
+    case 'ACTIVITE':
+      return { label: 'Activité complète', color: '#16A34A', bg: '#DCFCE7', icon: 'checkmark-circle' as const };
+    case 'ACTIVITE_PARTIELLE':
+      return { label: 'Activité partielle', color: '#0D9488', bg: '#CCFBF1', icon: 'pie-chart' as const };
+    case 'NON_TRAVAILLE':
+      return { label: 'Non travaillé', color: '#64748B', bg: '#F1F5F9', icon: 'pause-circle' as const };
+    case 'ABSENCE':
+      return { label: 'Absence A.T.', color: '#2563EB', bg: '#DBEAFE', icon: 'person-remove' as const };
+    case 'CHANTIER_ARRETE':
+      return { label: 'Chantier arrêté', color: '#8B5CF6', bg: '#EDE9FE', icon: 'warning' as const };
+    case 'INACTIVITE_A_VERIFIER':
+      return { label: 'Inactivité à vérifier', color: '#DC2626', bg: '#FEE2E2', icon: 'alert-circle' as const };
+    case 'A_VENIR':
+    default:
+      return { label: 'À venir', color: '#94A3B8', bg: '#F8FAFC', icon: 'time-outline' as const };
+  }
+}
+
+/** Operational Journal Tronçon Status Helper */
+function getTronconStatusMeta(status?: string) {
+  switch (status) {
+    case 'RELEVE':
+      return { label: 'Relevé enregistré', color: '#16A34A', bg: '#DCFCE7' };
+    case 'NON_TRAVAILLE':
+      return { label: 'Non travaillé', color: '#64748B', bg: '#F1F5F9' };
+    case 'ABSENCE_AGENT':
+      return { label: 'Absence déclarée', color: '#2563EB', bg: '#DBEAFE' };
+    case 'CHANTIER_ARRETE':
+      return { label: 'Chantier arrêté', color: '#8B5CF6', bg: '#EDE9FE' };
+    case 'SANS_RELEVE':
+      return { label: 'Sans relevé', color: '#DC2626', bg: '#FEE2E2' };
+    case 'A_VENIR':
+    default:
+      return { label: 'À venir', color: '#94A3B8', bg: '#F8FAFC' };
+  }
+}
+
+function formatMonthTitle(monthStr: string) {
+  if (!monthStr || !monthStr.includes('-')) return monthStr;
+  const [y, m] = monthStr.split('-').map(Number);
+  const monthNames = [
+    'Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin',
+    'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre',
+  ];
+  return `${monthNames[m - 1] || ''} ${y}`;
+}
+
+function formatFullDateFrench(dateStr: string) {
+  if (!dateStr) return '';
+  const parts = dateStr.split('-');
+  if (parts.length !== 3) return dateStr;
+  const y = parseInt(parts[0], 10);
+  const m = parseInt(parts[1], 10);
+  const d = parseInt(parts[2], 10);
+  const dObj = new Date(y, m - 1, d);
+  const days = ['Dimanche', 'Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi'];
+  const months = [
+    'Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin',
+    'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre',
+  ];
+  return `${days[dObj.getDay()]} ${d} ${months[m - 1]} ${y}`;
+}
+
+function formatDateBarFrench(dateStr: string) {
+  if (!dateStr) return '';
+  const parts = dateStr.split('-');
+  if (parts.length !== 3) return dateStr;
+  const y = parseInt(parts[0], 10);
+  const m = parseInt(parts[1], 10);
+  const d = parseInt(parts[2], 10);
+  const months = [
+    'janvier', 'février', 'mars', 'avril', 'mai', 'juin',
+    'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre',
+  ];
+  return `${d} ${months[m - 1]} ${y}`;
+}
+
+function isDayMatchingFilter(
+  day: ChantierJournalDay,
+  filter: 'ACTIVITE' | 'SANS_RELEVE' | 'NON_TRAVAILLE' | 'ABSENCE' | null
+): boolean {
+  if (!filter) return true;
+  switch (filter) {
+    case 'ACTIVITE':
+      return day.statut_jour === 'ACTIVITE' || day.statut_jour === 'ACTIVITE_PARTIELLE' || day.observations_count > 0;
+    case 'SANS_RELEVE':
+      return day.statut_jour === 'INACTIVITE_A_VERIFIER' || (!day.is_future && !day.is_non_travaille && day.observations_count === 0 && day.statut_jour !== 'ABSENCE');
+    case 'NON_TRAVAILLE':
+      return day.statut_jour === 'NON_TRAVAILLE' || day.is_non_travaille || day.is_ferie;
+    case 'ABSENCE':
+      return day.statut_jour === 'ABSENCE' || day.troncons.some((t) => t.statut === 'ABSENCE_AGENT');
+    default:
+      return true;
+  }
+}
+
 type TabType = 'resume' | 'historique';
 
 export default function ChantierAvancementScreen() {
@@ -114,6 +219,42 @@ export default function ChantierAvancementScreen() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedPhoto, setSelectedPhoto] = useState<{ url: string; description?: string | null } | null>(null);
+  const [sortMode, setSortMode] = useState<'pk' | 'avancement_desc' | 'avancement_asc'>('pk');
+  const [isSortModalVisible, setIsSortModalVisible] = useState(false);
+  const [statusFilter, setStatusFilter] = useState<string | null>(null);
+
+  // Operational Journal State
+  const [journalData, setJournalData] = useState<ChantierJournalResponse | null>(null);
+  const [isJournalLoading, setIsJournalLoading] = useState(false);
+  const [journalError, setJournalError] = useState<string | null>(null);
+  const now = new Date();
+  const currentMonthStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  const [selectedMonth, setSelectedMonth] = useState<string>(currentMonthStr);
+  const [selectedDate, setSelectedDate] = useState<string>(todayStr);
+  const [isCalendarModalVisible, setIsCalendarModalVisible] = useState(false);
+  const [activeStatFilter, setActiveStatFilter] = useState<'ACTIVITE' | 'SANS_RELEVE' | 'NON_TRAVAILLE' | 'ABSENCE' | null>(null);
+
+  // Modal for Justification request
+  const [justificationModal, setJustificationModal] = useState<{
+    visible: boolean;
+    troncon: ChantierJournalTronconDay | null;
+    date: string;
+  }>({ visible: false, troncon: null, date: todayStr });
+  const [justificationMessage, setJustificationMessage] = useState('');
+  const [isSendingJustification, setIsSendingJustification] = useState(false);
+  const [justificationError, setJustificationError] = useState<string | null>(null);
+  const [justificationSuccess, setJustificationSuccess] = useState(false);
+
+  // Contextual Multi-Tronçon Contact Bottom Sheet (Requirements 4, 8, 9)
+  const [isContextualContactModalVisible, setIsContextualContactModalVisible] = useState(false);
+  const [selectedTronconIdsForContact, setSelectedTronconIdsForContact] = useState<number[]>([]);
+  const [contextualContactMessage, setContextualContactMessage] = useState('');
+  const [isSendingContextualContact, setIsSendingContextualContact] = useState(false);
+  const [contextualContactFeedback, setContextualContactFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+
+  // Pending Explanations Overview Modal (Requirement 3)
+  const [isPendingExplanationsModalVisible, setIsPendingExplanationsModalVisible] = useState(false);
 
   const fetchAvancement = useCallback(async (isRefresh = false) => {
     if (!token || !id) {
@@ -136,11 +277,181 @@ export default function ChantierAvancementScreen() {
     }
   }, [token, id, isAuthLoading]);
 
+  const fetchJournal = useCallback(async (monthToFetch?: string) => {
+    if (!token || !id) return;
+    const m = monthToFetch || selectedMonth;
+    setIsJournalLoading(true);
+    setJournalError(null);
+    try {
+      const res = await api.getChantierJournal(token, id, m);
+      setJournalData(res);
+      setJournalError(null);
+      if (res.days.length > 0) {
+        const hasSelected = res.days.some((d) => d.date === selectedDate);
+        if (!hasSelected) {
+          const todayInMonth = res.days.find((d) => d.is_today);
+          setSelectedDate(todayInMonth ? todayInMonth.date : res.days[res.days.length - 1].date);
+        }
+      }
+    } catch (err: any) {
+      console.warn('[AvancementScreen] FetchJournal Error:', err.message);
+      setJournalError(err.message || 'Impossible de contacter le serveur.');
+    } finally {
+      setIsJournalLoading(false);
+    }
+  }, [token, id, selectedMonth, selectedDate]);
+
   useEffect(() => {
     if (!isAuthLoading) {
       fetchAvancement();
     }
   }, [fetchAvancement, isAuthLoading]);
+
+  useEffect(() => {
+    if (activeTab === 'historique' && token && id) {
+      fetchJournal(selectedMonth);
+    }
+  }, [activeTab, selectedMonth, fetchJournal, token, id]);
+
+  const handlePrevMonth = () => {
+    const [y, m] = selectedMonth.split('-').map(Number);
+    const prevDate = new Date(y, m - 2, 1);
+    const prevMonthStr = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, '0')}`;
+    setSelectedMonth(prevMonthStr);
+    fetchJournal(prevMonthStr);
+  };
+
+  const handleNextMonth = () => {
+    const [y, m] = selectedMonth.split('-').map(Number);
+    const nextDate = new Date(y, m, 1);
+    const nextMonthStr = `${nextDate.getFullYear()}-${String(nextDate.getMonth() + 1).padStart(2, '0')}`;
+    setSelectedMonth(nextMonthStr);
+    fetchJournal(nextMonthStr);
+  };
+
+  const handleCurrentMonth = () => {
+    setSelectedMonth(currentMonthStr);
+    setSelectedDate(todayStr);
+    fetchJournal(currentMonthStr);
+  };
+
+  const openJustificationModal = (troncon: ChantierJournalTronconDay, date: string) => {
+    setJustificationModal({
+      visible: true,
+      troncon,
+      date,
+    });
+    setJustificationMessage(
+      `Aucun relevé terrain n'a été enregistré le ${date} pour le tronçon ${troncon.nom}. Merci de préciser le motif d'inactivité.`
+    );
+    setJustificationError(null);
+    setJustificationSuccess(false);
+  };
+
+  const handleSubmitJustification = async () => {
+    if (!token || !id || !justificationModal.troncon || !justificationMessage.trim()) return;
+    setIsSendingJustification(true);
+    setJustificationError(null);
+    try {
+      await api.requestJustification(token, id, {
+        troncon_id: justificationModal.troncon.troncon_id,
+        date_concernee: justificationModal.date,
+        message: justificationMessage.trim(),
+      });
+      setJustificationSuccess(true);
+      setTimeout(async () => {
+        setJustificationModal({ visible: false, troncon: null, date: todayStr });
+        setJustificationSuccess(false);
+        await fetchJournal(selectedMonth);
+      }, 1200);
+    } catch (err: any) {
+      console.error('Submit justification error:', err.message);
+      setJustificationError(err.message || "Impossible d'envoyer la demande d'explication.");
+    } finally {
+      setIsSendingJustification(false);
+    }
+  };
+
+  const activeDay = journalData?.days?.find((d) => d.date === selectedDate) || null;
+
+  const openContextualContactModal = useCallback(() => {
+    setContextualContactFeedback(null);
+    setContextualContactMessage(
+      "Aucun relevé terrain n'a été enregistré pour cette journée. Merci de nous indiquer la situation."
+    );
+
+    if (activeDay) {
+      const missingWithAgent = activeDay.troncons.filter(
+        (t) => t.statut === 'SANS_RELEVE' && !activeDay.is_future && !activeDay.is_non_travaille && Boolean(t.agent_id)
+      );
+      // Pre-select only those without pending request
+      const eligible = missingWithAgent.filter(
+        (t) => !t.demande_explication || t.demande_explication.statut === 'REFUSEE'
+      );
+      setSelectedTronconIdsForContact(eligible.map((t) => t.troncon_id));
+    } else {
+      setSelectedTronconIdsForContact([]);
+    }
+    setIsContextualContactModalVisible(true);
+  }, [activeDay]);
+
+  const handleToggleTronconContactSelection = useCallback((tronconId: number) => {
+    setSelectedTronconIdsForContact((prev) =>
+      prev.includes(tronconId) ? prev.filter((i) => i !== tronconId) : [...prev, tronconId]
+    );
+  }, []);
+
+  const handleSubmitContextualContact = useCallback(async () => {
+    if (!token || !id || !activeDay || selectedTronconIdsForContact.length === 0) return;
+    setIsSendingContextualContact(true);
+    setContextualContactFeedback(null);
+
+    try {
+      let sentCount = 0;
+      for (const tId of selectedTronconIdsForContact) {
+        try {
+          await api.requestJustification(token, id, {
+            troncon_id: tId,
+            date_concernee: activeDay.date,
+            message:
+              contextualContactMessage.trim() ||
+              "Aucun relevé terrain n'a été enregistré pour cette journée. Merci de nous indiquer la situation.",
+          });
+          sentCount++;
+        } catch (itemErr: any) {
+          console.warn(`Could not send request for troncon ${tId}:`, itemErr.message);
+        }
+      }
+
+      setContextualContactFeedback({
+        type: 'success',
+        message: `${sentCount} demande${sentCount > 1 ? 's' : ''} d'explication transmise${
+          sentCount > 1 ? 's' : ''
+        } avec succès.`,
+      });
+
+      setTimeout(async () => {
+        setIsContextualContactModalVisible(false);
+        setContextualContactFeedback(null);
+        await fetchJournal(selectedMonth);
+      }, 1200);
+    } catch (err: any) {
+      console.error('Submit contextual contact error:', err.message);
+      setContextualContactFeedback({
+        type: 'error',
+        message: err.message || "Erreur lors de l'envoi des demandes d'explication.",
+      });
+    } finally {
+      setIsSendingContextualContact(false);
+    }
+  }, [token, id, activeDay, selectedTronconIdsForContact, contextualContactMessage, selectedMonth, fetchJournal]);
+
+  const onRefresh = async () => {
+    await fetchAvancement(true);
+    if (activeTab === 'historique') {
+      await fetchJournal(selectedMonth);
+    }
+  };
 
   if (isLoading) {
     return (
@@ -195,14 +506,115 @@ export default function ChantierAvancementScreen() {
   const avancementPct = chantier.avancement ?? 0;
   const N = troncons.length;
 
-  // Segmented diagram parameters
-  const donutSize = 280;
+  // Status distribution counts (using existing SiteX status vocabulary)
+  const countTermines = troncons.filter((t) => t.statut === 'TERMINE' || t.avancement >= 100).length;
+  const countEnCours = troncons.filter(
+    (t) => (t.statut === 'EN_COURS' || (t.avancement > 0 && t.avancement < 100)) && t.statut !== 'PROBLEME'
+  ).length;
+  const countNonCommence = troncons.filter(
+    (t) => (t.statut === 'NON_COMMENCE' || !t.statut) && t.avancement === 0
+  ).length;
+  const countProbleme = troncons.filter((t) => t.statut === 'PROBLEME').length;
+  const tronconsSuivisCount = troncons.filter((t) => t.observations_count > 0).length;
+
+  // Indexed tronçons with deterministic palette colors
+  const indexedTroncons = troncons.map((t, idx) => ({
+    ...t,
+    originalIndex: idx,
+    color: TRONCON_COLORS[idx % TRONCON_COLORS.length],
+  }));
+
+  // Filtered and sorted tronçons for "Comparaison des tronçons" (presentation-only)
+  let displayedTroncons = [...indexedTroncons];
+
+  if (statusFilter) {
+    if (statusFilter === 'TERMINE') {
+      displayedTroncons = displayedTroncons.filter((t) => t.statut === 'TERMINE' || t.avancement >= 100);
+    } else if (statusFilter === 'EN_COURS') {
+      displayedTroncons = displayedTroncons.filter(
+        (t) => (t.statut === 'EN_COURS' || (t.avancement > 0 && t.avancement < 100)) && t.statut !== 'PROBLEME'
+      );
+    } else if (statusFilter === 'NON_COMMENCE') {
+      displayedTroncons = displayedTroncons.filter(
+        (t) => (t.statut === 'NON_COMMENCE' || !t.statut) && t.avancement === 0
+      );
+    } else if (statusFilter === 'PROBLEME') {
+      displayedTroncons = displayedTroncons.filter((t) => t.statut === 'PROBLEME');
+    }
+  }
+
+  if (sortMode === 'avancement_desc') {
+    displayedTroncons.sort((a, b) => b.avancement - a.avancement);
+  } else if (sortMode === 'avancement_asc') {
+    displayedTroncons.sort((a, b) => a.avancement - b.avancement);
+  }
+
+  // Factual items for "À surveiller" (objective reasons only)
+  const watchList = indexedTroncons
+    .map((t) => {
+      const issues: string[] = [];
+      if (t.statut === 'PROBLEME') {
+        issues.push('Signalé avec problème / alerte');
+      }
+      if (
+        t.observations_count === 0 &&
+        (stats.nombre_total_observations > 0 || chantier.statut === 'EN_COURS' || chantier.statut === 'En cours')
+      ) {
+        issues.push('Aucun relevé enregistré');
+      }
+      if (!t.agent_id && !t.agent_nom_complet) {
+        issues.push('Aucun agent de terrain affecté');
+      }
+      return {
+        troncon: t,
+        issues,
+      };
+    })
+    .filter((item) => item.issues.length > 0);
+
+  // Compact segmented diagram parameters
+  const donutSize = 170;
   const cx = donutSize / 2;
   const cy = donutSize / 2;
-  const outerR = 100;
-  const innerR = 66;
+  const outerR = 68;
+  const innerR = 46;
   const sectorAngle = N > 0 ? 360 / N : 360;
-  const sectorGap = N > 1 ? Math.min(3, sectorAngle * 0.1) : 0;
+  const sectorGap = N > 1 ? Math.min(2.5, sectorAngle * 0.08) : 0;
+
+  const getSortLabel = (mode: 'pk' | 'avancement_desc' | 'avancement_asc') => {
+    switch (mode) {
+      case 'avancement_desc':
+        return 'Avancement ↓';
+      case 'avancement_asc':
+        return 'Avancement ↑';
+      case 'pk':
+      default:
+        return 'Ordre PK';
+    }
+  };
+
+  // Operational Journal Calendar & Day selection
+  const calendarWeeks: (ChantierJournalDay | null)[][] = [];
+  if (journalData && Array.isArray(journalData.days) && journalData.days.length > 0) {
+    let currentWeek: (ChantierJournalDay | null)[] = [];
+    const firstDay = journalData.days[0];
+    for (let i = 1; i < firstDay.day_of_week; i++) {
+      currentWeek.push(null);
+    }
+    for (const day of journalData.days) {
+      currentWeek.push(day);
+      if (currentWeek.length === 7) {
+        calendarWeeks.push(currentWeek);
+        currentWeek = [];
+      }
+    }
+    if (currentWeek.length > 0) {
+      while (currentWeek.length < 7) {
+        currentWeek.push(null);
+      }
+      calendarWeeks.push(currentWeek);
+    }
+  }
 
   // S-Curve chart parameters (Historique)
   const timeline = historique.timeline || [];
@@ -216,11 +628,25 @@ export default function ChantierAvancementScreen() {
   const plotHeight = svgChartHeight - paddingTop - paddingBottom;
   const yLevels = [100, 80, 60, 40, 20, 0];
 
-  const chartCoords = timeline.map((p, index) => {
+  const activePoints = (journalData?.days && journalData.days.length > 0)
+    ? journalData.days
+        .filter((d) => !d.is_future)
+        .map((d) => ({
+          date: d.date,
+          dayOfMonth: String(d.day_of_month).padStart(2, '0'),
+          monthLabel: (d.day_of_month === 1 || d.day_of_month === 15 || d.day_of_month === 30 || d.is_today)
+            ? `${d.day_of_month}`
+            : '',
+          avancement: d.consolidated_progress,
+          is_synthetic_baseline: false,
+        }))
+    : timeline;
+
+  const chartCoords = activePoints.map((p, index) => {
     const x =
-      timeline.length === 1
+      activePoints.length <= 1
         ? paddingLeft + plotWidth / 2
-        : paddingLeft + (index / (timeline.length - 1)) * plotWidth;
+        : paddingLeft + (index / (activePoints.length - 1)) * plotWidth;
     const y = paddingTop + (1 - Math.min(100, Math.max(0, p.avancement)) / 100) * plotHeight;
     return { ...p, x, y };
   });
@@ -236,6 +662,7 @@ export default function ChantierAvancementScreen() {
     chartCoords.length > 0
       ? `${linePathD} L ${chartCoords[chartCoords.length - 1].x},${paddingTop + plotHeight} L ${chartCoords[0].x},${paddingTop + plotHeight} Z`
       : '';
+
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom', 'left', 'right']}>
@@ -290,7 +717,7 @@ export default function ChantierAvancementScreen() {
         refreshControl={
           <RefreshControl
             refreshing={isRefreshing}
-            onRefresh={() => fetchAvancement(true)}
+            onRefresh={onRefresh}
             tintColor={Palette.primary}
             colors={[Palette.primary]}
           />
@@ -299,37 +726,38 @@ export default function ChantierAvancementScreen() {
         {/* ══════════════ TAB 1: RÉSUMÉ ══════════════ */}
         {activeTab === 'resume' && (
           <View style={styles.tabSection}>
-            {/* 1. Header Card: Chantier Title, Status & Consolidated Avancement */}
-            <Card variant="elevated" style={styles.summaryCard}>
-              <View style={styles.summaryTitleRow}>
-                <Text variant="subtitle" style={styles.summarySub} numberOfLines={1}>
+            {/* ── 1. Carte Principale "État du chantier" ── */}
+            <Card variant="elevated" style={styles.mainChantierCard}>
+              <View style={styles.mainCardTopRow}>
+                <Text variant="subtitle" style={styles.mainChantierName} numberOfLines={1}>
                   {chantier.nom}
                 </Text>
-                <View style={styles.statutPill}>
-                  <Text style={styles.statutPillText} weight="semibold">
+                <View style={styles.chantierStatutBadge}>
+                  <Text style={styles.chantierStatutText} weight="semibold">
                     {chantier.statut || 'En cours'}
                   </Text>
                 </View>
               </View>
 
-              <View style={styles.percentageRow}>
-                <Text style={styles.bigPercentage} weight="bold">
+              <View style={styles.mainProgressBlock}>
+                <Text style={styles.mainProgressNumber} weight="bold">
                   {avancementPct}%
                 </Text>
-                <View style={styles.percentageLabelCol}>
-                  <Text style={styles.percentageLabelMain} weight="semibold">
-                    avancement consolidé
+                <View style={styles.mainProgressMeta}>
+                  <Text style={styles.mainProgressLabel} weight="bold">
+                    Avancement consolidé
                   </Text>
-                  <Text variant="muted" style={styles.percentageLabelSub}>
-                    Moyenne arithmétique des {N} tronçon{N > 1 ? 's' : ''}
+                  <Text variant="muted" style={styles.mainProgressExpl}>
+                    Moyenne des {N} tronçon{N > 1 ? 's' : ''}
                   </Text>
                 </View>
               </View>
 
-              <View style={styles.progressBarBg}>
+              {/* Barre de progression globale */}
+              <View style={styles.mainProgressBarTrack}>
                 <View
                   style={[
-                    styles.progressBarFill,
+                    styles.mainProgressBarFill,
                     {
                       width: `${Math.min(100, Math.max(0, avancementPct))}%`,
                       backgroundColor:
@@ -343,249 +771,898 @@ export default function ChantierAvancementScreen() {
                 />
               </View>
 
-              <View style={styles.totalMetrageRow}>
-                <Text style={styles.totalMetrageLabel}>Linéaire global réalisé :</Text>
-                <Text style={styles.totalMetrageValue} weight="bold">
-                  {stats.total_completed_meters.toLocaleString('fr-FR')} m / {stats.total_planned_meters.toLocaleString('fr-FR')} m
-                </Text>
+              {/* Deux statistiques compactes côte à côte */}
+              <View style={styles.mainCardStatsRow}>
+                <View style={styles.mainCardStatCol}>
+                  <Text style={styles.mainCardStatValue} weight="bold">
+                    {countTermines} / {N}
+                  </Text>
+                  <Text style={styles.mainCardStatLabel}>
+                    tronçons terminés
+                  </Text>
+                </View>
+                <View style={styles.mainCardStatDivider} />
+                <View style={styles.mainCardStatCol}>
+                  <Text style={styles.mainCardStatValue} weight="bold">
+                    {stats.total_completed_meters.toLocaleString('fr-FR')} m / {stats.total_planned_meters.toLocaleString('fr-FR')} m
+                  </Text>
+                  <Text style={styles.mainCardStatLabel}>
+                    réalisés
+                  </Text>
+                </View>
               </View>
             </Card>
 
-            {/* 2. Equal-Angle Segmented Circular Diagram Card */}
-            <Card variant="elevated" style={styles.diagramCard}>
-              <View style={styles.diagramHeader}>
-                <Text variant="h3" style={styles.diagramTitle}>
-                  Avancement par secteur ({N} tronçon{N > 1 ? 's' : ''})
-                </Text>
-                <Text style={styles.diagramSubtitle}>
-                  Chaque secteur représente 1 tronçon (poids égal {N > 0 ? Math.round(100 / N) : 0}%)
-                </Text>
+            {/* ── 2. Avancement des tronçons (Lignes compactes + Tri mobile épuré) ── */}
+            <View style={styles.tronconsSection}>
+              <View style={styles.tronconsSectionHeader}>
+                <View style={styles.tronconsTitleCol}>
+                  <Text style={styles.tronconsSectionTitle} weight="bold">
+                    Avancement des tronçons
+                  </Text>
+                  <Text style={styles.tronconsCountSubtitle}>
+                    {N} tronçon{N > 1 ? 's' : ''}
+                  </Text>
+                </View>
+
+                {/* Contrôle de tri compact "Ordre PK ▾" */}
+                <TouchableOpacity
+                  style={styles.compactSortBtn}
+                  activeOpacity={0.7}
+                  onPress={() => setIsSortModalVisible(true)}
+                >
+                  <Text style={styles.compactSortBtnText} weight="semibold">
+                    {getSortLabel(sortMode)}
+                  </Text>
+                  <Ionicons name="chevron-down" size={13} color={Palette.primary} />
+                </TouchableOpacity>
               </View>
 
-              <View style={styles.donutContainer}>
-                <Svg width={donutSize} height={donutSize} viewBox={`0 0 ${donutSize} ${donutSize}`}>
-                  {troncons.map((t, idx) => {
-                    const startAngle = idx * sectorAngle + sectorGap / 2;
-                    const spanAngle = sectorAngle - sectorGap;
-                    const endAngle = startAngle + spanAngle;
-                    const progressSpan = spanAngle * (Math.min(100, Math.max(0, t.avancement)) / 100);
-                    const fillEndAngle = startAngle + progressSpan;
-                    const color = TRONCON_COLORS[idx % TRONCON_COLORS.length];
+              <Card variant="elevated" style={styles.compactTronconsCard}>
+                {displayedTroncons.length === 0 ? (
+                  <View style={styles.emptyTronconsBox}>
+                    <Text style={styles.emptyDiagramText}>Aucun tronçon configuré</Text>
+                  </View>
+                ) : (
+                  displayedTroncons.map((t, idx) => {
+                    const stBadge = getStatusBadge(t.statut);
+                    const isLast = idx === displayedTroncons.length - 1;
 
                     return (
-                      <React.Fragment key={`sector-${t.id}`}>
-                        {/* Sector Background Track */}
-                        <Path
-                          d={describeDonutArc(cx, cy, innerR, outerR, startAngle, endAngle)}
-                          fill="#F1F5F9"
-                          stroke="#E2E8F0"
-                          strokeWidth={0.5}
-                        />
+                      <TouchableOpacity
+                        key={t.id}
+                        activeOpacity={0.7}
+                        style={[styles.compactRow, !isLast && styles.compactRowDivider]}
+                        onPress={() => router.push(`/responsable/troncon/${t.id}`)}
+                      >
+                        <View style={styles.compactRowHeader}>
+                          {/* Identité : [T1] + Nom + Agent & Métrage secondaire */}
+                          <View style={styles.compactIdentityCol}>
+                            <View style={[styles.compactCodeBadge, { backgroundColor: t.color }]}>
+                              <Text style={styles.compactCodeText} weight="bold">
+                                {t.code}
+                              </Text>
+                            </View>
+                            <View style={styles.compactTextGroup}>
+                              <Text style={styles.compactTronconName} weight="semibold" numberOfLines={1}>
+                                {t.nom}
+                              </Text>
+                              <View style={styles.compactSubMetaRow}>
+                                <Text style={styles.compactAgentText} numberOfLines={1}>
+                                  {t.agent_nom_complet || 'Non affecté'}
+                                </Text>
+                                <Text style={styles.compactMetaDot}>·</Text>
+                                <Text style={styles.compactMetersText}>
+                                  {t.completed_meters.toLocaleString('fr-FR')} / {t.planned_meters.toLocaleString('fr-FR')} m
+                                </Text>
+                              </View>
+                            </View>
+                          </View>
 
-                        {/* Sector Progress Fill */}
-                        {t.avancement > 0 && (
-                          <Path
-                            d={describeDonutArc(cx, cy, innerR, outerR, startAngle, fillEndAngle)}
-                            fill={color}
+                          {/* Droite : Pourcentage + Statut discret + Chevron */}
+                          <View style={styles.compactRightCol}>
+                            <View style={styles.compactPctAndStatus}>
+                              <Text style={[styles.compactPctText, { color: t.color }]} weight="bold">
+                                {t.avancement}%
+                              </Text>
+                              <View style={[styles.compactStatusPill, { backgroundColor: stBadge.bg }]}>
+                                <Text style={[styles.compactStatusText, { color: stBadge.text }]} weight="semibold">
+                                  {stBadge.label}
+                                </Text>
+                              </View>
+                            </View>
+                            <Ionicons name="chevron-forward" size={15} color={Palette.textLight} />
+                          </View>
+                        </View>
+
+                        {/* Barre de progression fine du tronçon */}
+                        <View style={styles.compactProgressBarTrack}>
+                          <View
+                            style={[
+                              styles.compactProgressBarFill,
+                              {
+                                width: `${Math.min(100, Math.max(0, t.avancement))}%`,
+                                backgroundColor: t.color,
+                              },
+                            ]}
                           />
-                        )}
-                      </React.Fragment>
+                        </View>
+                      </TouchableOpacity>
                     );
-                  })}
+                  })
+                )}
+              </Card>
+            </View>
 
-                  {/* Center of Donut: Consolidated Headline & Physical Summary */}
-                  <SvgText
-                    x={cx}
-                    y={cy - 12}
-                    textAnchor="middle"
-                    fontSize="32"
-                    fontWeight="bold"
-                    fill={Palette.text}
-                  >
-                    {avancementPct}%
-                  </SvgText>
-                  <SvgText
-                    x={cx}
-                    y={cy + 10}
-                    textAnchor="middle"
-                    fontSize="11"
-                    fontWeight="600"
-                    fill={Palette.textMuted}
-                  >
-                    avancement consolidé
-                  </SvgText>
-                  <SvgText
-                    x={cx}
-                    y={cy + 28}
-                    textAnchor="middle"
-                    fontSize="10"
-                    fill={Palette.primary}
-                    fontWeight="500"
-                  >
-                    {stats.total_completed_meters.toLocaleString('fr-FR')} m / {stats.total_planned_meters.toLocaleString('fr-FR')} m
-                  </SvgText>
-                </Svg>
+            {/* ── 3. Répartition de l'avancement (Donut compact à secteurs égaux) ── */}
+            <Card variant="elevated" style={styles.compactDonutCard}>
+              <View style={styles.compactDonutHeader}>
+                <Text style={styles.compactDonutTitle} weight="semibold">
+                  Répartition de l'avancement
+                </Text>
+                <Text style={styles.compactDonutSubtitle}>
+                  Chaque secteur représente un tronçon
+                </Text>
+              </View>
+
+              {N === 0 ? (
+                <View style={styles.emptyDiagramBox}>
+                  <Ionicons name="pie-chart-outline" size={32} color={Palette.textLight} />
+                  <Text style={styles.emptyDiagramText}>Aucun tronçon configuré</Text>
+                </View>
+              ) : (
+                <View style={styles.compactDonutWrapper}>
+                  <Svg width={donutSize} height={donutSize} viewBox={`0 0 ${donutSize} ${donutSize}`}>
+                    {indexedTroncons.map((t, idx) => {
+                      const startAngle = idx * sectorAngle + sectorGap / 2;
+                      const spanAngle = sectorAngle - sectorGap;
+                      const endAngle = startAngle + spanAngle;
+                      const progressSpan = spanAngle * (Math.min(100, Math.max(0, t.avancement)) / 100);
+                      const fillEndAngle = startAngle + progressSpan;
+
+                      return (
+                        <React.Fragment key={`donut-${t.id}`}>
+                          {/* Sector Background Track */}
+                          <Path
+                            d={describeDonutArc(cx, cy, innerR, outerR, startAngle, endAngle)}
+                            fill="#F1F5F9"
+                            stroke="#E2E8F0"
+                            strokeWidth={0.5}
+                          />
+                          {/* Sector Progress Fill */}
+                          {t.avancement > 0 && (
+                            <Path
+                              d={describeDonutArc(cx, cy, innerR, outerR, startAngle, fillEndAngle)}
+                              fill={t.color}
+                            />
+                          )}
+                        </React.Fragment>
+                      );
+                    })}
+
+                    {/* Centre du Donut : Pourcentage officiel consolidé */}
+                    <SvgText
+                      x={cx}
+                      y={cy - 2}
+                      textAnchor="middle"
+                      fontSize="22"
+                      fontWeight="bold"
+                      fill={Palette.text}
+                    >
+                      {avancementPct}%
+                    </SvgText>
+                    <SvgText
+                      x={cx}
+                      y={cy + 13}
+                      textAnchor="middle"
+                      fontSize="10"
+                      fontWeight="600"
+                      fill={Palette.textMuted}
+                    >
+                      Consolidé
+                    </SvgText>
+                  </Svg>
+
+                  {/* Légende compacte en ligne : T1 100% · T2 0% · T3 0% · T4 0% */}
+                  <View style={styles.donutLegendInline}>
+                    {indexedTroncons.map((t, idx) => (
+                      <View key={`legend-${t.id}`} style={styles.donutLegendInlineItem}>
+                        <View style={[styles.donutLegendDot, { backgroundColor: t.color }]} />
+                        <Text style={styles.donutLegendText}>
+                          {t.code} <Text weight="bold">{t.avancement}%</Text>
+                        </Text>
+                        {idx < indexedTroncons.length - 1 && (
+                          <Text style={styles.donutLegendSep}>·</Text>
+                        )}
+                      </View>
+                    ))}
+                  </View>
+                </View>
+              )}
+            </Card>
+
+            {/* ── 4. État des tronçons (Synthèse horizontale compacte) ── */}
+            <Card variant="elevated" style={styles.statusSummaryCompactCard}>
+              <Text style={styles.statusSummaryCompactTitle} weight="semibold">
+                État des tronçons
+              </Text>
+              <View style={styles.statusSummaryStrip}>
+                <View style={styles.statusSummaryChip}>
+                  <View style={[styles.statusDot, { backgroundColor: '#16A34A' }]} />
+                  <Text style={styles.statusSummaryText}>
+                    <Text weight="bold" style={{ color: '#15803D' }}>{countTermines}</Text> Terminé{countTermines > 1 ? 's' : ''}
+                  </Text>
+                </View>
+
+                <Text style={styles.statusStripDot}>·</Text>
+
+                <View style={styles.statusSummaryChip}>
+                  <View style={[styles.statusDot, { backgroundColor: '#2563EB' }]} />
+                  <Text style={styles.statusSummaryText}>
+                    <Text weight="bold" style={{ color: '#1D4ED8' }}>{countEnCours}</Text> En cours
+                  </Text>
+                </View>
+
+                <Text style={styles.statusStripDot}>·</Text>
+
+                <View style={styles.statusSummaryChip}>
+                  <View style={[styles.statusDot, { backgroundColor: '#94A3B8' }]} />
+                  <Text style={styles.statusSummaryText}>
+                    <Text weight="bold" style={{ color: '#64748B' }}>{countNonCommence}</Text> Non commencé{countNonCommence > 1 ? 's' : ''}
+                  </Text>
+                </View>
+
+                {countProbleme > 0 && (
+                  <>
+                    <Text style={styles.statusStripDot}>·</Text>
+                    <View style={styles.statusSummaryChip}>
+                      <View style={[styles.statusDot, { backgroundColor: '#DC2626' }]} />
+                      <Text style={styles.statusSummaryText}>
+                        <Text weight="bold" style={{ color: '#B91C1C' }}>{countProbleme}</Text> Problème{countProbleme > 1 ? 's' : ''}
+                      </Text>
+                    </View>
+                  </>
+                )}
               </View>
             </Card>
 
-            {/* 3. Tronçon Breakdown Rows (Legend, Progress Bar, Bounded Métrage) */}
-            <View style={styles.tronconsSection}>
-              <Text variant="h3" style={styles.sectionTitle}>
-                Détail des tronçons
-              </Text>
-
-              <View style={styles.tronconsList}>
-                {troncons.map((t, idx) => {
-                  const color = TRONCON_COLORS[idx % TRONCON_COLORS.length];
-                  const stBadge = getStatusBadge(t.statut);
-
-                  return (
-                    <Card key={t.id} variant="elevated" style={styles.tronconRowCard}>
-                      <View style={styles.tronconRowHeader}>
-                        <View style={styles.tronconBadgeGroup}>
-                          <View style={[styles.tronconColorBadge, { backgroundColor: color }]}>
-                            <Text style={styles.tronconBadgeCode} weight="bold">
-                              {t.code}
-                            </Text>
-                          </View>
-                          <Text style={styles.tronconName} weight="semibold" numberOfLines={1}>
-                            {t.nom}
-                          </Text>
-                        </View>
-
-                        <View style={styles.tronconHeaderRight}>
-                          <View style={[styles.statusPill, { backgroundColor: stBadge.bg }]}>
-                            <Text style={[styles.statusPillText, { color: stBadge.text }]} weight="semibold">
-                              {stBadge.label}
-                            </Text>
-                          </View>
-                          <View style={[styles.pctBadge, { backgroundColor: `${color}1A` }]}>
-                            <Text style={[styles.pctBadgeText, { color }]} weight="bold">
-                              {t.avancement}%
-                            </Text>
-                          </View>
-                        </View>
-                      </View>
-
-                      {/* Individual Progress Bar */}
-                      <View style={styles.tronconProgressTrack}>
-                        <View
-                          style={[
-                            styles.tronconProgressFill,
-                            {
-                              width: `${Math.min(100, Math.max(0, t.avancement))}%`,
-                              backgroundColor: color,
-                            },
-                          ]}
-                        />
-                      </View>
-
-                      {/* Explicit Physical Métrage Provided by Backend */}
-                      <View style={styles.tronconMetrageRow}>
-                        <View style={styles.metrageMain}>
-                          <Ionicons name="speedometer-outline" size={14} color={Palette.textMuted} />
-                          <Text style={styles.metrageText}>
-                            <Text weight="bold" style={{ color: Palette.text }}>
-                              {t.completed_meters.toLocaleString('fr-FR')} m
-                            </Text>
-                            {' '}/ {t.planned_meters.toLocaleString('fr-FR')} m
-                          </Text>
-                        </View>
-                        <Text style={styles.metrageRemaining}>
-                          ({t.remaining_meters.toLocaleString('fr-FR')} m restants)
-                        </Text>
-                      </View>
-
-                      {/* Agent de Terrain & Observations Count */}
-                      <View style={styles.tronconFooterRow}>
-                        <View style={styles.agentMeta}>
-                          <Ionicons name="person-outline" size={13} color={Palette.textLight} />
-                          <Text style={styles.agentMetaText}>
-                            {t.agent_nom_complet || 'Non affecté'}
-                          </Text>
-                        </View>
-                        <Text style={styles.obsCountText}>
-                          {t.observations_count} relevé{t.observations_count > 1 ? 's' : ''}
-                        </Text>
-                      </View>
-                    </Card>
-                  );
-                })}
-              </View>
-            </View>
-
-            {/* 4. Operational Statistics Grid */}
-            <View style={styles.statsGrid}>
-              <View style={styles.statBox}>
-                <View style={styles.statIconWrapper}>
-                  <Ionicons name="calendar-outline" size={16} color={Palette.primary} />
-                </View>
-                <Text style={styles.statValue} weight="bold">
-                  {stats.jours_avec_releves}
+            {/* ── 5. Activité terrain (Une seule carte compacte) ── */}
+            <Card variant="elevated" style={styles.activityCompactCard}>
+              <View style={styles.activityCompactHeader}>
+                <Ionicons name="analytics-outline" size={15} color={Palette.primary} />
+                <Text style={styles.activityCompactTitle} weight="semibold">
+                  Activité terrain
                 </Text>
-                <Text style={styles.statLabel}>Jours avec relevés</Text>
               </View>
 
-              <View style={styles.statBox}>
-                <View style={[styles.statIconWrapper, { backgroundColor: '#FEF3C7' }]}>
-                  <Ionicons name="time-outline" size={16} color="#D97706" />
+              <View style={styles.activityCompactRow}>
+                {/* Jours avec relevés */}
+                <View style={styles.activityCol}>
+                  <Text style={styles.activityColValue} weight="bold">
+                    {stats.jours_avec_releves}
+                  </Text>
+                  <Text style={styles.activityColLabel}>
+                    jour{stats.jours_avec_releves > 1 ? 's' : ''} avec relevé{stats.jours_avec_releves > 1 ? 's' : ''}
+                  </Text>
                 </View>
-                <Text style={[styles.statValue, { color: '#D97706', fontSize: 13 }]} weight="bold" numberOfLines={1}>
-                  {stats.dernier_releve_label || 'Aucun'}
-                </Text>
-                <Text style={styles.statLabel}>Dernier relevé</Text>
-              </View>
 
-              <View style={styles.statBox}>
-                <View style={[styles.statIconWrapper, { backgroundColor: '#EFF6FF' }]}>
-                  <Ionicons name="trending-up-outline" size={16} color="#2563EB" />
+                <View style={styles.activityDivider} />
+
+                {/* Dernier relevé */}
+                <View style={styles.activityCol}>
+                  <Text style={styles.activityColValue} weight="bold" numberOfLines={1}>
+                    {stats.dernier_releve_label || 'Aucun relevé'}
+                  </Text>
+                  <Text style={styles.activityColLabel}>
+                    Dernier relevé
+                  </Text>
                 </View>
-                <Text style={[styles.statValue, { color: '#2563EB' }]} weight="bold">
-                  {avancementPct}%
-                </Text>
-                <Text style={styles.statLabel}>Progression actuelle</Text>
-              </View>
-            </View>
 
-            {/* 5. Quick Navigation: Superviser les tronçons */}
-            <TouchableOpacity
-              style={styles.actionNavigationBtn}
-              activeOpacity={0.8}
-              onPress={() => router.push(`/responsable/chantier/${id}`)}
+                <View style={styles.activityDivider} />
+
+                {/* Tronçons suivis */}
+                <View style={styles.activityCol}>
+                  <Text style={styles.activityColValue} weight="bold">
+                    {tronconsSuivisCount} / {N}
+                  </Text>
+                  <Text style={styles.activityColLabel}>
+                    tronçons suivis
+                  </Text>
+                </View>
+              </View>
+            </Card>
+
+            {/* ── 6. À surveiller (Conteneur unique avec rangées compactes) ── */}
+            <Card variant="elevated" style={styles.watchCompactCard}>
+              <View style={styles.watchHeaderRow}>
+                <Ionicons name="warning-outline" size={15} color="#D97706" />
+                <Text style={styles.watchHeaderTitle} weight="semibold">
+                  À surveiller {watchList.length > 0 ? `(${watchList.length})` : ''}
+                </Text>
+              </View>
+
+              {watchList.length === 0 ? (
+                <View style={styles.watchEmptyRow}>
+                  <Ionicons name="checkmark-circle-outline" size={16} color="#15803D" />
+                  <Text style={styles.watchEmptyText}>
+                    Tous les tronçons sont suivis normalement
+                  </Text>
+                </View>
+              ) : (
+                <View style={styles.watchRowsContainer}>
+                  {watchList.map((item, idx) => {
+                    const isLast = idx === watchList.length - 1;
+                    return (
+                      <TouchableOpacity
+                        key={`watch-${item.troncon.id}`}
+                        activeOpacity={0.7}
+                        style={[styles.watchRowItem, !isLast && styles.watchRowBorder]}
+                        onPress={() => router.push(`/responsable/troncon/${item.troncon.id}`)}
+                      >
+                        <View style={styles.watchRowLeft}>
+                          <Ionicons name="alert-circle-outline" size={15} color="#D97706" style={{ marginTop: 1 }} />
+                          <View style={styles.watchRowTextCol}>
+                            <Text style={styles.watchTronconCode} weight="semibold">
+                              {item.troncon.nom || item.troncon.code}
+                            </Text>
+                            {item.issues.map((issue, issueIdx) => (
+                              <Text key={`issue-${issueIdx}`} style={styles.watchIssueDesc}>
+                                {issue}
+                              </Text>
+                            ))}
+                          </View>
+                        </View>
+                        <Ionicons name="chevron-forward" size={14} color={Palette.textLight} />
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              )}
+            </Card>
+
+            {/* ── 7. Map CTA Button ── */}
+            <Pressable
+              style={({ pressed }) => [
+                styles.mapCtaButton,
+                pressed && styles.mapCtaButtonPressed,
+              ]}
+              onPress={() =>
+                router.push({
+                  pathname: '/(tabs)/map',
+                  params: {
+                    chantierId: String(id),
+                  },
+                } as any)
+              }
             >
-              <View style={styles.actionNavContent}>
-                <Ionicons name="git-network-outline" size={18} color="#FFFFFF" />
-                <Text style={styles.actionNavText} weight="semibold">
-                  Superviser les tronçons
-                </Text>
-              </View>
-              <Ionicons name="arrow-forward" size={18} color="#FFFFFF" />
-            </TouchableOpacity>
+              <Ionicons name="map-outline" size={19} color="#FFFFFF" />
+              <Text style={styles.mapCtaButtonText} weight="bold">
+                Voir les tronçons sur la carte
+              </Text>
+            </Pressable>
           </View>
         )}
 
-        {/* ══════════════ TAB 2: HISTORIQUE ══════════════ */}
+
+        {/* ══════════════ TAB 2: HISTORIQUE / JOURNAL OPÉRATIONNEL ══════════════ */}
         {activeTab === 'historique' && (
           <View style={styles.tabSection}>
-            {/* 1. Daily Consolidated S-Curve Card */}
+            {/* 1. Compact Date Selection Bar with Floating Circular Calendar Button */}
+            <Card variant="elevated" style={styles.dateSelectorCard}>
+              <TouchableOpacity
+                style={styles.dateSelectorMain}
+                activeOpacity={0.7}
+                onPress={() => setIsCalendarModalVisible(true)}
+                accessibilityRole="button"
+                accessibilityLabel="Ouvrir le calendrier mensuel"
+              >
+                <View style={styles.dateSelectorIconBox}>
+                  <Ionicons name="calendar-outline" size={20} color={Palette.primary} />
+                </View>
+                <View style={styles.dateSelectorTextWrap}>
+                  <Text style={styles.dateSelectorSublabel}>DATE SÉLECTIONNÉE</Text>
+                  <Text style={styles.dateSelectorDateText} weight="bold">
+                    {formatDateBarFrench(selectedDate) || selectedDate}
+                  </Text>
+                </View>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.floatingCalendarBtn}
+                activeOpacity={0.7}
+                onPress={() => setIsCalendarModalVisible(true)}
+                accessibilityRole="button"
+                accessibilityLabel="Ouvrir le calendrier mensuel"
+              >
+                <Ionicons name="calendar" size={22} color="#FFFFFF" />
+              </TouchableOpacity>
+            </Card>
+
+            {/* Loading Indicator for Journal */}
+            {isJournalLoading && !journalData && (
+              <View style={{ paddingVertical: 16, alignItems: 'center' }}>
+                <ActivityIndicator size="small" color={Palette.primary} />
+                <Text variant="muted" style={{ fontSize: 12, marginTop: 6 }}>
+                  Chargement des données du journal...
+                </Text>
+              </View>
+            )}
+
+            {/* Error & Retry for Journal */}
+            {journalError && !journalData && !isJournalLoading && (
+              <Card variant="elevated" style={[styles.errorCard, { marginVertical: 12 }]}>
+                <Ionicons name="cloud-offline-outline" size={32} color={Palette.alert} />
+                <Text variant="error" style={styles.errorText}>
+                  {journalError}
+                </Text>
+                <TouchableOpacity onPress={() => fetchJournal(selectedMonth)} style={styles.retryBtn}>
+                  <Text style={styles.retryBtnText} weight="semibold">
+                    Réessayer
+                  </Text>
+                </TouchableOpacity>
+              </Card>
+            )}
+
+            {/* 2. Monthly Statistics Preview (Single compact horizontal row of 4 equal blocks - Requirements 1, 2, 3, 4) */}
+            {journalData && (
+              <View style={styles.statsPreviewContainer}>
+                {/* ONE compact horizontal row: [ Avec relevés | Sans relevé | Non travaillés | Absences A.T. ] */}
+                <View style={styles.statsFourRow}>
+                  {/* Block 1: Avec relevés (Green) */}
+                  <TouchableOpacity
+                    style={[
+                      styles.statColCard,
+                      { backgroundColor: '#F0FDF4', borderColor: '#DCFCE7' },
+                      activeStatFilter === 'ACTIVITE' && styles.statColCardActive,
+                    ]}
+                    activeOpacity={0.7}
+                    onPress={() => {
+                      const next = activeStatFilter === 'ACTIVITE' ? null : 'ACTIVITE';
+                      setActiveStatFilter(next);
+                      if (next) setIsCalendarModalVisible(true);
+                    }}
+                  >
+                    <Ionicons name="checkmark-circle-outline" size={13} color="#16A34A" />
+                    <Text style={[styles.statNumberCompact, { color: '#16A34A' }]} weight="bold">
+                      {journalData.summary.jours_avec_activite} j
+                    </Text>
+                    <Text style={styles.statLabelCompact} numberOfLines={2}>
+                      Avec relevés
+                    </Text>
+                  </TouchableOpacity>
+
+                  {/* Block 2: Sans relevé (Red/Orange) */}
+                  <TouchableOpacity
+                    style={[
+                      styles.statColCard,
+                      { backgroundColor: '#FEF2F2', borderColor: '#FEE2E2' },
+                      activeStatFilter === 'SANS_RELEVE' && styles.statColCardActive,
+                    ]}
+                    activeOpacity={0.7}
+                    onPress={() => {
+                      const next = activeStatFilter === 'SANS_RELEVE' ? null : 'SANS_RELEVE';
+                      setActiveStatFilter(next);
+                      if (next) setIsCalendarModalVisible(true);
+                    }}
+                  >
+                    <Ionicons name="alert-circle-outline" size={13} color="#DC2626" />
+                    <Text style={[styles.statNumberCompact, { color: '#DC2626' }]} weight="bold">
+                      {journalData.summary.jours_sans_releve} j
+                    </Text>
+                    <Text style={styles.statLabelCompact} numberOfLines={2}>
+                      Sans relevé
+                    </Text>
+                  </TouchableOpacity>
+
+                  {/* Block 3: Non travaillés (Neutral Grey) */}
+                  <TouchableOpacity
+                    style={[
+                      styles.statColCard,
+                      { backgroundColor: '#F8FAFC', borderColor: '#E2E8F0' },
+                      activeStatFilter === 'NON_TRAVAILLE' && styles.statColCardActive,
+                    ]}
+                    activeOpacity={0.7}
+                    onPress={() => {
+                      const next = activeStatFilter === 'NON_TRAVAILLE' ? null : 'NON_TRAVAILLE';
+                      setActiveStatFilter(next);
+                      if (next) setIsCalendarModalVisible(true);
+                    }}
+                  >
+                    <Ionicons name="pause-circle-outline" size={13} color="#64748B" />
+                    <Text style={[styles.statNumberCompact, { color: '#64748B' }]} weight="bold">
+                      {journalData.summary.jours_feries_chomes} j
+                    </Text>
+                    <Text style={styles.statLabelCompact} numberOfLines={2}>
+                      Non travaillés
+                    </Text>
+                  </TouchableOpacity>
+
+                  {/* Block 4: Absences A.T. déclarées (Blue - Requirement 2) */}
+                  <TouchableOpacity
+                    style={[
+                      styles.statColCard,
+                      { backgroundColor: '#EFF6FF', borderColor: '#DBEAFE' },
+                      activeStatFilter === 'ABSENCE' && styles.statColCardActive,
+                    ]}
+                    activeOpacity={0.7}
+                    onPress={() => {
+                      const next = activeStatFilter === 'ABSENCE' ? null : 'ABSENCE';
+                      setActiveStatFilter(next);
+                      if (next) setIsCalendarModalVisible(true);
+                    }}
+                  >
+                    <Ionicons name="person-remove-outline" size={13} color="#2563EB" />
+                    <Text style={[styles.statNumberCompact, { color: '#2563EB' }]} weight="bold">
+                      {journalData.summary.jours_absence_agent} j
+                    </Text>
+                    <Text style={styles.statLabelCompact} numberOfLines={2}>
+                      Absences A.T.
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+
+                {/* Requirement 3: Pending Explanations Block directly below the 4 statistics */}
+                <Pressable
+                  style={[
+                    styles.pendingExplanationsActionRow,
+                    journalData.summary.demandes_en_attente > 0
+                      ? styles.pendingExplanationsWarning
+                      : styles.pendingExplanationsNeutral,
+                  ]}
+                  onPress={() => setIsPendingExplanationsModalVisible(true)}
+                  accessibilityRole="button"
+                >
+                  <View style={styles.pendingActionRowLeft}>
+                    <Ionicons
+                      name="time-outline"
+                      size={16}
+                      color={journalData.summary.demandes_en_attente > 0 ? '#D97706' : '#64748B'}
+                    />
+                    <Text
+                      style={[
+                        styles.pendingExplanationsActionText,
+                        { color: journalData.summary.demandes_en_attente > 0 ? '#B45309' : '#64748B' },
+                      ]}
+                      weight="semibold"
+                    >
+                      {journalData.summary.demandes_en_attente > 0
+                        ? `${journalData.summary.demandes_en_attente} explication${
+                            journalData.summary.demandes_en_attente > 1 ? 's' : ''
+                          } en attente`
+                        : 'Aucune explication en attente'}
+                    </Text>
+                  </View>
+                  <Ionicons
+                    name="chevron-forward"
+                    size={16}
+                    color={journalData.summary.demandes_en_attente > 0 ? '#D97706' : '#94A3B8'}
+                  />
+                </Pressable>
+
+                {/* Requirement 4: Restore the A.T. contact action directly below pending explanations */}
+                <TouchableOpacity
+                  style={styles.fullWidthContactAtBtn}
+                  activeOpacity={0.8}
+                  onPress={openContextualContactModal}
+                  accessibilityRole="button"
+                  accessibilityLabel="Contacter les agents de terrain"
+                >
+                  <Ionicons name="chatbubbles-outline" size={18} color="#FFFFFF" />
+                  <Text style={styles.fullWidthContactAtBtnText} weight="semibold">
+                    Contacter les A.T.
+                  </Text>
+                  <Ionicons name="chevron-forward" size={16} color="#FFFFFF" />
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {/* 3. Selected Day Inspector Card */}
+            {activeDay && (
+              <Card variant="elevated" style={styles.dayInspectorCard}>
+                {/* Header with full French date & consolidated status pill */}
+                <View style={styles.dayInspectorHeader}>
+                  <View style={{ flex: 1 }}>
+                    <Text variant="h3" style={styles.dayInspectorTitle} weight="bold">
+                      {formatFullDateFrench(activeDay.date)}
+                    </Text>
+                    <Text style={styles.dayInspectorDateMeta}>
+                      {activeDay.is_today
+                        ? "Aujourd'hui"
+                        : activeDay.is_future
+                        ? 'Date future'
+                        : activeDay.ferie_nom
+                        ? `Jour férié — ${activeDay.ferie_nom}`
+                        : "Jour d'opération"}
+                    </Text>
+                  </View>
+
+                  {(() => {
+                    const statusMeta = getDayStatusMeta(activeDay.statut_jour);
+                    const labelText = activeDay.ferie_nom ? activeDay.ferie_nom : statusMeta.label;
+                    return (
+                      <View style={[styles.dayInspectorStatusPill, { backgroundColor: statusMeta.bg }]}>
+                        <Ionicons name={statusMeta.icon} size={14} color={statusMeta.color} />
+                        <Text style={[styles.dayInspectorStatusPillText, { color: statusMeta.color }]} weight="semibold" numberOfLines={1}>
+                          {labelText}
+                        </Text>
+                      </View>
+                    );
+                  })()}
+                </View>
+
+                {/* Day Consolidated Progress & Relevés Count */}
+                <View style={styles.dayMetricsBox}>
+                  <View style={styles.dayMetricsTopRow}>
+                    <View>
+                      <Text style={styles.dayProgressBigText} weight="bold">
+                        {activeDay.consolidated_progress}%
+                      </Text>
+                      <Text style={styles.dayProgressSubtitle}>
+                        Progression consolidée faisant foi
+                      </Text>
+                    </View>
+
+                    <View style={styles.dayObsCountBadge}>
+                      <Text style={styles.dayObsCountText} weight="semibold">
+                        {activeDay.observations_count} relevé{activeDay.observations_count > 1 ? 's' : ''}
+                      </Text>
+                    </View>
+                  </View>
+
+                  {/* Progress Bar */}
+                  <View style={styles.dayProgressBarTrack}>
+                    <View
+                      style={[
+                        styles.dayProgressBarFill,
+                        { width: `${Math.min(100, Math.max(0, activeDay.consolidated_progress))}%` },
+                      ]}
+                    />
+                  </View>
+
+                  {/* Contextual Link to Photos du Jour (if observations exist on this date) */}
+                  {activeDay.observations_count > 0 && (
+                    <TouchableOpacity
+                      style={styles.dayViewPhotosBtn}
+                      activeOpacity={0.8}
+                      onPress={() => router.push(`/chantier/images/${id}?tab=terrain&date=${activeDay.date}` as any)}
+                    >
+                      <Ionicons name="images-outline" size={15} color={Palette.primary} />
+                      <Text style={styles.dayViewPhotosBtnText} weight="semibold">
+                        Voir les photos du jour ({activeDay.observations_count}) →
+                      </Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+
+                {/* Intelligent Contextual A.T. Contact Card for Missing Reports */}
+                {(() => {
+                  const missingTroncons = activeDay.troncons.filter(
+                    (t) => t.statut === 'SANS_RELEVE' && !activeDay.is_future && !activeDay.is_non_travaille
+                  );
+                  if (missingTroncons.length === 0) return null;
+
+                  const missingWithAgent = missingTroncons.filter((t) => Boolean(t.agent_id));
+                  const missingWithoutAgent = missingTroncons.filter((t) => !t.agent_id);
+                  const eligibleToContact = missingWithAgent.filter(
+                    (t) => !t.demande_explication || t.demande_explication.statut === 'REFUSEE'
+                  );
+                  const pendingCount = missingWithAgent.filter(
+                    (t) => t.demande_explication && t.demande_explication.statut === 'EN_ATTENTE'
+                  ).length;
+
+                  return (
+                    <View style={styles.missingReportContextCard}>
+                      <View style={styles.missingReportContextTop}>
+                        <Ionicons name="alert-circle" size={17} color="#DC2626" />
+                        <Text style={styles.missingReportContextTitle} weight="bold">
+                          {missingTroncons.length} tronçon{missingTroncons.length > 1 ? 's' : ''} sans relevé
+                        </Text>
+                      </View>
+
+                      {eligibleToContact.length > 0 && (
+                        <TouchableOpacity
+                          style={styles.contactAtButton}
+                          activeOpacity={0.7}
+                          onPress={openContextualContactModal}
+                        >
+                          <Ionicons name="chatbubbles" size={15} color="#FFFFFF" />
+                          <Text style={styles.contactAtButtonText} weight="semibold">
+                            {eligibleToContact.length === 1
+                              ? `Contacter l'A.T. (${eligibleToContact[0].agent_nom || 'assigné'})`
+                              : `Contacter les A.T.`}
+                          </Text>
+                        </TouchableOpacity>
+                      )}
+
+                      {pendingCount > 0 && eligibleToContact.length === 0 && (
+                        <TouchableOpacity
+                          style={styles.pendingExplanationsNotice}
+                          onPress={() => setIsPendingExplanationsModalVisible(true)}
+                          activeOpacity={0.8}
+                        >
+                          <Ionicons name="time" size={13} color="#D97706" />
+                          <Text style={styles.pendingExplanationsNoticeText}>
+                            Demande d'explication déjà transmise à l'agent ›
+                          </Text>
+                        </TouchableOpacity>
+                      )}
+
+                      {missingWithoutAgent.length > 0 && eligibleToContact.length === 0 && pendingCount === 0 && (
+                        <Text style={styles.unassignedNoticeText}>
+                          Aucun agent de terrain n'est affecté à ces tronçons.
+                        </Text>
+                      )}
+                    </View>
+                  );
+                })()}
+
+                {/* Tronçons Breakdown (Detailed for observed, compact rows for missing) */}
+                <View style={styles.dayTronconsSection}>
+                  <Text style={styles.dayTronconsSectionTitle} weight="bold">
+                    Relevés et activité par tronçon
+                  </Text>
+
+                  {activeDay.troncons.map((t, tIdx) => {
+                    const tStatusMeta = getTronconStatusMeta(t.statut);
+                    const tronconColor = TRONCON_COLORS[tIdx % TRONCON_COLORS.length];
+                    const hasObservations = t.observations && t.observations.length > 0;
+
+                    // Rich card when observations exist
+                    if (hasObservations) {
+                      return (
+                        <View key={t.troncon_id} style={styles.dayTronconCard}>
+                          <View style={styles.dayTronconTopRow}>
+                            <View style={styles.dayTronconLeftMeta}>
+                              <View style={[styles.dayTronconCodeBadge, { backgroundColor: tronconColor }]}>
+                                <Text style={styles.dayTronconCodeText} weight="bold">
+                                  {t.code}
+                                </Text>
+                              </View>
+                              <Text style={styles.dayTronconNom} weight="semibold" numberOfLines={1}>
+                                {t.nom}
+                              </Text>
+                            </View>
+
+                            <View style={[styles.dayTronconStatusBadge, { backgroundColor: tStatusMeta.bg }]}>
+                              <Text style={[styles.dayTronconStatusBadgeText, { color: tStatusMeta.color }]} weight="semibold">
+                                {tStatusMeta.label}
+                              </Text>
+                            </View>
+                          </View>
+
+                          <View style={styles.dayTronconDetailsRow}>
+                            <View style={styles.dayTronconAgentInfo}>
+                              <Ionicons name="person-outline" size={13} color={Palette.textLight} />
+                              <Text style={styles.dayTronconAgentText}>
+                                {t.agent_nom || 'Non affecté'}
+                              </Text>
+                            </View>
+
+                            <Text style={styles.dayTronconProgText} weight="semibold">
+                              Faisant foi : {t.avancement}% ({t.planned_meters} m)
+                            </Text>
+                          </View>
+
+                          {/* Observations detail snippets */}
+                          <View style={{ marginTop: 4, gap: 4 }}>
+                            {(t.observations || []).map((obs) => (
+                              <View key={obs.id} style={styles.tronconObsSnippetBox}>
+                                <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                                  <Text style={{ fontSize: 11, color: Palette.textMuted }}>
+                                    À {obs.heure_str} • Par {obs.agent_nom || t.agent_nom}
+                                  </Text>
+                                  <Text style={{ fontSize: 11, color: Palette.primary }} weight="bold">
+                                    {obs.progress_percentage}%
+                                  </Text>
+                                </View>
+                                {Boolean(obs.commentaire) && (
+                                  <Text style={{ fontSize: 11, color: Palette.text, fontStyle: 'italic' }}>
+                                    « {obs.commentaire} »
+                                  </Text>
+                                )}
+                                {obs.photo_count > 0 && (
+                                  <Text style={{ fontSize: 10, color: Palette.textLight }}>
+                                    📸 {obs.photo_count} photo{obs.photo_count > 1 ? 's' : ''} associée{obs.photo_count > 1 ? 's' : ''}
+                                  </Text>
+                                )}
+                              </View>
+                            ))}
+                          </View>
+                        </View>
+                      );
+                    }
+
+                    // Compact row when no observation
+                    return (
+                      <View key={t.troncon_id} style={styles.compactTronconRow}>
+                        <View style={styles.compactTronconLeft}>
+                          <View style={[styles.dayTronconCodeBadge, { backgroundColor: tronconColor }]}>
+                            <Text style={styles.dayTronconCodeText} weight="bold">
+                              {t.code}
+                            </Text>
+                          </View>
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.compactTronconNom} weight="semibold" numberOfLines={1}>
+                              {t.nom}
+                            </Text>
+                            <Text style={styles.compactTronconAgent} numberOfLines={1}>
+                              {t.agent_id ? t.agent_nom : 'Aucun A.T. affecté'}
+                            </Text>
+                          </View>
+                        </View>
+
+                        <View style={styles.compactTronconRight}>
+                          {t.statut === 'SANS_RELEVE' ? (
+                            t.demande_explication ? (
+                              t.demande_explication.statut === 'EN_ATTENTE' ? (
+                                <View style={[styles.journalStatusPill, { backgroundColor: '#FFFBEB' }]}>
+                                  <Ionicons name="time" size={11} color="#D97706" />
+                                  <Text style={[styles.journalStatusPillText, { color: '#B45309' }]} weight="semibold">
+                                    En attente
+                                  </Text>
+                                </View>
+                              ) : (
+                                <View style={[styles.journalStatusPill, { backgroundColor: '#F0FDF4' }]}>
+                                  <Ionicons name="checkmark-circle" size={11} color="#16A34A" />
+                                  <Text style={[styles.journalStatusPillText, { color: '#15803D' }]} weight="semibold">
+                                    Explication reçue
+                                  </Text>
+                                </View>
+                              )
+                            ) : t.agent_id ? (
+                              <TouchableOpacity
+                                style={styles.compactRequestBtn}
+                                activeOpacity={0.7}
+                                onPress={() => openJustificationModal(t, activeDay.date)}
+                              >
+                                <Ionicons name="mail" size={12} color={Palette.primary} />
+                                <Text style={styles.compactRequestBtnText} weight="semibold">
+                                  Demander
+                                </Text>
+                              </TouchableOpacity>
+                            ) : (
+                              <View style={[styles.journalStatusPill, { backgroundColor: '#F1F5F9' }]}>
+                                <Text style={[styles.journalStatusPillText, { color: '#64748B' }]}>
+                                  Sans relevé
+                                </Text>
+                              </View>
+                            )
+                          ) : t.statut === 'ABSENCE_AGENT' ? (
+                            <View style={[styles.journalStatusPill, { backgroundColor: '#EFF6FF' }]}>
+                              <Ionicons name="person-remove" size={11} color="#2563EB" />
+                              <Text style={[styles.journalStatusPillText, { color: '#1D4ED8' }]} weight="semibold">
+                                Absence
+                              </Text>
+                            </View>
+                          ) : (
+                            <View style={[styles.journalStatusPill, { backgroundColor: tStatusMeta.bg }]}>
+                              <Text style={[styles.journalStatusPillText, { color: tStatusMeta.color }]} weight="semibold">
+                                {tStatusMeta.label}
+                              </Text>
+                            </View>
+                          )}
+                        </View>
+                      </View>
+                    );
+                  })}
+                </View>
+              </Card>
+            )}
+
+            {/* 5. Daily Consolidated S-Curve Card */}
             <Card variant="elevated" style={styles.chartCard}>
               <View style={styles.chartHeader}>
                 <View>
                   <Text variant="h3" style={styles.chartTitle}>
-                    Courbe d'avancement consolidé
+                    Courbe d'avancement continu
                   </Text>
                   <Text style={styles.chartSubtitle}>
-                    Instantanés journaliers officiels
-                  </Text>
-                </View>
-                <View style={styles.chartCurrentBadge}>
-                  <Text style={styles.chartCurrentBadgeText} weight="bold">
-                    {avancementPct}%
+                    Maintien des paliers d'avancement officiel sans régression
                   </Text>
                 </View>
               </View>
 
-              {timeline.length === 0 ? (
+              {activePoints.length === 0 ? (
                 <View style={styles.emptyChartBox}>
                   <Ionicons name="calendar-outline" size={36} color={Palette.textLight} />
                   <Text style={styles.emptyChartTitle} weight="semibold">
@@ -601,12 +1678,12 @@ export default function ChantierAvancementScreen() {
                     <Svg width="100%" height={svgChartHeight} viewBox={`0 0 ${svgChartWidth} ${svgChartHeight}`}>
                       <Defs>
                         <LinearGradient id="chartAreaGrad" x1="0" y1="0" x2="0" y2="1">
-                          <Stop offset="0%" stopColor="#176B5B" stopOpacity="0.25" />
-                          <Stop offset="100%" stopColor="#176B5B" stopOpacity="0.0" />
+                          <Stop offset="0%" stopColor="#176B5B" stopOpacity="0.18" />
+                          <Stop offset="100%" stopColor="#176B5B" stopOpacity="0.01" />
                         </LinearGradient>
                       </Defs>
 
-                      {/* Gridlines & Y-Axis Percentage Labels */}
+                      {/* Cleaner, subtler Gridlines & Y-Axis Percentage Labels */}
                       {yLevels.map((lvl) => {
                         const y = paddingTop + (1 - lvl / 100) * plotHeight;
                         return (
@@ -616,7 +1693,7 @@ export default function ChantierAvancementScreen() {
                               y1={y}
                               x2={svgChartWidth - paddingRight}
                               y2={y}
-                              stroke="#E5E7EB"
+                              stroke="#F1F5F9"
                               strokeWidth="1"
                               strokeDasharray={lvl === 0 ? undefined : '3,3'}
                             />
@@ -639,13 +1716,13 @@ export default function ChantierAvancementScreen() {
                         <Path d={areaPathD} fill="url(#chartAreaGrad)" />
                       )}
 
-                      {/* Connecting Line */}
+                      {/* Connecting Line - thicker & refined */}
                       {chartCoords.length > 1 && (
                         <Path
                           d={linePathD}
                           fill="none"
                           stroke={Palette.primary}
-                          strokeWidth="3"
+                          strokeWidth="3.5"
                           strokeLinecap="round"
                           strokeLinejoin="round"
                         />
@@ -654,16 +1731,15 @@ export default function ChantierAvancementScreen() {
                       {/* Data Points */}
                       {chartCoords.map((pt, idx) => {
                         if (pt.is_synthetic_baseline) {
-                          // Synthetic 0% baseline point (hollow ring)
                           return (
                             <React.Fragment key={`pt-${idx}`}>
                               <Circle
                                 cx={pt.x}
                                 cy={pt.y}
-                                r={6}
+                                r={5}
                                 fill="#FFFFFF"
                                 stroke="#64748B"
-                                strokeWidth="2"
+                                strokeWidth="1.5"
                                 strokeDasharray="3,2"
                               />
                               <Circle cx={pt.x} cy={pt.y} r={2} fill="#64748B" />
@@ -671,36 +1747,46 @@ export default function ChantierAvancementScreen() {
                           );
                         }
 
-                        // Real field observation consolidated snapshot point
+                        const isPtSelected = pt.date === selectedDate;
+
                         return (
                           <React.Fragment key={`pt-${idx}`}>
                             <Circle
                               cx={pt.x}
                               cy={pt.y}
-                              r={5}
+                              r={isPtSelected ? 7 : 4.5}
                               fill="#FFFFFF"
-                              stroke={Palette.primary}
-                              strokeWidth="2.5"
+                              stroke={isPtSelected ? '#D97706' : Palette.primary}
+                              strokeWidth={isPtSelected ? 3 : 2}
+                              onPress={() => setSelectedDate(pt.date)}
                             />
-                            <Circle cx={pt.x} cy={pt.y} r={2} fill={Palette.primary} />
+                            <Circle
+                              cx={pt.x}
+                              cy={pt.y}
+                              r={isPtSelected ? 3.5 : 2}
+                              fill={isPtSelected ? '#D97706' : Palette.primary}
+                            />
                           </React.Fragment>
                         );
                       })}
 
                       {/* X-Axis Date Labels */}
-                      {chartCoords.map((pt, idx) => (
-                        <SvgText
-                          key={`label-${idx}`}
-                          x={pt.x}
-                          y={svgChartHeight - 12}
-                          fill={pt.is_synthetic_baseline ? '#64748B' : Palette.text}
-                          fontSize="9"
-                          textAnchor="middle"
-                          fontWeight={pt.is_synthetic_baseline ? '400' : '600'}
-                        >
-                          {pt.dayOfMonth} {pt.monthLabel}
-                        </SvgText>
-                      ))}
+                      {chartCoords.map((pt, idx) => {
+                        if (!pt.monthLabel) return null;
+                        return (
+                          <SvgText
+                            key={`label-${idx}`}
+                            x={pt.x}
+                            y={svgChartHeight - 12}
+                            fill={pt.is_synthetic_baseline ? '#64748B' : Palette.text}
+                            fontSize="9"
+                            textAnchor="middle"
+                            fontWeight={pt.is_synthetic_baseline ? '400' : '600'}
+                          >
+                            {pt.dayOfMonth}
+                          </SvgText>
+                        );
+                      })}
                     </Svg>
                   </View>
 
@@ -708,162 +1794,743 @@ export default function ChantierAvancementScreen() {
                   <View style={styles.chartLegendRow}>
                     <View style={styles.legendItem}>
                       <View style={[styles.legendDot, { backgroundColor: Palette.primary }]} />
-                      <Text style={styles.legendText}>Relevé consolidé</Text>
+                      <Text style={styles.legendText}>Avancement officiel continu</Text>
                     </View>
                     <View style={styles.legendItem}>
-                      <View style={[styles.legendDot, { backgroundColor: '#64748B', borderWidth: 1, borderColor: '#94A3B8' }]} />
-                      <Text style={styles.legendText}>Démarrage (0% synthétique)</Text>
+                      <View style={[styles.legendDot, { backgroundColor: '#D97706' }]} />
+                      <Text style={styles.legendText}>Jour sélectionné</Text>
                     </View>
                   </View>
                 </>
               )}
             </Card>
 
-            {/* 2. Chronological Field Observations Feed */}
-            <View style={styles.observationsFeedSection}>
-              <Text variant="h3" style={styles.sectionTitle}>
-                Observations et relevés de terrain
-              </Text>
-
-              {historique.observations.length === 0 ? (
-                <Card variant="elevated" style={styles.emptyObservationsCard}>
-                  <Ionicons name="document-text-outline" size={32} color={Palette.textLight} />
-                  <Text style={styles.emptyObservationsTitle} weight="semibold">
-                    Aucune observation enregistrée
-                  </Text>
-                  <Text style={styles.emptyObservationsSubtitle}>
-                    Les relevés géolocalisés et photos soumis par les agents de terrain apparaîtront ici.
-                  </Text>
-                </Card>
-              ) : (
-                <View style={styles.observationsList}>
-                  {historique.observations.map((obs) => (
-                    <Card key={obs.id} variant="elevated" style={styles.obsCard}>
-                      <View style={styles.obsHeader}>
-                        <View style={styles.obsDateBadge}>
-                          <Ionicons name="calendar-outline" size={14} color={Palette.primary} />
-                          <Text style={styles.obsDateText} weight="semibold">
-                            {obs.date_heure}
-                          </Text>
-                        </View>
-
-                        <View style={styles.obsHeaderRight}>
-                          <View style={styles.obsTronconBadge}>
-                            <Text style={styles.obsTronconText} weight="bold">
-                              {obs.troncon_code}
-                            </Text>
-                          </View>
-                          <View style={styles.obsProgressBadge}>
-                            <Text style={styles.obsProgressText} weight="bold">
-                              {obs.progress_percentage}%
-                            </Text>
-                          </View>
-                        </View>
-                      </View>
-
-                      {/* Tronçon name and metadata */}
-                      <Text style={styles.obsTronconTitle} weight="semibold">
-                        {obs.troncon_nom}
-                      </Text>
-
-                      <View style={styles.obsMetaRow}>
-                        {obs.agent_nom && (
-                          <View style={styles.obsMetaItem}>
-                            <Ionicons name="person-outline" size={13} color={Palette.textLight} />
-                            <Text style={styles.obsMetaItemText}>{obs.agent_nom}</Text>
-                          </View>
-                        )}
-                        {obs.chainage && (
-                          <View style={styles.obsMetaItem}>
-                            <Ionicons name="pin-outline" size={13} color={Palette.textLight} />
-                            <Text style={styles.obsMetaItemText}>PK {obs.chainage}</Text>
-                          </View>
-                        )}
-                        {obs.phase && (
-                          <View style={styles.obsMetaItem}>
-                            <Ionicons name="construct-outline" size={13} color={Palette.textLight} />
-                            <Text style={styles.obsMetaItemText}>
-                              {obs.phase}{obs.phase_statut ? ` (${obs.phase_statut})` : ''}
-                            </Text>
-                          </View>
-                        )}
-                      </View>
-
-                      {/* Comment */}
-                      {Boolean(obs.commentaire) && (
-                        <View style={styles.obsCommentBox}>
-                          <Text style={styles.obsCommentText}>
-                            « {obs.commentaire} »
-                          </Text>
-                        </View>
-                      )}
-
-                      {/* Attached Photos */}
-                      {obs.photos && obs.photos.length > 0 && (
-                        <View style={styles.photosRow}>
-                          {obs.photos.map((photo) => (
-                            <TouchableOpacity
-                              key={photo.id}
-                              style={styles.photoThumbContainer}
-                              activeOpacity={0.8}
-                              onPress={() => setSelectedPhoto(photo)}
-                            >
-                              <Image
-                                source={{ uri: getMediaUrl(photo.url) }}
-                                style={styles.photoThumb}
-                                resizeMode="cover"
-                              />
-                              <View style={styles.photoZoomOverlay}>
-                                <Ionicons name="search" size={12} color="#FFFFFF" />
-                              </View>
-                            </TouchableOpacity>
-                          ))}
-                        </View>
-                      )}
-                    </Card>
-                  ))}
-                </View>
-              )}
-            </View>
           </View>
         )}
       </ScrollView>
 
-      {/* ── Photo Preview Modal ── */}
+      {/* ── Compact Sort Selection Modal ── */}
       <Modal
-        visible={Boolean(selectedPhoto)}
+        visible={isSortModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setIsSortModalVisible(false)}
+      >
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setIsSortModalVisible(false)}
+        >
+          <View style={styles.sortModalContent}>
+            <Text style={styles.sortModalTitle} weight="bold">
+              Classer les tronçons
+            </Text>
+
+            <TouchableOpacity
+              style={[styles.sortModalOption, sortMode === 'pk' && styles.sortModalOptionActive]}
+              activeOpacity={0.7}
+              onPress={() => {
+                setSortMode('pk');
+                setIsSortModalVisible(false);
+              }}
+            >
+              <Text
+                style={[styles.sortModalOptionText, sortMode === 'pk' && styles.sortModalOptionTextActive]}
+                weight={sortMode === 'pk' ? 'bold' : 'normal'}
+              >
+                Ordre PK (naturel)
+              </Text>
+              {sortMode === 'pk' && <Ionicons name="checkmark" size={18} color={Palette.primary} />}
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.sortModalOption, sortMode === 'avancement_desc' && styles.sortModalOptionActive]}
+              activeOpacity={0.7}
+              onPress={() => {
+                setSortMode('avancement_desc');
+                setIsSortModalVisible(false);
+              }}
+            >
+              <Text
+                style={[styles.sortModalOptionText, sortMode === 'avancement_desc' && styles.sortModalOptionTextActive]}
+                weight={sortMode === 'avancement_desc' ? 'bold' : 'normal'}
+              >
+                Avancement ↓ (décroissant)
+              </Text>
+              {sortMode === 'avancement_desc' && <Ionicons name="checkmark" size={18} color={Palette.primary} />}
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.sortModalOption, sortMode === 'avancement_asc' && styles.sortModalOptionActive]}
+              activeOpacity={0.7}
+              onPress={() => {
+                setSortMode('avancement_asc');
+                setIsSortModalVisible(false);
+              }}
+            >
+              <Text
+                style={[styles.sortModalOptionText, sortMode === 'avancement_asc' && styles.sortModalOptionTextActive]}
+                weight={sortMode === 'avancement_asc' ? 'bold' : 'normal'}
+              >
+                Avancement ↑ (croissant)
+              </Text>
+              {sortMode === 'avancement_asc' && <Ionicons name="checkmark" size={18} color={Palette.primary} />}
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* ── Justification Request Modal ── */}
+      <Modal
+        visible={justificationModal.visible}
         transparent={true}
         animationType="fade"
-        onRequestClose={() => setSelectedPhoto(null)}
+        onRequestClose={() => setJustificationModal((prev) => ({ ...prev, visible: false }))}
       >
-        <View style={styles.modalBackdrop}>
-          <TouchableOpacity
-            style={styles.modalCloseBtn}
-            onPress={() => setSelectedPhoto(null)}
-            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-          >
-            <Ionicons name="close-circle" size={32} color="#FFFFFF" />
-          </TouchableOpacity>
-
-          {selectedPhoto && (
-            <View style={styles.modalContent}>
-              <Image
-                source={{ uri: getMediaUrl(selectedPhoto.url) }}
-                style={styles.modalImage}
-                resizeMode="contain"
-              />
-              {Boolean(selectedPhoto.description) && (
-                <Text style={styles.modalCaption}>
-                  {selectedPhoto.description}
+        <Pressable
+          style={styles.justifModalBackdrop}
+          onPress={() => setJustificationModal((prev) => ({ ...prev, visible: false }))}
+        >
+          <Pressable style={styles.justifModalContent} onPress={(e) => e.stopPropagation()}>
+            <View style={styles.justifModalHeader}>
+              <View style={styles.justifModalHeaderIcon}>
+                <Ionicons name="chatbox-ellipses-outline" size={22} color={Palette.primary} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text variant="h3" style={styles.justifModalTitle} weight="bold">
+                  Demander une explication
                 </Text>
+                <Text style={styles.justifModalSubtitle}>
+                  Notification transmise à l'agent de terrain
+                </Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => setJustificationModal((prev) => ({ ...prev, visible: false }))}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
+                <Ionicons name="close" size={22} color={Palette.textMuted} />
+              </TouchableOpacity>
+            </View>
+
+            {justificationModal.troncon && (
+              <View style={styles.justifContextCard}>
+                <View style={styles.justifContextRow}>
+                  <Text style={styles.justifContextLabel}>Date :</Text>
+                  <Text style={styles.justifContextValue} weight="semibold">
+                    {formatFullDateFrench(justificationModal.date) || justificationModal.date}
+                  </Text>
+                </View>
+                <View style={styles.justifContextRow}>
+                  <Text style={styles.justifContextLabel}>Tronçon :</Text>
+                  <Text style={styles.justifContextValue} weight="semibold">
+                    {justificationModal.troncon.code} — {justificationModal.troncon.nom}
+                  </Text>
+                </View>
+                <View style={styles.justifContextRow}>
+                  <Text style={styles.justifContextLabel}>A.T. :</Text>
+                  <Text style={styles.justifContextValue} weight="semibold">
+                    {justificationModal.troncon.agent_nom || 'Non renseigné'}
+                  </Text>
+                </View>
+                <View style={styles.justifContextRow}>
+                  <Text style={styles.justifContextLabel}>Raison :</Text>
+                  <Text style={[styles.justifContextValue, { color: '#DC2626' }]} weight="semibold">
+                    Aucun relevé terrain n'a été enregistré pour cette journée.
+                  </Text>
+                </View>
+              </View>
+            )}
+
+            <Text style={styles.justifInputLabel} weight="semibold">
+              Message optionnel pour l'agent :
+            </Text>
+            <TextInput
+              style={styles.justifTextInput}
+              multiline
+              numberOfLines={3}
+              value={justificationMessage}
+              onChangeText={setJustificationMessage}
+              placeholder="Précisez un message particulier ou laissez le message par défaut..."
+              placeholderTextColor="#94A3B8"
+            />
+
+            {justificationError && (
+              <Text style={styles.justifErrorText}>{justificationError}</Text>
+            )}
+
+            {justificationSuccess && (
+              <View style={styles.justifSuccessBox}>
+                <Ionicons name="checkmark-circle" size={18} color="#16A34A" />
+                <Text style={styles.justifSuccessText} weight="semibold">
+                  Demande envoyée
+                </Text>
+              </View>
+            )}
+
+            <View style={styles.justifModalActions}>
+              <TouchableOpacity
+                style={styles.justifCancelBtn}
+                onPress={() => setJustificationModal((prev) => ({ ...prev, visible: false }))}
+                disabled={isSendingJustification}
+              >
+                <Text style={styles.justifCancelBtnText}>Annuler</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.justifSubmitBtn, isSendingJustification && { opacity: 0.7 }]}
+                onPress={handleSubmitJustification}
+                disabled={isSendingJustification || justificationSuccess}
+              >
+                {isSendingJustification ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <>
+                    <Ionicons name="send" size={15} color="#FFFFFF" />
+                    <Text style={styles.justifSubmitBtnText} weight="semibold">
+                      Envoyer la demande
+                    </Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* ── Full Month Calendar Overlay Modal (Requirement 3) ── */}
+      <Modal
+        visible={isCalendarModalVisible}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setIsCalendarModalVisible(false)}
+      >
+        <Pressable
+          style={styles.calendarModalBackdrop}
+          onPress={() => setIsCalendarModalVisible(false)}
+        >
+          <Pressable style={styles.calendarModalCard} onPress={(e) => e.stopPropagation()}>
+            {/* Calendar Modal Header */}
+            <View style={styles.calendarModalHeader}>
+              <TouchableOpacity
+                style={styles.calendarModalArrowBtn}
+                onPress={handlePrevMonth}
+                activeOpacity={0.7}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                accessibilityLabel="Mois précédent"
+              >
+                <Ionicons name="chevron-back" size={20} color={Palette.primary} />
+              </TouchableOpacity>
+
+              <View style={styles.calendarModalTitleBlock}>
+                <Text variant="h3" style={styles.calendarModalTitleText} weight="bold">
+                  {formatMonthTitle(selectedMonth)}
+                </Text>
+                {(selectedMonth !== currentMonthStr || selectedDate !== todayStr) && (
+                  <TouchableOpacity
+                    onPress={() => {
+                      handleCurrentMonth();
+                      setIsCalendarModalVisible(false);
+                    }}
+                    hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                  >
+                    <Text style={styles.calendarModalTodayLink}>Aujourd'hui</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+
+              <TouchableOpacity
+                style={styles.calendarModalArrowBtn}
+                onPress={handleNextMonth}
+                activeOpacity={0.7}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                accessibilityLabel="Mois suivant"
+              >
+                <Ionicons name="chevron-forward" size={20} color={Palette.primary} />
+              </TouchableOpacity>
+            </View>
+
+            {/* Active filter pill if filtering from statistics preview */}
+            {activeStatFilter && (
+              <View style={styles.activeFilterPillRow}>
+                <Text style={styles.activeFilterPillText}>
+                  Filtre actif : {activeStatFilter === 'ACTIVITE' ? 'Avec relevés' : activeStatFilter === 'SANS_RELEVE' ? 'Sans relevé' : activeStatFilter === 'NON_TRAVAILLE' ? 'Non travaillés' : 'Absences A.T.'}
+                </Text>
+                <TouchableOpacity
+                  onPress={() => setActiveStatFilter(null)}
+                  hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                >
+                  <Ionicons name="close-circle" size={16} color="#64748B" />
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {/* Weekday Column Headers (Lun - Dim) */}
+            <View style={styles.calendarModalWeekDaysRow}>
+              {['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim'].map((dName) => (
+                <Text key={dName} style={styles.calendarModalWeekDayLabel} weight="semibold">
+                  {dName}
+                </Text>
+              ))}
+            </View>
+
+            {/* Weeks Grid */}
+            {calendarWeeks.map((week, wIdx) => (
+              <View key={`modal-w-${wIdx}`} style={styles.calendarModalWeekRow}>
+                {week.map((day, dIdx) => {
+                  if (!day) {
+                    return <View key={`m-empty-${wIdx}-${dIdx}`} style={styles.calendarModalDayCell} />;
+                  }
+
+                  const isSelected = day.date === selectedDate;
+                  const dayMeta = getDayStatusMeta(day.statut_jour);
+                  const matchesFilter = !activeStatFilter || isDayMatchingFilter(day, activeStatFilter);
+
+                  return (
+                    <TouchableOpacity
+                      key={day.date}
+                      style={[
+                        styles.calendarModalDayCell,
+                        isSelected && styles.calendarModalDayCellSelected,
+                        day.is_today && !isSelected && styles.calendarModalDayCellToday,
+                        !matchesFilter && { opacity: 0.25 },
+                      ]}
+                      activeOpacity={0.7}
+                      onPress={() => {
+                        setSelectedDate(day.date);
+                        setIsCalendarModalVisible(false);
+                      }}
+                    >
+                      <Text
+                        style={[
+                          styles.calendarModalDayNumText,
+                          isSelected && styles.calendarModalDayNumTextSelected,
+                          day.is_today && !isSelected && styles.calendarModalDayNumTextToday,
+                          day.is_future && styles.calendarModalDayNumTextFuture,
+                        ]}
+                        weight={isSelected || day.is_today ? 'bold' : 'normal'}
+                      >
+                        {day.day_of_month}
+                      </Text>
+
+                      {/* Small Subtle Dot underneath (Requirement 3: NOT large colored circles) */}
+                      {!day.is_future && (
+                        <View
+                          style={[
+                            styles.calendarModalDotSm,
+                            { backgroundColor: isSelected ? '#FFFFFF' : dayMeta.color },
+                          ]}
+                        />
+                      )}
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            ))}
+
+            {/* Compact Legend (Requirement 14: dots, no emojis) */}
+            <View style={styles.calendarModalLegend}>
+              <View style={styles.legendItemTiny}>
+                <View style={[styles.legendDotTiny, { backgroundColor: '#16A34A' }]} />
+                <Text style={styles.legendLabelTiny}>Relevé</Text>
+              </View>
+              <View style={styles.legendItemTiny}>
+                <View style={[styles.legendDotTiny, { backgroundColor: '#DC2626' }]} />
+                <Text style={styles.legendLabelTiny}>Sans relevé</Text>
+              </View>
+              <View style={styles.legendItemTiny}>
+                <View style={[styles.legendDotTiny, { backgroundColor: '#2563EB' }]} />
+                <Text style={styles.legendLabelTiny}>Absence A.T.</Text>
+              </View>
+              <View style={styles.legendItemTiny}>
+                <View style={[styles.legendDotTiny, { backgroundColor: '#64748B' }]} />
+                <Text style={styles.legendLabelTiny}>Non travaillé</Text>
+              </View>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* ── Contextual Multi-Tronçon A.T. Contact Modal (Requirements 4, 8, 9) ── */}
+      <Modal
+        visible={isContextualContactModalVisible}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setIsContextualContactModalVisible(false)}
+      >
+        <Pressable
+          style={styles.justifModalBackdrop}
+          onPress={() => setIsContextualContactModalVisible(false)}
+        >
+          <Pressable style={styles.justifModalContent} onPress={(e) => e.stopPropagation()}>
+            <View style={styles.justifModalHeader}>
+              <View style={styles.justifModalHeaderIcon}>
+                <Ionicons name="chatbubbles" size={22} color={Palette.primary} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text variant="h3" style={styles.justifModalTitle} weight="bold">
+                  Contacter les A.T.
+                </Text>
+                <Text style={styles.justifModalSubtitle}>
+                  {activeDay ? formatFullDateFrench(activeDay.date) : selectedDate}
+                </Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => setIsContextualContactModalVisible(false)}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
+                <Ionicons name="close" size={22} color={Palette.textMuted} />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView style={{ maxHeight: 380 }} showsVerticalScrollIndicator={false}>
+              {/* List of affected tronçons for this date */}
+              <Text style={styles.contextualSectionTitle} weight="semibold">
+                Tronçons concernés par l'absence de relevé :
+              </Text>
+
+              {(() => {
+                const missingTroncons = activeDay
+                  ? activeDay.troncons.filter(
+                      (t) => t.statut === 'SANS_RELEVE' && !activeDay.is_future && !activeDay.is_non_travaille
+                    )
+                  : [];
+
+                if (missingTroncons.length === 0) {
+                  return (
+                    <View style={styles.contextualEmptyBox}>
+                      <Ionicons name="checkmark-circle-outline" size={28} color="#16A34A" />
+                      <Text style={styles.contextualEmptyText} weight="semibold">
+                        Tous les relevés terrain sont à jour pour cette journée.
+                      </Text>
+                    </View>
+                  );
+                }
+
+                return (
+                  <View style={{ gap: 8, marginTop: 6, marginBottom: 12 }}>
+                    {missingTroncons.map((t, idx) => {
+                      const tColor = TRONCON_COLORS[idx % TRONCON_COLORS.length];
+                      const hasAgent = Boolean(t.agent_id);
+                      const isPending = Boolean(t.demande_explication && t.demande_explication.statut === 'EN_ATTENTE');
+                      const isResponded = Boolean(t.demande_explication && t.demande_explication.statut === 'REPONDUE');
+                      const isEligible = hasAgent && !isPending && !isResponded;
+                      const isSelected = selectedTronconIdsForContact.includes(t.troncon_id);
+
+                      return (
+                        <Pressable
+                          key={t.troncon_id}
+                          style={[
+                            styles.contextualTronconRow,
+                            isEligible && isSelected && styles.contextualTronconRowSelected,
+                            !hasAgent && styles.contextualTronconRowDisabled,
+                          ]}
+                          onPress={() => {
+                            if (isEligible) {
+                              handleToggleTronconContactSelection(t.troncon_id);
+                            }
+                          }}
+                        >
+                          {/* Checkbox or disabled status icon */}
+                          {isEligible ? (
+                            <View
+                              style={[
+                                styles.checkboxCircle,
+                                isSelected && styles.checkboxCircleChecked,
+                              ]}
+                            >
+                              {isSelected && <Ionicons name="checkmark" size={14} color="#FFFFFF" />}
+                            </View>
+                          ) : (
+                            <View style={styles.checkboxCircleDisabled}>
+                              <Ionicons
+                                name={hasAgent ? 'lock-closed-outline' : 'person-remove-outline'}
+                                size={12}
+                                color="#94A3B8"
+                              />
+                            </View>
+                          )}
+
+                          <View style={[styles.dayTronconCodeBadge, { backgroundColor: tColor }]}>
+                            <Text style={styles.dayTronconCodeText} weight="bold">
+                              {t.code}
+                            </Text>
+                          </View>
+
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.contextualTronconNom} weight="semibold" numberOfLines={1}>
+                              {t.nom}
+                            </Text>
+                            <Text style={styles.contextualTronconSub} numberOfLines={1}>
+                              {hasAgent ? t.agent_nom : 'Aucun A.T. affecté'}
+                            </Text>
+                          </View>
+
+                          {/* Status Badge */}
+                          {isPending ? (
+                            <View style={styles.contextualStatusPendingBadge}>
+                              <Ionicons name="time" size={11} color="#D97706" />
+                              <Text style={styles.contextualStatusPendingText} weight="semibold">
+                                Demande déjà envoyée
+                              </Text>
+                            </View>
+                          ) : isResponded ? (
+                            <View style={styles.contextualStatusRespondedBadge}>
+                              <Ionicons name="checkmark-circle" size={11} color="#16A34A" />
+                              <Text style={styles.contextualStatusRespondedText} weight="semibold">
+                                Réponse reçue
+                              </Text>
+                            </View>
+                          ) : !hasAgent ? (
+                            <View style={styles.contextualStatusDisabledBadge}>
+                              <Text style={styles.contextualStatusDisabledText}>
+                                Non assigné
+                              </Text>
+                            </View>
+                          ) : null}
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                );
+              })()}
+
+              {/* Message field if eligible cases exist */}
+              {selectedTronconIdsForContact.length > 0 && (
+                <View style={{ marginTop: 6 }}>
+                  <Text style={styles.justifInputLabel} weight="semibold">
+                    Message transmis aux agents sélectionnés :
+                  </Text>
+                  <TextInput
+                    style={styles.justifTextInput}
+                    multiline
+                    numberOfLines={3}
+                    value={contextualContactMessage}
+                    onChangeText={setContextualContactMessage}
+                    placeholder="Précisez votre demande d'explication..."
+                    placeholderTextColor="#94A3B8"
+                  />
+                </View>
+              )}
+
+              {contextualContactFeedback && (
+                <View
+                  style={[
+                    styles.contextualFeedbackBox,
+                    contextualContactFeedback.type === 'success'
+                      ? styles.contextualFeedbackSuccess
+                      : styles.contextualFeedbackError,
+                  ]}
+                >
+                  <Ionicons
+                    name={
+                      contextualContactFeedback.type === 'success'
+                        ? 'checkmark-circle'
+                        : 'alert-circle'
+                    }
+                    size={16}
+                    color={
+                      contextualContactFeedback.type === 'success' ? '#16A34A' : '#DC2626'
+                    }
+                  />
+                  <Text
+                    style={[
+                      styles.contextualFeedbackText,
+                      {
+                        color:
+                          contextualContactFeedback.type === 'success' ? '#16A34A' : '#DC2626',
+                      },
+                    ]}
+                    weight="semibold"
+                  >
+                    {contextualContactFeedback.message}
+                  </Text>
+                </View>
+              )}
+            </ScrollView>
+
+            <View style={styles.justifModalActions}>
+              <TouchableOpacity
+                style={styles.justifCancelBtn}
+                onPress={() => setIsContextualContactModalVisible(false)}
+                disabled={isSendingContextualContact}
+              >
+                <Text style={styles.justifCancelBtnText}>Fermer</Text>
+              </TouchableOpacity>
+
+              {selectedTronconIdsForContact.length > 0 && (
+                <TouchableOpacity
+                  style={[
+                    styles.justifSubmitBtn,
+                    isSendingContextualContact && { opacity: 0.7 },
+                  ]}
+                  onPress={handleSubmitContextualContact}
+                  disabled={isSendingContextualContact}
+                >
+                  {isSendingContextualContact ? (
+                    <ActivityIndicator size="small" color="#FFFFFF" />
+                  ) : (
+                    <>
+                      <Ionicons name="send" size={15} color="#FFFFFF" />
+                      <Text style={styles.justifSubmitBtnText} weight="semibold">
+                        Envoyer les demandes ({selectedTronconIdsForContact.length})
+                      </Text>
+                    </>
+                  )}
+                </TouchableOpacity>
               )}
             </View>
-          )}
-        </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* ── Pending Explanations Overview Modal (Requirement 3) ── */}
+      <Modal
+        visible={isPendingExplanationsModalVisible}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setIsPendingExplanationsModalVisible(false)}
+      >
+        <Pressable
+          style={styles.justifModalBackdrop}
+          onPress={() => setIsPendingExplanationsModalVisible(false)}
+        >
+          <Pressable style={styles.justifModalContent} onPress={(e) => e.stopPropagation()}>
+            <View style={styles.justifModalHeader}>
+              <View style={[styles.justifModalHeaderIcon, { backgroundColor: '#FEF3C7' }]}>
+                <Ionicons name="time-outline" size={22} color="#D97706" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text variant="h3" style={styles.justifModalTitle} weight="bold">
+                  Explications et justifications
+                </Text>
+                <Text style={styles.justifModalSubtitle}>
+                  Demandes d'inactivité pour {formatMonthTitle(selectedMonth)}
+                </Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => setIsPendingExplanationsModalVisible(false)}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
+                <Ionicons name="close" size={22} color={Palette.textMuted} />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView style={{ maxHeight: 380 }} showsVerticalScrollIndicator={false}>
+              {(() => {
+                const requestsList: { dayDate: string; troncon: ChantierJournalTronconDay; demande: any }[] = [];
+                if (journalData && Array.isArray(journalData.days)) {
+                  for (const d of journalData.days) {
+                    for (const t of d.troncons) {
+                      if (t.demande_explication) {
+                        requestsList.push({
+                          dayDate: d.date,
+                          troncon: t,
+                          demande: t.demande_explication,
+                        });
+                      }
+                    }
+                  }
+                }
+
+                if (requestsList.length === 0) {
+                  return (
+                    <View style={styles.contextualEmptyBox}>
+                      <Ionicons name="checkmark-done-circle-outline" size={32} color="#16A34A" />
+                      <Text style={styles.contextualEmptyText} weight="semibold">
+                        Aucune demande d'explication enregistrée pour ce mois.
+                      </Text>
+                    </View>
+                  );
+                }
+
+                return (
+                  <View style={{ gap: 10, marginTop: 8, marginBottom: 12 }}>
+                    {requestsList.map((item, idx) => {
+                      const isRepondu = item.demande.statut === 'REPONDUE';
+                      return (
+                        <TouchableOpacity
+                          key={`req-${idx}`}
+                          style={styles.pendingRequestCard}
+                          activeOpacity={0.8}
+                          onPress={() => {
+                            setSelectedDate(item.dayDate);
+                            setIsPendingExplanationsModalVisible(false);
+                          }}
+                        >
+                          <View style={styles.pendingRequestTopRow}>
+                            <View style={styles.pendingRequestMetaLeft}>
+                              <Text style={styles.pendingRequestDate} weight="bold">
+                                {formatFullDateFrench(item.dayDate)}
+                              </Text>
+                              <Text style={styles.pendingRequestTroncon}>
+                                {item.troncon.code} — {item.troncon.nom} ({item.troncon.agent_nom || 'A.T.'})
+                              </Text>
+                            </View>
+
+                            <View
+                              style={[
+                                styles.pendingRequestPill,
+                                { backgroundColor: isRepondu ? '#DCFCE7' : '#FEF3C7' },
+                              ]}
+                            >
+                              <Ionicons
+                                name={isRepondu ? 'checkmark-circle' : 'time'}
+                                size={12}
+                                color={isRepondu ? '#15803D' : '#B45309'}
+                              />
+                              <Text
+                                style={[
+                                  styles.pendingRequestPillText,
+                                  { color: isRepondu ? '#15803D' : '#B45309' },
+                                ]}
+                                weight="semibold"
+                              >
+                                {isRepondu ? 'Répondue' : 'En attente'}
+                              </Text>
+                            </View>
+                          </View>
+
+                          {isRepondu && item.demande.motif_agent && (
+                            <View style={styles.pendingResponseBox}>
+                              <Text style={styles.pendingResponseMotif} weight="bold">
+                                Motif : {item.demande.motif_agent}
+                              </Text>
+                              {Boolean(item.demande.reponse_agent) && (
+                                <Text style={styles.pendingResponseDetail}>
+                                  « {item.demande.reponse_agent} »
+                                </Text>
+                              )}
+                            </View>
+                          )}
+
+                          <View style={styles.pendingRequestFooter}>
+                            <Text style={styles.pendingRequestJumpText}>
+                              Voir cette journée dans le journal ›
+                            </Text>
+                          </View>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                );
+              })()}
+            </ScrollView>
+
+            <View style={styles.justifModalActions}>
+              <TouchableOpacity
+                style={styles.justifCancelBtn}
+                onPress={() => setIsPendingExplanationsModalVisible(false)}
+              >
+                <Text style={styles.justifCancelBtnText}>Fermer</Text>
+              </TouchableOpacity>
+            </View>
+          </Pressable>
+        </Pressable>
       </Modal>
     </SafeAreaView>
   );
 }
+
 
 const styles = StyleSheet.create({
   container: {
@@ -932,287 +2599,1422 @@ const styles = StyleSheet.create({
     gap: 14,
   },
 
-  // ── Tab 1: Résumé Styles
-  summaryCard: {
+  // ── Tab 1: Résumé Styles (Clean, Mobile-Native Dashboard)
+  // Section 1: Main "État du chantier" Card
+  mainChantierCard: {
     padding: 16,
+    borderRadius: 14,
   },
-  summaryTitleRow: {
+  mainCardTopRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 8,
+    marginBottom: 10,
   },
-  summarySub: {
-    fontSize: 15,
+  mainChantierName: {
+    fontSize: 16,
     color: Palette.text,
     flex: 1,
+    marginRight: 8,
   },
-  statutPill: {
+  chantierStatutBadge: {
     backgroundColor: '#DCFCE7',
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 6,
   },
-  statutPillText: {
+  chantierStatutText: {
     fontSize: 11,
     color: '#15803D',
   },
-  percentageRow: {
+  mainProgressBlock: {
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    marginBottom: 12,
+    alignItems: 'baseline',
+    gap: 10,
+    marginBottom: 10,
   },
-  bigPercentage: {
+  mainProgressNumber: {
     fontSize: 38,
     color: Palette.primary,
+    lineHeight: 44,
   },
-  percentageLabelCol: {
+  mainProgressMeta: {
     flex: 1,
+    justifyContent: 'center',
   },
-  percentageLabelMain: {
+  mainProgressLabel: {
+    fontSize: 13,
+    color: Palette.text,
+  },
+  mainProgressExpl: {
+    fontSize: 11,
+    color: Palette.textMuted,
+    marginTop: 1,
+  },
+  mainProgressBarTrack: {
+    height: 8,
+    backgroundColor: '#E2E8F0',
+    borderRadius: 4,
+    overflow: 'hidden',
+    marginBottom: 14,
+  },
+  mainProgressBarFill: {
+    height: '100%',
+    borderRadius: 4,
+  },
+  mainCardStatsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(0,0,0,0.06)',
+  },
+  mainCardStatCol: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  mainCardStatValue: {
     fontSize: 14,
     color: Palette.text,
   },
-  percentageLabelSub: {
-    fontSize: 11,
-    marginTop: 2,
-  },
-  progressBarBg: {
-    height: 10,
-    backgroundColor: '#E5E7EB',
-    borderRadius: 5,
-    overflow: 'hidden',
-    marginBottom: 12,
-  },
-  progressBarFill: {
-    height: '100%',
-    borderRadius: 5,
-  },
-  totalMetrageRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingTop: 8,
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(0,0,0,0.05)',
-  },
-  totalMetrageLabel: {
-    fontSize: 12,
-    color: Palette.textMuted,
-  },
-  totalMetrageValue: {
-    fontSize: 13,
-    color: Palette.primary,
-  },
-
-  // ── Donut Diagram Card
-  diagramCard: {
-    padding: 16,
-    alignItems: 'center',
-  },
-  diagramHeader: {
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  diagramTitle: {
-    fontSize: 15,
-    color: Palette.text,
-    textAlign: 'center',
-  },
-  diagramSubtitle: {
+  mainCardStatLabel: {
     fontSize: 11,
     color: Palette.textMuted,
-    textAlign: 'center',
     marginTop: 2,
   },
-  donutContainer: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginVertical: 4,
+  mainCardStatDivider: {
+    width: 1,
+    height: 24,
+    backgroundColor: 'rgba(0,0,0,0.08)',
   },
 
-  // ── Tronçons Section & Breakdown Cards
-  tronconsSection: {
-    gap: 10,
-  },
   sectionTitle: {
     fontSize: 16,
     color: Palette.text,
   },
-  tronconsList: {
-    gap: 10,
-  },
-  tronconRowCard: {
-    padding: 14,
+
+  // Section 2: "Avancement des tronçons" (Compact Rows + Sort Button)
+  tronconsSection: {
     gap: 8,
   },
-  tronconRowHeader: {
+  tronconsSectionHeader: {
     flexDirection: 'row',
-    alignItems: 'center',
     justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 2,
   },
-  tronconBadgeGroup: {
+  tronconsTitleCol: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    gap: 6,
+  },
+  tronconsSectionTitle: {
+    fontSize: 15,
+    color: Palette.text,
+  },
+  tronconsCountSubtitle: {
+    fontSize: 12,
+    color: Palette.textMuted,
+  },
+  compactSortBtn: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#F1F5F9',
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  compactSortBtnText: {
+    fontSize: 11,
+    color: Palette.primary,
+  },
+  compactTronconsCard: {
+    borderRadius: 14,
+    overflow: 'hidden',
+    padding: 0,
+  },
+  emptyTronconsBox: {
+    paddingVertical: 20,
+    alignItems: 'center',
+    gap: 6,
+  },
+  compactRow: {
+    paddingVertical: 10,
+    paddingHorizontal: 14,
     gap: 8,
+  },
+  compactRowDivider: {
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(0,0,0,0.05)',
+  },
+  compactRowHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  compactIdentityCol: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
     flex: 1,
   },
-  tronconColorBadge: {
+  compactCodeBadge: {
     width: 26,
     height: 26,
     borderRadius: 6,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  tronconBadgeCode: {
+  compactCodeText: {
     fontSize: 11,
     color: '#FFFFFF',
   },
-  tronconName: {
-    fontSize: 14,
-    color: Palette.text,
+  compactTextGroup: {
     flex: 1,
+    marginRight: 8,
   },
-  tronconHeaderRight: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  statusPill: {
-    paddingHorizontal: 7,
-    paddingVertical: 2,
-    borderRadius: 5,
-  },
-  statusPillText: {
-    fontSize: 10,
-  },
-  pctBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 6,
-  },
-  pctBadgeText: {
+  compactTronconName: {
     fontSize: 13,
+    color: Palette.text,
   },
-  tronconProgressTrack: {
-    height: 6,
-    backgroundColor: '#F1F5F9',
-    borderRadius: 3,
-    overflow: 'hidden',
-  },
-  tronconProgressFill: {
-    height: '100%',
-    borderRadius: 3,
-  },
-  tronconMetrageRow: {
+  compactSubMetaRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingTop: 4,
+    gap: 4,
+    marginTop: 2,
   },
-  metrageMain: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-  },
-  metrageText: {
-    fontSize: 12,
+  compactAgentText: {
+    fontSize: 11,
     color: Palette.textMuted,
+    maxWidth: 120,
   },
-  metrageRemaining: {
+  compactMetaDot: {
     fontSize: 11,
     color: Palette.textLight,
   },
-  tronconFooterRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingTop: 4,
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(0,0,0,0.04)',
-  },
-  agentMeta: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-  },
-  agentMetaText: {
-    fontSize: 11,
-    color: Palette.textMuted,
-  },
-  obsCountText: {
-    fontSize: 11,
-    color: Palette.textLight,
-  },
-
-  // ── Operational Statistics Grid
-  statsGrid: {
-    flexDirection: 'row',
-    gap: 10,
-  },
-  statBox: {
-    flex: 1,
-    backgroundColor: Palette.card,
-    borderRadius: 12,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: Palette.border,
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.04,
-    shadowRadius: 2,
-    elevation: 1,
-  },
-  statIconWrapper: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    backgroundColor: 'rgba(23, 107, 91, 0.1)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 6,
-  },
-  statValue: {
-    fontSize: 16,
-    color: Palette.primary,
-    marginBottom: 2,
-    textAlign: 'center',
-  },
-  statLabel: {
+  compactMetersText: {
     fontSize: 10,
     color: Palette.textMuted,
-    textAlign: 'center',
   },
-
-  // ── Action Navigation Button
-  actionNavigationBtn: {
-    backgroundColor: Palette.primary,
-    borderRadius: 10,
-    paddingVertical: 13,
-    paddingHorizontal: 16,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08,
-    shadowRadius: 3,
-    elevation: 2,
-  },
-  actionNavContent: {
+  compactRightCol: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
   },
-  actionNavText: {
+  compactPctAndStatus: {
+    alignItems: 'flex-end',
+    gap: 2,
+  },
+  compactPctText: {
+    fontSize: 13,
+  },
+  compactStatusPill: {
+    paddingHorizontal: 6,
+    paddingVertical: 1.5,
+    borderRadius: 4,
+  },
+  compactStatusText: {
+    fontSize: 9,
+  },
+  compactProgressBarTrack: {
+    height: 4,
+    backgroundColor: '#F1F5F9',
+    borderRadius: 2,
+    overflow: 'hidden',
+  },
+  compactProgressBarFill: {
+    height: '100%',
+    borderRadius: 2,
+  },
+
+  // Section 3: "Répartition de l'avancement" (Donut compact à secteurs égaux)
+  compactDonutCard: {
+    padding: 14,
+    alignItems: 'center',
+    borderRadius: 14,
+  },
+  compactDonutHeader: {
+    alignItems: 'center',
+    marginBottom: 6,
+  },
+  compactDonutTitle: {
     fontSize: 14,
+    color: Palette.text,
+    textAlign: 'center',
+  },
+  compactDonutSubtitle: {
+    fontSize: 11,
+    color: Palette.textMuted,
+    textAlign: 'center',
+    marginTop: 1,
+  },
+  compactDonutWrapper: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: '100%',
+  },
+  donutLegendInline: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 8,
+    paddingHorizontal: 8,
+  },
+  donutLegendInlineItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  donutLegendDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+  },
+  donutLegendText: {
+    fontSize: 11,
+    color: Palette.textMuted,
+  },
+  donutLegendSep: {
+    fontSize: 11,
+    color: Palette.textLight,
+    marginLeft: 2,
+  },
+  emptyDiagramBox: {
+    paddingVertical: 20,
+    alignItems: 'center',
+    gap: 6,
+  },
+  emptyDiagramText: {
+    fontSize: 12,
+    color: Palette.textMuted,
+  },
+
+  // Section 4: "État des tronçons" (Synthèse horizontale compacte)
+  statusSummaryCompactCard: {
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    gap: 6,
+    borderRadius: 14,
+  },
+  statusSummaryCompactTitle: {
+    fontSize: 12,
+    color: Palette.textMuted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  statusSummaryStrip: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: 8,
+  },
+  statusSummaryChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  statusDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+  },
+  statusSummaryText: {
+    fontSize: 12,
+    color: Palette.text,
+  },
+  statusStripDot: {
+    fontSize: 12,
+    color: Palette.textLight,
+  },
+
+  // Section 5: "Activité terrain" (Une seule carte compacte)
+  activityCompactCard: {
+    padding: 14,
+    gap: 8,
+    borderRadius: 14,
+  },
+  activityCompactHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  activityCompactTitle: {
+    fontSize: 13,
+    color: Palette.text,
+  },
+  activityCompactRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingTop: 6,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(0,0,0,0.05)',
+  },
+  activityCol: {
+    flex: 1,
+    alignItems: 'center',
+    paddingHorizontal: 2,
+  },
+  activityColValue: {
+    fontSize: 13,
+    color: Palette.primary,
+    textAlign: 'center',
+  },
+  activityColLabel: {
+    fontSize: 10,
+    color: Palette.textMuted,
+    textAlign: 'center',
+    marginTop: 2,
+  },
+  activityDivider: {
+    width: 1,
+    height: 22,
+    backgroundColor: 'rgba(0,0,0,0.06)',
+  },
+
+  // Section 6: "À surveiller" (Conteneur unique avec rangées compactes)
+  watchCompactCard: {
+    padding: 12,
+    gap: 8,
+    borderRadius: 14,
+  },
+  watchHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  watchHeaderTitle: {
+    fontSize: 13,
+    color: '#B45309',
+  },
+  watchEmptyRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 4,
+  },
+  watchEmptyText: {
+    fontSize: 12,
+    color: '#15803D',
+  },
+  watchRowsContainer: {
+    gap: 6,
+  },
+  watchRowItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 6,
+  },
+  watchRowBorder: {
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(0,0,0,0.04)',
+  },
+  watchRowLeft: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    flex: 1,
+    marginRight: 8,
+  },
+  watchRowTextCol: {
+    flex: 1,
+  },
+  watchTronconCode: {
+    fontSize: 12,
+    color: Palette.text,
+  },
+  watchIssueDesc: {
+    fontSize: 11,
+    color: '#B45309',
+    marginTop: 1,
+  },
+
+  // Section 7: Map CTA Button
+  mapCtaButton: {
+    backgroundColor: Palette.primary,
+    borderRadius: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    minHeight: 48,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 3,
+    elevation: 2,
+  },
+  mapCtaButtonPressed: {
+    opacity: 0.85,
+    transform: [{ scale: 0.99 }],
+  },
+  mapCtaButtonText: {
+    fontSize: 14,
+    color: '#FFFFFF',
+  },
+
+  // Modal Styles for Sort
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  sortModalContent: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 14,
+    padding: 18,
+    width: '100%',
+    maxWidth: 320,
+    gap: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+    elevation: 5,
+  },
+  sortModalTitle: {
+    fontSize: 15,
+    color: Palette.text,
+    marginBottom: 4,
+  },
+  sortModalOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    backgroundColor: '#F8FAFC',
+  },
+  sortModalOptionActive: {
+    backgroundColor: 'rgba(23, 107, 91, 0.08)',
+    borderWidth: 1,
+    borderColor: Palette.primary,
+  },
+  sortModalOptionText: {
+    fontSize: 13,
+    color: Palette.text,
+  },
+  sortModalOptionTextActive: {
+    color: Palette.primary,
+    fontWeight: 'bold',
+  },
+
+  // ── Tab 2: Compact Date Selector Bar (Requirements 2 & 15)
+  dateSelectorCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    marginBottom: 10,
+    borderRadius: 12,
+  },
+  dateSelectorMain: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    flex: 1,
+    minHeight: 48,
+  },
+  dateSelectorIconBox: {
+    width: 38,
+    height: 38,
+    borderRadius: 10,
+    backgroundColor: 'rgba(23, 107, 91, 0.08)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  dateSelectorTextWrap: {
+    gap: 2,
+    flex: 1,
+  },
+  dateSelectorSublabel: {
+    fontSize: 9,
+    letterSpacing: 0.6,
+    color: Palette.textMuted,
+    fontWeight: '700',
+  },
+  dateSelectorDateText: {
+    fontSize: 15,
+    color: Palette.text,
+  },
+  floatingCalendarBtn: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    backgroundColor: Palette.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    elevation: 3,
+    shadowColor: '#176B5B',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+    marginLeft: 10,
+  },
+
+  // ── Monthly Summary Preview (Single Row of 4 Stats - Requirements 1, 2, 3, 4)
+  statsPreviewContainer: {
+    gap: 8,
+    marginBottom: 10,
+  },
+  statsFourRow: {
+    flexDirection: 'row',
+    gap: 6,
+    alignItems: 'stretch',
+  },
+  statColCard: {
+    flex: 1,
+    paddingVertical: 8,
+    paddingHorizontal: 4,
+    borderRadius: 10,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 62,
+    position: 'relative',
+  },
+  statColCardActive: {
+    borderColor: Palette.primary,
+    borderWidth: 1.5,
+  },
+  statNumberCompact: {
+    fontSize: 15,
+    marginTop: 3,
+  },
+  statLabelCompact: {
+    fontSize: 9.5,
+    color: Palette.textMuted,
+    marginTop: 2,
+    textAlign: 'center',
+    lineHeight: 12,
+  },
+  pendingExplanationsActionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    minHeight: 46,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 10,
+    borderWidth: 1,
+  },
+  pendingExplanationsWarning: {
+    backgroundColor: '#FFFBEB',
+    borderColor: '#FDE68A',
+  },
+  pendingExplanationsNeutral: {
+    backgroundColor: '#F8FAFC',
+    borderColor: '#E2E8F0',
+  },
+  pendingActionRowLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flex: 1,
+  },
+  pendingExplanationsActionText: {
+    fontSize: 12,
+  },
+  fullWidthContactAtBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: Palette.primary,
+    minHeight: 48,
+    borderRadius: 10,
+    paddingHorizontal: 16,
+    gap: 8,
+    shadowColor: Palette.primary,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.18,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  fullWidthContactAtBtnText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+  },
+
+  // ── Contextual Multi-Tronçon Modal Styles (Requirement 8 & 9)
+  contextualSectionTitle: {
+    fontSize: 12,
+    color: Palette.textMuted,
+    marginBottom: 8,
+  },
+  contextualTronconRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    padding: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    backgroundColor: '#FFFFFF',
+  },
+  contextualTronconRowSelected: {
+    borderColor: Palette.primary,
+    backgroundColor: '#F0FDFA',
+  },
+  contextualTronconRowDisabled: {
+    backgroundColor: '#F8FAFC',
+    opacity: 0.75,
+  },
+  checkboxCircle: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    borderWidth: 1.5,
+    borderColor: '#94A3B8',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#FFFFFF',
+  },
+  checkboxCircleChecked: {
+    backgroundColor: Palette.primary,
+    borderColor: Palette.primary,
+  },
+  checkboxCircleDisabled: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: '#F1F5F9',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  contextualTronconNom: {
+    fontSize: 13,
+    color: Palette.text,
+  },
+  contextualTronconSub: {
+    fontSize: 11,
+    color: Palette.textMuted,
+    marginTop: 1,
+  },
+  contextualStatusPendingBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#FEF3C7',
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    borderRadius: 6,
+  },
+  contextualStatusPendingText: {
+    fontSize: 10,
+    color: '#B45309',
+  },
+  contextualStatusRespondedBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#DCFCE7',
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    borderRadius: 6,
+  },
+  contextualStatusRespondedText: {
+    fontSize: 10,
+    color: '#15803D',
+  },
+  contextualStatusDisabledBadge: {
+    backgroundColor: '#F1F5F9',
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    borderRadius: 6,
+  },
+  contextualStatusDisabledText: {
+    fontSize: 10,
+    color: '#64748B',
+  },
+  contextualEmptyBox: {
+    padding: 24,
+    alignItems: 'center',
+    gap: 8,
+  },
+  contextualEmptyText: {
+    fontSize: 13,
+    color: Palette.textMuted,
+    textAlign: 'center',
+  },
+  contextualFeedbackBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    padding: 10,
+    borderRadius: 8,
+    marginTop: 10,
+  },
+  contextualFeedbackSuccess: {
+    backgroundColor: '#DCFCE7',
+  },
+  contextualFeedbackError: {
+    backgroundColor: '#FEE2E2',
+  },
+  contextualFeedbackText: {
+    fontSize: 12,
+  },
+
+  // ── Pending Explanations Overview Modal Styles (Requirement 3)
+  pendingRequestCard: {
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    backgroundColor: '#FFFFFF',
+    gap: 8,
+  },
+  pendingRequestTopRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+  },
+  pendingRequestMetaLeft: {
+    flex: 1,
+  },
+  pendingRequestDate: {
+    fontSize: 13,
+    color: Palette.text,
+  },
+  pendingRequestTroncon: {
+    fontSize: 11,
+    color: Palette.textMuted,
+    marginTop: 2,
+  },
+  pendingRequestPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 6,
+  },
+  pendingRequestPillText: {
+    fontSize: 10,
+  },
+  pendingResponseBox: {
+    backgroundColor: '#F0FDF4',
+    padding: 8,
+    borderRadius: 6,
+    gap: 4,
+  },
+  pendingResponseMotif: {
+    fontSize: 11,
+    color: '#15803D',
+  },
+  pendingResponseDetail: {
+    fontSize: 11,
+    color: '#166534',
+    fontStyle: 'italic',
+  },
+  pendingRequestFooter: {
+    borderTopWidth: 1,
+    borderTopColor: '#F1F5F9',
+    paddingTop: 6,
+    alignItems: 'flex-end',
+  },
+  pendingRequestJumpText: {
+    fontSize: 11,
+    color: Palette.primary,
+  },
+
+  // ── Contextual Contact Banner (Selected Day - Requirements 10 & 11)
+  missingReportContextCard: {
+    backgroundColor: '#FEF2F2',
+    borderWidth: 1,
+    borderColor: '#FECACA',
+    borderRadius: 10,
+    padding: 12,
+    gap: 8,
+  },
+  missingReportContextTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  missingReportContextTitle: {
+    fontSize: 13,
+    color: '#B91C1C',
+  },
+  contactAtButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: Palette.primary,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 8,
+    minHeight: 44,
+  },
+  contactAtButtonText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+  },
+  pendingExplanationsNotice: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#FFFBEB',
+    padding: 8,
+    borderRadius: 6,
+  },
+  pendingExplanationsNoticeText: {
+    fontSize: 11,
+    color: '#B45309',
+  },
+  unassignedNoticeText: {
+    fontSize: 11,
+    color: '#64748B',
+    fontStyle: 'italic',
+  },
+
+  // ── Compact Tronçon Row (Requirement 9)
+  compactTronconRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: 8,
+    gap: 8,
+  },
+  compactTronconLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flex: 1,
+  },
+  compactTronconNom: {
+    fontSize: 13,
+    color: Palette.text,
+  },
+  compactTronconAgent: {
+    fontSize: 10,
+    color: Palette.textLight,
+    marginTop: 1,
+  },
+  compactTronconRight: {
+    alignItems: 'flex-end',
+  },
+  journalStatusPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+  },
+  journalStatusPillText: {
+    fontSize: 11,
+  },
+  compactRequestBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
+    backgroundColor: 'rgba(23, 107, 91, 0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(23, 107, 91, 0.2)',
+    minHeight: 34,
+  },
+  compactRequestBtnText: {
+    fontSize: 11,
+    color: Palette.primary,
+  },
+  tronconObsSnippetBox: {
+    backgroundColor: '#F8FAFC',
+    padding: 8,
+    borderRadius: 6,
+    gap: 2,
+  },
+
+  // ── Calendar Overlay Modal Styles (Requirements 3 & 14)
+  calendarModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 16,
+  },
+  calendarModalCard: {
+    width: '100%',
+    maxWidth: 380,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 16,
+    elevation: 8,
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 10,
+    gap: 10,
+  },
+  calendarModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingBottom: 4,
+  },
+  calendarModalArrowBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#F1F5F9',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  calendarModalTitleBlock: {
+    alignItems: 'center',
+    gap: 2,
+  },
+  calendarModalTitleText: {
+    fontSize: 16,
+    color: Palette.text,
+  },
+  calendarModalTodayLink: {
+    fontSize: 11,
+    color: Palette.primary,
+    fontWeight: '600',
+  },
+  activeFilterPillRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#F1F5F9',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 6,
+  },
+  activeFilterPillText: {
+    fontSize: 11,
+    color: Palette.textMuted,
+    fontWeight: '600',
+  },
+  calendarModalWeekDaysRow: {
+    flexDirection: 'row',
+    borderBottomWidth: 1,
+    borderBottomColor: '#E2E8F0',
+    paddingBottom: 6,
+  },
+  calendarModalWeekDayLabel: {
+    flex: 1,
+    textAlign: 'center',
+    fontSize: 11,
+    color: Palette.textLight,
+  },
+  calendarModalWeekRow: {
+    flexDirection: 'row',
+    marginVertical: 2,
+  },
+  calendarModalDayCell: {
+    flex: 1,
+    aspectRatio: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 8,
+    marginHorizontal: 1,
+    minHeight: 40,
+  },
+  calendarModalDayCellSelected: {
+    backgroundColor: Palette.primary,
+    borderRadius: 20,
+  },
+  calendarModalDayCellToday: {
+    borderWidth: 1,
+    borderColor: Palette.primary,
+  },
+  calendarModalDayNumText: {
+    fontSize: 12,
+    color: Palette.text,
+  },
+  calendarModalDayNumTextSelected: {
+    color: '#FFFFFF',
+    fontWeight: 'bold',
+  },
+  calendarModalDayNumTextToday: {
+    color: Palette.primary,
+    fontWeight: 'bold',
+  },
+  calendarModalDayNumTextFuture: {
+    color: '#CBD5E1',
+  },
+  calendarModalDotSm: {
+    width: 4.5,
+    height: 4.5,
+    borderRadius: 2.25,
+    marginTop: 2,
+  },
+  calendarModalLegend: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 12,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: '#F1F5F9',
+  },
+  legendItemTiny: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  legendDotTiny: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  legendLabelTiny: {
+    fontSize: 10,
+    color: Palette.textMuted,
+  },
+
+  // ── Selected Day Inspector Card
+  dayInspectorCard: {
+    padding: 16,
+    marginBottom: 12,
+    gap: 12,
+  },
+  dayInspectorHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: 8,
+  },
+  dayInspectorTitle: {
+    fontSize: 15,
+    color: Palette.text,
+  },
+  dayInspectorDateMeta: {
+    fontSize: 11,
+    color: Palette.textMuted,
+    marginTop: 2,
+  },
+  dayInspectorStatusPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+  },
+  dayInspectorStatusPillText: {
+    fontSize: 11,
+  },
+  dayMetricsBox: {
+    backgroundColor: '#F8FAFC',
+    padding: 12,
+    borderRadius: 8,
+    gap: 8,
+  },
+  dayMetricsTopRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'baseline',
+  },
+  dayProgressBigText: {
+    fontSize: 22,
+    color: Palette.primary,
+  },
+  dayProgressSubtitle: {
+    fontSize: 11,
+    color: Palette.textMuted,
+  },
+  dayObsCountBadge: {
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+  },
+  dayObsCountText: {
+    fontSize: 11,
+    color: Palette.text,
+  },
+  dayProgressBarTrack: {
+    height: 6,
+    backgroundColor: '#E2E8F0',
+    borderRadius: 3,
+    overflow: 'hidden',
+  },
+  dayProgressBarFill: {
+    height: '100%',
+    backgroundColor: Palette.primary,
+    borderRadius: 3,
+  },
+  dayViewPhotosBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: '#E6F4F1',
+    borderWidth: 1,
+    borderColor: '#B2DFDB',
+    paddingVertical: 9,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    marginTop: 10,
+  },
+  dayViewPhotosBtnText: {
+    fontSize: 13,
+    color: Palette.primary,
+  },
+
+  // ── Day Inspector Tronçon Breakdown
+  dayTronconsSection: {
+    gap: 10,
+    marginTop: 4,
+  },
+  dayTronconsSectionTitle: {
+    fontSize: 13,
+    color: Palette.textMuted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  dayTronconCard: {
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: 10,
+    padding: 12,
+    gap: 8,
+  },
+  dayTronconTopRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  dayTronconLeftMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flex: 1,
+  },
+  dayTronconCodeBadge: {
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  dayTronconCodeText: {
+    color: '#FFFFFF',
+    fontSize: 11,
+  },
+  dayTronconNom: {
+    fontSize: 13,
+    color: Palette.text,
+    flex: 1,
+  },
+  dayTronconStatusBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+  },
+  dayTronconStatusBadgeText: {
+    fontSize: 11,
+  },
+  dayTronconDetailsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingTop: 4,
+    borderTopWidth: 1,
+    borderTopColor: '#F1F5F9',
+  },
+  dayTronconAgentInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  dayTronconAgentText: {
+    fontSize: 11,
+    color: Palette.textLight,
+  },
+  dayTronconProgText: {
+    fontSize: 11,
+    color: Palette.primary,
+  },
+
+  // ── Explanation Cards & Buttons
+  explanationAlertCard: {
+    padding: 10,
+    borderRadius: 8,
+    gap: 4,
+  },
+  explanationAlertHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  explanationAlertTitle: {
+    fontSize: 12,
+  },
+  explanationAlertMessage: {
+    fontSize: 11,
+    color: Palette.text,
+    fontStyle: 'italic',
+    lineHeight: 16,
+  },
+  explanationAlertFooter: {
+    fontSize: 10,
+    color: Palette.textLight,
+    marginTop: 2,
+  },
+  requestJustifBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    marginTop: 4,
+  },
+  requestJustifBtnText: {
+    fontSize: 12,
+    color: Palette.primary,
+  },
+
+  // ── Justification Modal Styles
+  justifModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 16,
+  },
+  justifModalContent: {
+    width: '100%',
+    maxWidth: 480,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 20,
+    gap: 14,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 12,
+    elevation: 8,
+  },
+  justifModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  justifModalHeaderIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(23, 107, 91, 0.1)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  justifModalTitle: {
+    fontSize: 16,
+    color: Palette.text,
+  },
+  justifModalSubtitle: {
+    fontSize: 11,
+    color: Palette.textMuted,
+  },
+  justifContextCard: {
+    backgroundColor: '#F8FAFC',
+    borderRadius: 8,
+    padding: 12,
+    gap: 4,
+  },
+  justifContextRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  justifContextLabel: {
+    fontSize: 11,
+    color: Palette.textLight,
+  },
+  justifContextValue: {
+    fontSize: 11,
+    color: Palette.text,
+  },
+  justifInputLabel: {
+    fontSize: 12,
+    color: Palette.text,
+  },
+  justifTextInput: {
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+    borderRadius: 8,
+    padding: 12,
+    fontSize: 13,
+    color: Palette.text,
+    textAlignVertical: 'top',
+    minHeight: 80,
+  },
+  justifErrorText: {
+    fontSize: 12,
+    color: '#DC2626',
+  },
+  justifSuccessBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#DCFCE7',
+    padding: 10,
+    borderRadius: 8,
+  },
+  justifSuccessText: {
+    fontSize: 12,
+    color: '#16A34A',
+  },
+  justifModalActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 10,
+    marginTop: 6,
+  },
+  justifCancelBtn: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 8,
+  },
+  justifCancelBtnText: {
+    fontSize: 13,
+    color: Palette.textMuted,
+  },
+  justifSubmitBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: Palette.primary,
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    borderRadius: 8,
+  },
+  justifSubmitBtnText: {
+    fontSize: 13,
     color: '#FFFFFF',
   },
 
   // ── Tab 2: Historique & S-Curve Styles
   chartCard: {
+
     padding: 16,
   },
   chartHeader: {

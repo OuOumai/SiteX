@@ -271,6 +271,140 @@ async function runMigration() {
     `);
     console.log('  └─ Persistent notifications and server-side event triggers ready');
 
+    // 9. Operational Chantier Journal & Calendar models
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS public.chantier_calendrier (
+        id SERIAL PRIMARY KEY,
+        chantier_id INTEGER NOT NULL REFERENCES public.chantier(id) ON DELETE CASCADE,
+        jours_travailles INTEGER[] NOT NULL DEFAULT '{1,2,3,4,5,6}',
+        date_creation TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        date_modification TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT uq_chantier_calendrier UNIQUE(chantier_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS public.jour_ferie (
+        id SERIAL PRIMARY KEY,
+        date DATE NOT NULL,
+        nom VARCHAR(120) NOT NULL,
+        est_chome BOOLEAN NOT NULL DEFAULT true,
+        chantier_id INTEGER REFERENCES public.chantier(id) ON DELETE CASCADE,
+        date_creation TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT uq_jour_ferie_date_chantier UNIQUE(date, chantier_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_jour_ferie_date ON public.jour_ferie(date);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_uq_jour_ferie_national ON public.jour_ferie(date) WHERE chantier_id IS NULL;
+
+      CREATE TABLE IF NOT EXISTS public.agent_absence (
+        id SERIAL PRIMARY KEY,
+        agent_id INTEGER NOT NULL REFERENCES public.utilisateur(id) ON DELETE CASCADE,
+        date_debut DATE NOT NULL,
+        date_fin DATE NOT NULL,
+        motif VARCHAR(255) NOT NULL,
+        statut VARCHAR(20) NOT NULL DEFAULT 'EN_ATTENTE',
+        justificatif_url TEXT,
+        traite_par INTEGER REFERENCES public.utilisateur(id) ON DELETE SET NULL,
+        date_traitement TIMESTAMP WITH TIME ZONE,
+        commentaire_traitement TEXT,
+        date_creation TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT chk_agent_absence_statut CHECK (statut IN ('EN_ATTENTE', 'VALIDE', 'REFUSE')),
+        CONSTRAINT chk_agent_absence_dates CHECK (date_fin >= date_debut)
+      );
+      CREATE INDEX IF NOT EXISTS idx_agent_absence_dates ON public.agent_absence(agent_id, date_debut, date_fin);
+
+      CREATE TABLE IF NOT EXISTS public.demande_explication (
+        id SERIAL PRIMARY KEY,
+        chantier_id INTEGER NOT NULL REFERENCES public.chantier(id) ON DELETE CASCADE,
+        troncon_id INTEGER NOT NULL REFERENCES public.troncon(id) ON DELETE CASCADE,
+        agent_id INTEGER NOT NULL REFERENCES public.utilisateur(id) ON DELETE CASCADE,
+        responsable_id INTEGER NOT NULL REFERENCES public.utilisateur(id) ON DELETE CASCADE,
+        date_concernee DATE NOT NULL,
+        statut VARCHAR(20) NOT NULL DEFAULT 'EN_ATTENTE',
+        message_responsable TEXT,
+        motif_agent VARCHAR(100),
+        reponse_agent TEXT,
+        date_demande TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        date_reponse TIMESTAMP WITH TIME ZONE,
+        CONSTRAINT chk_demande_statut CHECK (statut IN ('EN_ATTENTE', 'REPONDUE', 'ACCEPTEE', 'REJETEE', 'ANNULEE')),
+        CONSTRAINT uq_demande_troncon_date UNIQUE(troncon_id, date_concernee)
+      );
+      CREATE INDEX IF NOT EXISTS idx_demande_chantier_date ON public.demande_explication(chantier_id, date_concernee);
+      CREATE INDEX IF NOT EXISTS idx_demande_agent_date ON public.demande_explication(agent_id, date_concernee);
+    `);
+    console.log('  └─ Tables chantier_calendrier, jour_ferie, agent_absence, demande_explication ready');
+
+    // Seed official Moroccan public holidays (national, chantier_id IS NULL)
+    const moroccanHolidays = [
+      // 2025 Civil
+      { date: '2025-01-01', nom: 'Nouvel An' },
+      { date: '2025-01-11', nom: "Manifeste de l'Indépendance" },
+      { date: '2025-01-14', nom: 'Nouvel An Amazigh' },
+      { date: '2025-05-01', nom: 'Fête du Travail' },
+      { date: '2025-07-30', nom: 'Fête du Trône' },
+      { date: '2025-08-14', nom: 'Allégeance Oued Eddahab' },
+      { date: '2025-08-20', nom: 'Révolution du Roi et du Peuple' },
+      { date: '2025-08-21', nom: 'Fête de la Jeunesse' },
+      { date: '2025-11-06', nom: 'Anniversaire de la Marche Verte' },
+      { date: '2025-11-18', nom: "Fête de l'Indépendance" },
+      // 2025 Religious (Kingdom of Morocco Ministry of Habous)
+      { date: '2025-03-31', nom: 'Aïd Al-Fitr' },
+      { date: '2025-04-01', nom: 'Aïd Al-Fitr (2e jour)' },
+      { date: '2025-06-06', nom: 'Aïd Al-Adha' },
+      { date: '2025-06-07', nom: 'Aïd Al-Adha (2e jour)' },
+      { date: '2025-06-26', nom: "1er Moharram (Nouvel An de l'Hégire)" },
+      { date: '2025-09-04', nom: 'Aïd Al-Mawlid Annabawi' },
+      { date: '2025-09-05', nom: 'Aïd Al-Mawlid Annabawi (2e jour)' },
+
+      // 2026 Civil
+      { date: '2026-01-01', nom: 'Nouvel An' },
+      { date: '2026-01-11', nom: "Manifeste de l'Indépendance" },
+      { date: '2026-01-14', nom: 'Nouvel An Amazigh' },
+      { date: '2026-05-01', nom: 'Fête du Travail' },
+      { date: '2026-07-30', nom: 'Fête du Trône' },
+      { date: '2026-08-14', nom: 'Allégeance Oued Eddahab' },
+      { date: '2026-08-20', nom: 'Révolution du Roi et du Peuple' },
+      { date: '2026-08-21', nom: 'Fête de la Jeunesse' },
+      { date: '2026-11-06', nom: 'Anniversaire de la Marche Verte' },
+      { date: '2026-11-18', nom: "Fête de l'Indépendance" },
+      // 2026 Religious
+      { date: '2026-03-20', nom: 'Aïd Al-Fitr' },
+      { date: '2026-03-21', nom: 'Aïd Al-Fitr (2e jour)' },
+      { date: '2026-05-27', nom: 'Aïd Al-Adha' },
+      { date: '2026-05-28', nom: 'Aïd Al-Adha (2e jour)' },
+      { date: '2026-06-17', nom: "1er Moharram (Nouvel An de l'Hégire)" },
+      { date: '2026-08-26', nom: 'Aïd Al-Mawlid Annabawi' },
+      { date: '2026-08-27', nom: 'Aïd Al-Mawlid Annabawi (2e jour)' },
+
+      // 2027 Civil
+      { date: '2027-01-01', nom: 'Nouvel An' },
+      { date: '2027-01-11', nom: "Manifeste de l'Indépendance" },
+      { date: '2027-01-14', nom: 'Nouvel An Amazigh' },
+      { date: '2027-05-01', nom: 'Fête du Travail' },
+      { date: '2027-07-30', nom: 'Fête du Trône' },
+      { date: '2027-08-14', nom: 'Allégeance Oued Eddahab' },
+      { date: '2027-08-20', nom: 'Révolution du Roi et du Peuple' },
+      { date: '2027-08-21', nom: 'Fête de la Jeunesse' },
+      { date: '2027-11-06', nom: 'Anniversaire de la Marche Verte' },
+      { date: '2027-11-18', nom: "Fête de l'Indépendance" },
+      // 2027 Religious
+      { date: '2027-03-10', nom: 'Aïd Al-Fitr' },
+      { date: '2027-03-11', nom: 'Aïd Al-Fitr (2e jour)' },
+      { date: '2027-05-17', nom: 'Aïd Al-Adha' },
+      { date: '2027-05-18', nom: 'Aïd Al-Adha (2e jour)' },
+      { date: '2027-06-07', nom: "1er Moharram (Nouvel An de l'Hégire)" },
+      { date: '2027-08-16', nom: 'Aïd Al-Mawlid Annabawi' },
+      { date: '2027-08-17', nom: 'Aïd Al-Mawlid Annabawi (2e jour)' },
+    ];
+
+    for (const h of moroccanHolidays) {
+      await client.query(`
+        INSERT INTO public.jour_ferie (date, nom, est_chome, chantier_id)
+        VALUES ($1, $2, true, NULL)
+        ON CONFLICT (date) WHERE chantier_id IS NULL
+        DO UPDATE SET nom = EXCLUDED.nom, est_chome = EXCLUDED.est_chome;
+      `, [h.date, h.nom]);
+    }
+    console.log('  └─ Official Moroccan public holidays seeded successfully');
+
     await client.query('COMMIT');
     console.log('✅ Database migration completed successfully!');
   } catch (err) {

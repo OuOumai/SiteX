@@ -15,9 +15,11 @@ const geojsonUpload            = require('../middleware/geojson-upload.middlewar
 
 const router = express.Router();
 
-// General Chantier Details
+// General Chantier Details & Operational Monitoring
 router.get('/:id', authenticateToken, chantierController.getChantierDetails);
 router.get('/:id/avancement', authenticateToken, requireResponsableOrAdmin, chantierController.getChantierAvancementStats);
+router.get('/:id/journal', authenticateToken, requireResponsableOrAdmin, chantierController.getChantierJournal);
+router.post('/:id/justifications/demander', authenticateToken, requireResponsableOrAdmin, chantierController.requestExplanation);
 
 // Chantier Creation (Responsable / Admin)
 router.post('/', authenticateToken, requireResponsableOrAdmin, chantierController.createChantier);

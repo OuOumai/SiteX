@@ -79,6 +79,7 @@ function RootNavigationGuard() {
       <Stack.Screen name="chantier/[id]" options={{ headerShown: false }} />
       <Stack.Screen name="chantier/avancement/[id]" options={{ headerShown: false }} />
       <Stack.Screen name="chantier/images/[id]" options={{ headerShown: false }} />
+      <Stack.Screen name="chantier/map/[id]" options={{ headerShown: false }} />
       <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Modal' }} />
     </Stack>
   );

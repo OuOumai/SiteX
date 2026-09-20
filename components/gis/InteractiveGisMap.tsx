@@ -8,6 +8,8 @@ export interface InteractiveGisMapRef {
   undo: () => void;
   clear: () => void;
   finish: () => void;
+  recenter?: () => void;
+  toggleSatellite?: () => void;
 }
 
 export interface GisFeatureGeometry {
@@ -174,7 +176,7 @@ export function InteractiveGisMap({
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const webViewRef = useRef<WebView | null>(null);
 
-  const executeAction = (action: 'undo' | 'clear' | 'finish') => {
+  const executeAction = (action: 'undo' | 'clear' | 'finish' | 'recenter' | 'toggleSatellite') => {
     if (Platform.OS === 'web') {
       try {
         const iframe = iframeRef.current;
@@ -202,6 +204,8 @@ export function InteractiveGisMap({
     undo: () => executeAction('undo'),
     clear: () => executeAction('clear'),
     finish: () => executeAction('finish'),
+    recenter: () => executeAction('recenter'),
+    toggleSatellite: () => executeAction('toggleSatellite'),
   }));
 
     // Listen to messages from Leaflet (Web)
@@ -525,6 +529,12 @@ export function InteractiveGisMap({
       width: 12px;
       height: 12px;
       box-shadow: 0 2px 5px rgba(0,0,0,0.5);
+    }
+
+    @keyframes markerPulse {
+      0% { transform: scale(0.9); opacity: 0.85; }
+      50% { transform: scale(1.35); opacity: 0.2; }
+      100% { transform: scale(0.9); opacity: 0.85; }
     }
   </style>
 </head>
@@ -1492,29 +1502,53 @@ export function InteractiveGisMap({
       });
 
       // Render Custom / GPS Observation Markers
+      var activeSelectedMarker = null;
       if (rawCustomMarkers && rawCustomMarkers.length > 0) {
+        var hasExplicitSelectedId = config.selectedMarkerId !== null && config.selectedMarkerId !== undefined;
         rawCustomMarkers.forEach(function(m) {
           if (!m || typeof m.lat !== "number" || typeof m.lng !== "number") return;
-          var color = m.color || "#0284C7";
+          var isSelected = hasExplicitSelectedId && String(config.selectedMarkerId) === String(m.id);
+          var color = m.color || (isSelected ? "#F59E0B" : "#0284C7");
           var isGps = m.iconName === "gps" || (m.label && m.label.toLowerCase().indexOf("gps") !== -1);
 
-          var markerHtml = isGps
-            ? "<div style='position:relative;width:32px;height:32px;display:flex;align-items:center;justify-content:center;'><div style='position:absolute;width:32px;height:32px;border-radius:16px;background:" + color + "44;border:1px solid " + color + "88;'></div><div style='width:16px;height:16px;border-radius:8px;background:" + color + ";border:2.5px solid #FFFFFF;box-shadow:0 2px 8px rgba(0,0,0,0.5);'></div></div>"
-            : "<div style='width:32px;height:32px;display:flex;align-items:center;justify-content:center;'><div style='background:" + color + ";color:#FFF;font-size:12px;font-weight:bold;width:26px;height:26px;border-radius:13px;display:flex;align-items:center;justify-content:center;border:2.5px solid #FFF;box-shadow:0 3px 8px rgba(0,0,0,0.4);'>📍</div></div>";
+          var markerHtml = "";
+          var iconSize = [32, 32];
+          var iconAnchor = [16, 16];
+
+          if (isSelected) {
+            activeSelectedMarker = m;
+            markerHtml = "<div style='position:relative;width:42px;height:42px;display:flex;align-items:center;justify-content:center;cursor:pointer;'>" +
+              "<div style='position:absolute;width:40px;height:40px;border-radius:50%;background:" + color + "44;border:2px solid " + color + ";animation:markerPulse 2s infinite;'></div>" +
+              "<div style='width:30px;height:30px;border-radius:15px;background:" + color + ";display:flex;align-items:center;justify-content:center;border:2.5px solid #FFFFFF;box-shadow:0 4px 12px rgba(0,0,0,0.5);z-index:2;'>" +
+                "<svg width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='#FFFFFF' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'><path d='M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z'></path><circle cx='12' cy='13' r='4'></circle></svg>" +
+              "</div>" +
+            "</div>";
+            iconSize = [42, 42];
+            iconAnchor = [21, 21];
+          } else if (hasExplicitSelectedId) {
+            // Secondary marker on the same tronçon (small grey circle with white border)
+            markerHtml = "<div style='width:22px;height:22px;display:flex;align-items:center;justify-content:center;cursor:pointer;'>" +
+              "<div style='width:14px;height:14px;border-radius:50%;background:#64748B;border:2.5px solid #FFFFFF;box-shadow:0 2px 6px rgba(0,0,0,0.45);'></div>" +
+            "</div>";
+            iconSize = [22, 22];
+            iconAnchor = [11, 11];
+          } else if (isGps) {
+            markerHtml = "<div style='position:relative;width:32px;height:32px;display:flex;align-items:center;justify-content:center;'><div style='position:absolute;width:32px;height:32px;border-radius:16px;background:" + color + "44;border:1px solid " + color + "88;'></div><div style='width:16px;height:16px;border-radius:8px;background:" + color + ";border:2.5px solid #FFFFFF;box-shadow:0 2px 8px rgba(0,0,0,0.5);'></div></div>";
+          } else {
+            markerHtml = "<div style='width:32px;height:32px;display:flex;align-items:center;justify-content:center;'><div style='background:" + color + ";color:#FFF;font-size:12px;font-weight:bold;width:26px;height:26px;border-radius:13px;display:flex;align-items:center;justify-content:center;border:2.5px solid #FFF;box-shadow:0 3px 8px rgba(0,0,0,0.4);'>📍</div></div>";
+          }
 
           var cIcon = L.divIcon({
             className: "custom-point-marker",
             html: markerHtml,
-            iconSize: [32, 32],
-            iconAnchor: [16, 16]
+            iconSize: iconSize,
+            iconAnchor: iconAnchor
           });
 
-          var marker = L.marker([m.lat, m.lng], { icon: cIcon, zIndexOffset: 1500 }).addTo(featureGroup);
+          var zOffset = isSelected ? 3000 : 1200;
+          var marker = L.marker([m.lat, m.lng], { icon: cIcon, zIndexOffset: zOffset }).addTo(featureGroup);
           if (m.id !== undefined && m.id !== null) {
             marker.on("click", function() { sendToParent({ type: "SELECT_MARKER", markerId: m.id }); });
-            if (config.selectedMarkerId !== null && String(config.selectedMarkerId) === String(m.id)) {
-              setTimeout(function() { map.setView([m.lat, m.lng], Math.max(map.getZoom(), 17), { animate: true }); }, 220);
-            }
           }
           if (m.label && (m.id === undefined || m.id === null)) {
             var stationDetails = m.dateTime || m.phase || m.photoUrl;
@@ -1536,17 +1570,51 @@ export function InteractiveGisMap({
         });
       }
 
-      // Fit map to features immediately
-      fitAllFeatures();
-      setTimeout(function() { fitAllFeatures(); }, 150);
-      var focusLayer = selectedTronconLayer || selectedChantierLayer;
-      if (focusLayer && focusLayer.getBounds) {
+      // Action listener for recenter and satellite toggle
+      var originalWindowGisMapAction = window.gisMapAction;
+      window.gisMapAction = function(action, payload) {
+        if (typeof originalWindowGisMapAction === 'function') {
+          try { originalWindowGisMapAction(action, payload); } catch(e) {}
+        }
+        if (action === 'recenter') {
+          if (activeSelectedMarker) {
+            map.setView([activeSelectedMarker.lat, activeSelectedMarker.lng], 17, { animate: true });
+          } else {
+            var fLayer = selectedTronconLayer || selectedChantierLayer;
+            if (fLayer && fLayer.getBounds && fLayer.getBounds().isValid()) {
+              map.fitBounds(fLayer.getBounds(), { paddingTopLeft: [35, 76], paddingBottomRight: [35, fitPaddingBottom || 35], maxZoom: 17, animate: true });
+            }
+          }
+        } else if (action === 'toggleSatellite') {
+          if (map.hasLayer(googleHybrid) || map.hasLayer(googleSat) || map.hasLayer(esriSatellite)) {
+            map.removeLayer(googleHybrid);
+            map.removeLayer(googleSat);
+            map.removeLayer(esriSatellite);
+            map.addLayer(googleStreets);
+          } else {
+            map.removeLayer(googleStreets);
+            map.addLayer(googleHybrid);
+          }
+        }
+      };
+
+      // Fit map to features / center on active observation
+      if (activeSelectedMarker) {
         setTimeout(function() {
-          var selectedBounds = focusLayer.getBounds();
-          if (selectedBounds && selectedBounds.isValid()) map.fitBounds(selectedBounds, {
-            paddingTopLeft: [35, 76], paddingBottomRight: [35, fitPaddingBottom || 35], maxZoom: 17, animate: true
-          });
-        }, 260);
+          map.setView([activeSelectedMarker.lat, activeSelectedMarker.lng], 17, { animate: true });
+        }, 150);
+      } else {
+        fitAllFeatures();
+        setTimeout(function() { fitAllFeatures(); }, 150);
+        var focusLayer = selectedTronconLayer || selectedChantierLayer;
+        if (focusLayer && focusLayer.getBounds) {
+          setTimeout(function() {
+            var selectedBounds = focusLayer.getBounds();
+            if (selectedBounds && selectedBounds.isValid()) map.fitBounds(selectedBounds, {
+              paddingTopLeft: [35, 76], paddingBottomRight: [35, fitPaddingBottom || 35], maxZoom: 17, animate: true
+            });
+          }, 260);
+        }
       }
       setTimeout(function() { map.invalidateSize(); }, 500);
       window.addEventListener("resize", function() { map.invalidateSize(); });

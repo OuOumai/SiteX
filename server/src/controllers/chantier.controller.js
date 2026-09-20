@@ -2034,7 +2034,7 @@ async function getChantierAvancementStats(req, res) {
           SELECT DISTINCT ON (d.obs_date, o.troncon_id)
             d.obs_date,
             o.troncon_id,
-            COALESCE(o.progress_percentage, 0)::int AS progress_percentage
+            ROUND(COALESCE(o.authoritative_progress_percentage, o.progress_percentage, 0)::numeric)::int AS progress_percentage
           FROM (
             SELECT DISTINCT DATE(date_heure) AS obs_date
             FROM public.observation_terrain
@@ -2091,6 +2091,11 @@ async function getChantierAvancementStats(req, res) {
         o.phase,
         o.phase_statut,
         o.commentaire,
+        o.agent_lat,
+        o.agent_lng,
+        o.projected_lat,
+        o.projected_lng,
+        o.distance_from_start,
         COALESCE(photos.list, '[]'::json) AS photos
       FROM public.observation_terrain o
       JOIN public.troncon t ON t.id = o.troncon_id
@@ -2112,6 +2117,11 @@ async function getChantierAvancementStats(req, res) {
     const observations = obsRes.rows.map(o => ({
       ...o,
       progress_percentage: Number(o.progress_percentage) || 0,
+      agent_lat: o.agent_lat != null ? Number(o.agent_lat) : null,
+      agent_lng: o.agent_lng != null ? Number(o.agent_lng) : null,
+      projected_lat: o.projected_lat != null ? Number(o.projected_lat) : null,
+      projected_lng: o.projected_lng != null ? Number(o.projected_lng) : null,
+      distance_from_start: o.distance_from_start != null ? Number(o.distance_from_start) : null,
       photos: Array.isArray(o.photos) ? o.photos : [],
     }));
 
@@ -2140,6 +2150,575 @@ async function getChantierAvancementStats(req, res) {
   }
 }
 
+/**
+ * GET /chantiers/:id/journal
+ * Returns continuous operational journal for a given month:
+ * - Daily calendar grid with categorized status (ACTIVITE, ACTIVITE_PARTIELLE, NON_TRAVAILLE, ABSENCE, CHANTIER_ARRETE, INACTIVITE_A_VERIFIER)
+ * - Carried forward authoritative progress per tronçon (flat plateaus, never artificial 0% drop)
+ * - Detailed tronçon-level breakdown for every single day
+ * - Demandes d'explication and declared agent absences
+ * - Monthly operational summary metrics
+ */
+async function getChantierJournal(req, res) {
+  try {
+    const { id } = req.params;
+    const userId = req.user?.id;
+    const isAdmin = req.user?.role_nom === 'Administrateur' || req.user?.role_id === 1;
+
+    // 1. Authorize: Responsable of chantier or Admin
+    const chantierRes = await db.query(`
+      SELECT 
+        c.id,
+        c.projet_id,
+        c.responsable_id,
+        c.nom,
+        c.statut,
+        TO_CHAR(c.date_debut, 'YYYY-MM-DD') AS date_debut,
+        TO_CHAR(c.date_fin_prevue, 'YYYY-MM-DD') AS date_fin_prevue,
+        c.date_creation
+      FROM public.chantier c
+      WHERE c.id = $1 AND (c.responsable_id = $2 OR $3 = true);
+    `, [id, userId, isAdmin]);
+
+    if (chantierRes.rows.length === 0) {
+      const existsCheck = await db.query('SELECT id, nom, responsable_id FROM public.chantier WHERE id = $1', [id]);
+      if (existsCheck.rows.length === 0) {
+        return res.status(404).json({ message: 'Chantier introuvable.' });
+      }
+      return res.status(403).json({ message: "Accès interdit : vous n'êtes pas le responsable de ce chantier." });
+    }
+    const chantier = chantierRes.rows[0];
+
+    // 2. Determine month date range
+    const now = new Date();
+    const defaultMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    const rawMonth = req.query.month || req.query.mois || '';
+    const monthParam = /^\d{4}-\d{2}$/.test(String(rawMonth)) ? String(rawMonth) : defaultMonth;
+    const [year, monthNum] = monthParam.split('-').map(Number);
+    const lastDayOfMonth = new Date(year, monthNum, 0).getDate();
+
+    const startDate = `${year}-${String(monthNum).padStart(2, '0')}-01`;
+    const endDate = `${year}-${String(monthNum).padStart(2, '0')}-${String(lastDayOfMonth).padStart(2, '0')}`;
+    const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+
+    // 3. Fetch tronçons with active assignments
+    const tronconQuery = `
+      SELECT 
+        t.id,
+        t.nom,
+        'T' || ROW_NUMBER() OVER (ORDER BY t.pk_debut ASC, t.id ASC) AS code,
+        t.pk_debut,
+        t.pk_fin,
+        COALESCE(t.statut, 'NON_COMMENCE') AS statut,
+        COALESCE(t.avancement, 0)::int AS avancement,
+        ROUND(ST_Length(t.geometry::geography)::numeric, 2) AS planned_meters,
+        ROUND(LEAST(COALESCE(t.authoritative_progress_meters, 0), ST_Length(t.geometry::geography))::numeric, 2) AS completed_meters,
+        u.id AS agent_id,
+        NULLIF(TRIM(CONCAT(u.prenom, ' ', u.nom)), '') AS agent_nom_complet,
+        u.photo_url AS agent_photo_url
+      FROM public.troncon t
+      LEFT JOIN LATERAL (
+        SELECT u2.id, u2.nom, u2.prenom, u2.photo_url
+        FROM public.affectation_troncon a
+        JOIN public.utilisateur u2 ON u2.id = a.agent_id
+        WHERE a.troncon_id = t.id AND a.statut = 'ACTIF'
+        ORDER BY a.date_affectation DESC, a.id DESC
+        LIMIT 1
+      ) u ON true
+      WHERE t.chantier_id = $1
+      ORDER BY t.pk_debut ASC, t.id ASC;
+    `;
+    const tronconsRes = await db.query(tronconQuery, [id]);
+    const troncons = tronconsRes.rows.map(t => ({
+      ...t,
+      avancement: Number(t.avancement) || 0,
+      planned_meters: Number(t.planned_meters) || 0,
+      completed_meters: Number(t.completed_meters) || 0,
+    }));
+    const N = troncons.length;
+    const agentIds = Array.from(new Set(troncons.map(t => t.agent_id).filter(Boolean)));
+
+    // 4. Chantier calendar configuration (default: Mon-Sat = [1,2,3,4,5,6])
+    const calRes = await db.query(
+      'SELECT jours_travailles FROM public.chantier_calendrier WHERE chantier_id = $1',
+      [id]
+    );
+    const joursTravailles = calRes.rows.length > 0 && Array.isArray(calRes.rows[0].jours_travailles)
+      ? calRes.rows[0].jours_travailles
+      : [1, 2, 3, 4, 5, 6];
+
+    // 5. Public holidays
+    const ferieRes = await db.query(`
+      SELECT TO_CHAR(date, 'YYYY-MM-DD') AS date_str, nom, est_chome
+      FROM public.jour_ferie
+      WHERE (chantier_id IS NULL OR chantier_id = $1)
+        AND date >= $2::date AND date <= $3::date;
+    `, [id, startDate, endDate]);
+    const holidaysMap = {};
+    ferieRes.rows.forEach(r => {
+      holidaysMap[r.date_str] = r;
+    });
+
+    // 6. Declared Agent Absences
+    let absences = [];
+    if (agentIds.length > 0) {
+      const absRes = await db.query(`
+        SELECT 
+          a.id,
+          a.agent_id,
+          TO_CHAR(a.date_debut, 'YYYY-MM-DD') AS date_debut,
+          TO_CHAR(a.date_fin, 'YYYY-MM-DD') AS date_fin,
+          a.motif,
+          a.statut,
+          TRIM(CONCAT(u.prenom, ' ', u.nom)) AS agent_nom
+        FROM public.agent_absence a
+        JOIN public.utilisateur u ON u.id = a.agent_id
+        WHERE a.agent_id = ANY($1::int[])
+          AND a.statut IN ('VALIDE', 'EN_ATTENTE')
+          AND a.date_debut <= $3::date AND a.date_fin >= $2::date;
+      `, [agentIds, startDate, endDate]);
+      absences = absRes.rows;
+    }
+
+    // 7. Demandes d'explication
+    const demandesRes = await db.query(`
+      SELECT 
+        d.id,
+        d.troncon_id,
+        d.agent_id,
+        d.responsable_id,
+        TO_CHAR(d.date_concernee, 'YYYY-MM-DD') AS date_concernee,
+        d.statut,
+        d.message_responsable,
+        d.motif_agent,
+        d.reponse_agent,
+        TO_CHAR(d.date_demande, 'YYYY-MM-DD HH24:MI') AS date_demande,
+        TO_CHAR(d.date_reponse, 'YYYY-MM-DD HH24:MI') AS date_reponse,
+        TRIM(CONCAT(u.prenom, ' ', u.nom)) AS agent_nom,
+        TRIM(CONCAT(r.prenom, ' ', r.nom)) AS responsable_nom
+      FROM public.demande_explication d
+      LEFT JOIN public.utilisateur u ON u.id = d.agent_id
+      LEFT JOIN public.utilisateur r ON r.id = d.responsable_id
+      WHERE d.chantier_id = $1
+        AND d.date_concernee >= $2::date AND d.date_concernee <= $3::date;
+    `, [id, startDate, endDate]);
+    const demandesMap = {};
+    demandesRes.rows.forEach(d => {
+      demandesMap[`${d.troncon_id}_${d.date_concernee}`] = d;
+    });
+
+    // 8. Field Observations recorded in this month
+    const obsRes = await db.query(`
+      SELECT 
+        o.id,
+        o.troncon_id,
+        o.agent_id,
+        TO_CHAR(o.date_heure, 'YYYY-MM-DD') AS date_str,
+        TO_CHAR(o.date_heure, 'HH24:MI') AS heure_str,
+        COALESCE(o.progress_percentage, 0)::int AS progress_percentage,
+        COALESCE(o.authoritative_progress_percentage, o.progress_percentage, 0)::int AS authoritative_progress_percentage,
+        o.chainage,
+        o.phase,
+        o.phase_statut,
+        o.commentaire,
+        TRIM(CONCAT(u.prenom, ' ', u.nom)) AS agent_nom,
+        COALESCE(photos.cnt, 0)::int AS photo_count
+      FROM public.observation_terrain o
+      LEFT JOIN public.utilisateur u ON u.id = o.agent_id
+      LEFT JOIN LATERAL (
+        SELECT COUNT(*)::int AS cnt FROM public.photo_terrain p WHERE p.observation_id = o.id
+      ) photos ON true
+      WHERE o.chantier_id = $1
+        AND o.date_heure >= ($2::date + time '00:00:00')
+        AND o.date_heure <= ($3::date + time '23:59:59')
+      ORDER BY o.date_heure ASC, o.id ASC;
+    `, [id, startDate, endDate]);
+    const monthObservations = obsRes.rows;
+
+    // 9. Cumulative latest authoritative progress per tronçon across all days of the month
+    const dailySnapshotQuery = `
+      WITH daily_latest_obs AS (
+        SELECT DISTINCT ON (d.obs_date, o.troncon_id)
+          d.obs_date,
+          o.troncon_id,
+          ROUND(COALESCE(o.authoritative_progress_percentage, o.progress_percentage, 0)::numeric)::int AS progress_percentage
+        FROM (
+          SELECT d::date AS obs_date
+          FROM generate_series($2::date, $3::date, '1 day'::interval) d
+        ) d
+        JOIN public.observation_terrain o 
+          ON o.chantier_id = $1 
+         AND o.date_heure <= (d.obs_date + time '23:59:59')
+        ORDER BY d.obs_date, o.troncon_id, o.date_heure DESC, o.id DESC
+      )
+      SELECT 
+        TO_CHAR(obs_date, 'YYYY-MM-DD') AS date_str,
+        troncon_id,
+        progress_percentage
+      FROM daily_latest_obs;
+    `;
+    const dailySnapshotRes = await db.query(dailySnapshotQuery, [id, startDate, endDate]);
+    const latestProgressMap = {};
+    dailySnapshotRes.rows.forEach(r => {
+      if (!latestProgressMap[r.date_str]) latestProgressMap[r.date_str] = {};
+      latestProgressMap[r.date_str][r.troncon_id] = Number(r.progress_percentage) || 0;
+    });
+
+    // 10. Generate continuous calendar days
+    const frenchDayNames = ['Dim', 'Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam'];
+    const days = [];
+
+    let totalJoursCalendrier = 0;
+    let joursTravaillesPasses = 0;
+    let joursAvecActivite = 0;
+    let joursSansReleve = 0;
+    let joursFeriesChomes = 0;
+    let joursAbsenceAgent = 0;
+    let demandesEnAttente = 0;
+
+    for (let d = 1; d <= lastDayOfMonth; d++) {
+      totalJoursCalendrier++;
+      const dObj = new Date(year, monthNum - 1, d);
+      const dateStr = `${year}-${String(monthNum).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+      const jsDay = dObj.getDay(); // 0 = Sunday, 1 = Mon ... 6 = Sat
+      const isoDay = jsDay === 0 ? 7 : jsDay;
+      const dayLabel = frenchDayNames[jsDay];
+      const isToday = dateStr === todayStr;
+      const isFuture = dateStr > todayStr;
+      const isPriorToStart = chantier.date_debut && dateStr < chantier.date_debut;
+
+      const isCalendarWorkingDay = joursTravailles.includes(isoDay);
+      const ferie = holidaysMap[dateStr] || null;
+      const isFerieChome = ferie && ferie.est_chome;
+      const isNonTravaille = !isCalendarWorkingDay || Boolean(isFerieChome);
+      if (isFerieChome || (!isCalendarWorkingDay && !isFuture)) {
+        joursFeriesChomes++;
+      }
+
+      const isChantierArrete = chantier.statut === 'SUSPENDU' || chantier.statut === 'ARRETE';
+      const dayObs = monthObservations.filter(o => o.date_str === dateStr);
+      const totalDayObsCount = dayObs.length;
+
+      let hasAnyReleve = false;
+      let allAssignedHaveReleve = troncons.length > 0;
+      let hasAnyAbsence = false;
+      let countTronconsSansReleve = 0;
+
+      const dayTroncons = troncons.map(t => {
+        const tObs = dayObs.filter(o => o.troncon_id === t.id);
+        const authProg = (latestProgressMap[dateStr] && latestProgressMap[dateStr][t.id]) || 0;
+
+        let statut = 'SANS_RELEVE';
+        let statut_label = 'Sans relevé';
+        let absence_info = null;
+        let demande_info = null;
+
+        if (tObs.length > 0) {
+          statut = 'RELEVE';
+          statut_label = `Relevé (${tObs.length})`;
+          hasAnyReleve = true;
+        } else if (isFuture) {
+          statut = 'A_VENIR';
+          statut_label = 'À venir';
+          allAssignedHaveReleve = false;
+        } else if (isNonTravaille) {
+          statut = 'NON_TRAVAILLE';
+          statut_label = ferie ? ferie.nom : 'Jour non travaillé';
+          allAssignedHaveReleve = false;
+        } else if (isChantierArrete) {
+          statut = 'CHANTIER_ARRETE';
+          statut_label = 'Chantier arrêté / suspendu';
+          allAssignedHaveReleve = false;
+        } else {
+          // Check if assigned agent has declared absence
+          const agentAbs = absences.find(a => a.agent_id === t.agent_id && dateStr >= a.date_debut && dateStr <= a.date_fin);
+          if (agentAbs) {
+            statut = 'ABSENCE_AGENT';
+            statut_label = `Absence (${agentAbs.motif})`;
+            absence_info = agentAbs;
+            hasAnyAbsence = true;
+            allAssignedHaveReleve = false;
+          } else {
+            statut = 'SANS_RELEVE';
+            statut_label = 'Sans relevé';
+            allAssignedHaveReleve = false;
+            countTronconsSansReleve++;
+            demande_info = demandesMap[`${t.id}_${dateStr}`] || null;
+            if (demande_info && demande_info.statut === 'EN_ATTENTE') {
+              demandesEnAttente++;
+            }
+          }
+        }
+
+        return {
+          troncon_id: t.id,
+          nom: t.nom,
+          code: t.code,
+          statut,
+          statut_label,
+          avancement: authProg,
+          planned_meters: t.planned_meters,
+          agent_id: t.agent_id,
+          agent_nom: t.agent_nom_complet,
+          agent_photo_url: t.agent_photo_url,
+          observations_count: tObs.length,
+          derniere_heure: tObs.length > 0 ? tObs[tObs.length - 1].heure_str : null,
+          max_progression_jour: tObs.length > 0 ? Math.max(...tObs.map(o => o.progress_percentage)) : null,
+          absence_info,
+          demande_explication: demande_info,
+          observations: tObs,
+        };
+      });
+
+      // Day Consolidated Classification
+      let dayStatus = 'INACTIVITE_A_VERIFIER';
+      let dayStatusLabel = 'Inactivité à vérifier';
+
+      if (isFuture) {
+        dayStatus = 'A_VENIR';
+        dayStatusLabel = 'À venir';
+      } else if (isNonTravaille) {
+        dayStatus = 'NON_TRAVAILLE';
+        dayStatusLabel = ferie ? ferie.nom : 'Non travaillé';
+      } else if (isChantierArrete) {
+        dayStatus = 'CHANTIER_ARRETE';
+        dayStatusLabel = 'Chantier arrêté';
+      } else if (hasAnyReleve) {
+        if (allAssignedHaveReleve) {
+          dayStatus = 'ACTIVITE';
+          dayStatusLabel = 'Activité complète';
+        } else {
+          dayStatus = 'ACTIVITE_PARTIELLE';
+          dayStatusLabel = 'Activité partielle';
+        }
+      } else if (hasAnyAbsence && countTronconsSansReleve === 0) {
+        dayStatus = 'ABSENCE';
+        dayStatusLabel = 'Absence A.T.';
+      } else {
+        dayStatus = 'INACTIVITE_A_VERIFIER';
+        dayStatusLabel = 'Inactivité à vérifier';
+      }
+
+      // Consolidated progress for date D (average of carried-forward progress over N tronçons)
+      const consolidatedProgress = N > 0 
+        ? Math.round(dayTroncons.reduce((sum, tr) => sum + tr.avancement, 0) / N)
+        : 0;
+
+      // Update counters for passed working days
+      if (!isFuture && !isNonTravaille && !isChantierArrete) {
+        joursTravaillesPasses++;
+        if (hasAnyReleve) {
+          joursAvecActivite++;
+        } else if (dayStatus === 'ABSENCE') {
+          joursAbsenceAgent++;
+        } else {
+          joursSansReleve++;
+        }
+      }
+
+      days.push({
+        date: dateStr,
+        day_of_month: d,
+        day_of_week: isoDay,
+        day_label: dayLabel,
+        is_today: isToday,
+        is_future: isFuture,
+        is_prior_to_start: Boolean(isPriorToStart),
+        is_non_travaille: isNonTravaille,
+        is_ferie: Boolean(isFerieChome),
+        ferie_nom: ferie ? ferie.nom : null,
+        statut_jour: dayStatus,
+        statut_jour_label: dayStatusLabel,
+        consolidated_progress: consolidatedProgress,
+        observations_count: totalDayObsCount,
+        troncons: dayTroncons,
+      });
+    }
+
+    return res.status(200).json({
+      chantier: {
+        id: chantier.id,
+        nom: chantier.nom,
+        statut: chantier.statut,
+        date_debut: chantier.date_debut,
+        date_fin_prevue: chantier.date_fin_prevue,
+      },
+      month: monthParam,
+      troncons_count: N,
+      summary: {
+        total_jours_calendrier: totalJoursCalendrier,
+        jours_travailles_passes: joursTravaillesPasses,
+        jours_avec_activite: joursAvecActivite,
+        jours_sans_releve: joursSansReleve,
+        jours_feries_chomes: joursFeriesChomes,
+        jours_absence_agent: joursAbsenceAgent,
+        demandes_en_attente: demandesEnAttente,
+      },
+      days,
+    });
+  } catch (error) {
+    console.error('❌ GetChantierJournal error:', error.message);
+    return res.status(500).json({
+      message: "Erreur lors de la récupération du journal de chantier.",
+    });
+  }
+}
+
+/**
+ * POST /chantiers/:id/justifications/demander
+ * Transmits an explanation request from Responsable to the assigned Agent de Terrain
+ * for a specific tronçon and date without observations.
+ */
+async function requestExplanation(req, res) {
+  try {
+    const { id } = req.params;
+    const { troncon_id, date_concernee, message } = req.body;
+    const userId = req.user.id;
+    const isAdmin = req.user.role_nom === 'Administrateur' || req.user.role_id === 1;
+
+    if (!troncon_id || !date_concernee || !message) {
+      return res.status(400).json({ message: 'Les champs troncon_id, date_concernee et message sont requis.' });
+    }
+
+    // Verify user is Responsable or Admin of chantier
+    const chantierRes = await db.query(`
+      SELECT c.id, c.nom, c.responsable_id
+      FROM public.chantier c
+      WHERE c.id = $1 AND (c.responsable_id = $2 OR $3 = true)
+    `, [id, userId, isAdmin]);
+
+    if (chantierRes.rows.length === 0) {
+      return res.status(403).json({ message: "Accès interdit : vous n'êtes pas le responsable de ce chantier." });
+    }
+    const chantier = chantierRes.rows[0];
+
+    // Verify tronçon belongs to chantier and get active agent
+    const tronconRes = await db.query(`
+      SELECT 
+        t.id, t.nom,
+        a.agent_id,
+        TRIM(CONCAT(u.prenom, ' ', u.nom)) AS agent_nom
+      FROM public.troncon t
+      LEFT JOIN LATERAL (
+        SELECT a2.agent_id
+        FROM public.affectation_troncon a2
+        WHERE a2.troncon_id = t.id AND a2.statut = 'ACTIF'
+        ORDER BY a2.date_affectation DESC, a2.id DESC
+        LIMIT 1
+      ) a ON true
+      LEFT JOIN public.utilisateur u ON u.id = a.agent_id
+      WHERE t.id = $1 AND t.chantier_id = $2
+    `, [troncon_id, id]);
+
+    if (tronconRes.rows.length === 0) {
+      return res.status(404).json({ message: 'Tronçon introuvable dans ce chantier.' });
+    }
+
+    const troncon = tronconRes.rows[0];
+    if (!troncon.agent_id) {
+      return res.status(400).json({ message: "Aucun agent de terrain n'est actuellement affecté à ce tronçon." });
+    }
+
+    // Duplicate protection: check if an explanation request already exists for this tronçon and date
+    const existingReq = await db.query(`
+      SELECT d.*, t.nom AS troncon_nom, c.nom AS chantier_nom
+      FROM public.demande_explication d
+      JOIN public.troncon t ON t.id = d.troncon_id
+      JOIN public.chantier c ON c.id = d.chantier_id
+      WHERE d.troncon_id = $1 AND d.date_concernee = $2::date
+    `, [troncon_id, date_concernee]);
+
+    if (existingReq.rows.length > 0) {
+      const cur = existingReq.rows[0];
+      if (cur.statut === 'EN_ATTENTE') {
+        return res.status(409).json({
+          message: "Demande déjà envoyée. Une réponse est déjà en attente de l'agent de terrain.",
+          demande: cur,
+          already_pending: true,
+        });
+      }
+      if (cur.statut === 'REPONDUE') {
+        return res.status(409).json({
+          message: "L'agent de terrain a déjà fourni une explication pour cette journée.",
+          demande: cur,
+          already_answered: true,
+        });
+      }
+    }
+
+    // Insert or update demande_explication
+    const insertRes = await db.query(`
+      INSERT INTO public.demande_explication (
+        chantier_id,
+        troncon_id,
+        agent_id,
+        responsable_id,
+        date_concernee,
+        statut,
+        message_responsable,
+        date_demande
+      )
+      VALUES ($1, $2, $3, $4, $5::date, 'EN_ATTENTE', $6, CURRENT_TIMESTAMP)
+      ON CONFLICT (troncon_id, date_concernee)
+      DO UPDATE SET 
+        message_responsable = EXCLUDED.message_responsable,
+        statut = 'EN_ATTENTE',
+        date_demande = CURRENT_TIMESTAMP
+      RETURNING *;
+    `, [id, troncon_id, troncon.agent_id, userId, date_concernee, message]);
+
+    const demande = insertRes.rows[0];
+
+    // Create in-app notification for the agent with complete context metadata
+    try {
+      const demandeurNom = req.user.prenom ? `${req.user.prenom} ${req.user.nom}` : 'Responsable';
+      const metadataJson = JSON.stringify({
+        chantier_id: parseInt(id, 10),
+        chantier_nom: chantier.nom,
+        troncon_id: parseInt(troncon_id, 10),
+        troncon_nom: troncon.nom,
+        date_concernee: date_concernee,
+        demande_id: demande.id,
+        demandeur_nom: demandeurNom,
+        message_responsable: message,
+      });
+
+      await db.query(`
+        INSERT INTO public.notification (
+          utilisateur_id,
+          titre,
+          message,
+          type,
+          related_entity_type,
+          related_entity_id,
+          metadata,
+          date_envoi,
+          lu
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP, false)
+      `, [
+        troncon.agent_id,
+        "Demande d'explication",
+        `Le responsable demande une justification concernant l'absence de relevé le ${date_concernee} sur le tronçon ${troncon.nom} (${chantier.nom}).`,
+        'DEMANDE_EXPLICATION',
+        'demande_explication',
+        demande.id,
+        metadataJson,
+      ]);
+    } catch (notifErr) {
+      console.warn('⚠️ Could not insert notification for agent:', notifErr.message);
+    }
+
+    return res.status(201).json({
+      message: 'Demande d’explication transmise avec succès à l’agent de terrain.',
+      demande,
+    });
+  } catch (error) {
+    console.error('❌ RequestExplanation error:', error.message);
+    return res.status(500).json({ message: "Erreur lors de l'envoi de la demande d'explication." });
+  }
+}
+
 module.exports = {
   getChantierDetails,
   createChantier,
@@ -2157,4 +2736,7 @@ module.exports = {
   saveTroncons,
   getChantierTroncons,
   getChantierAvancementStats,
+  getChantierJournal,
+  requestExplanation,
 };
+

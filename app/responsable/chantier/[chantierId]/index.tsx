@@ -514,7 +514,7 @@ export default function ChantierDetailResponsableScreen() {
               <Ionicons name="trending-up" size={22} color="#16A34A" />
             </View>
             <Text style={styles.quickAccessLabel} weight="bold">Avancement</Text>
-            <Text style={styles.quickAccessSub}>{"Voir les statistiques et l'historique détaillé"}</Text>
+            <Text style={styles.quickAccessSub}>{"Voir les statistiques et l'historique de progression"}</Text>
             <Text style={styles.quickAccessLink} weight="semibold">Consulter →</Text>
           </TouchableOpacity>
 
@@ -527,7 +527,7 @@ export default function ChantierDetailResponsableScreen() {
               <Ionicons name="images-outline" size={22} color="#2563EB" />
             </View>
             <Text style={styles.quickAccessLabel} weight="bold">Images</Text>
-            <Text style={styles.quickAccessSub}>Voir toutes les images du chantier</Text>
+            <Text style={styles.quickAccessSub}>Voir les photos et observations terrain</Text>
             <Text style={styles.quickAccessLink} weight="semibold">Consulter →</Text>
           </TouchableOpacity>
         </View>
