@@ -40,6 +40,7 @@ export default function CreateProjectScreen() {
   const [showPickerDebut, setShowPickerDebut] = useState(false);
   const [showPickerFin, setShowPickerFin] = useState(false);
   const [statut, setStatut] = useState('En cours');
+  const [nombreChantiers, setNombreChantiers] = useState<number>(3);
   const [isLoading, setIsLoading] = useState(false);
   const [errors, setErrors] = useState<{ nom?: string; general?: string }>({});
 
@@ -66,12 +67,13 @@ export default function CreateProjectScreen() {
         date_debut: dateDebut || undefined,
         date_fin: dateFin || undefined,
         statut,
+        nombre_chantiers: nombreChantiers,
       });
 
       const createdId = res.project.id;
 
       // Navigate directly to the spatial GeoJSON & Tronçons configuration workflow
-      router.replace(`/responsable/projet/${createdId}/configure` as any);
+      router.replace(`/responsable/projet/${createdId}/configure?count=${nombreChantiers}` as any);
     } catch (err: any) {
       setErrors({ general: err.message || 'Échec de la création du projet.' });
     } finally {
@@ -317,14 +319,83 @@ export default function CreateProjectScreen() {
               </View>
             </View>
 
+            {/* Nombre de Chantiers */}
+            <View style={styles.chantiersSection}>
+              <View style={styles.chantiersHeaderRow}>
+                <Text style={styles.inputLabel}>Nombre de Chantiers / Lots</Text>
+                <View style={styles.chantiersCountBadge}>
+                  <Text style={styles.chantiersCountBadgeText} weight="bold">
+                    {nombreChantiers} {nombreChantiers === 1 ? 'chantier' : 'chantiers'}
+                  </Text>
+                </View>
+              </View>
+
+              <View style={styles.stepperContainer}>
+                <TouchableOpacity
+                  style={[styles.stepperBtn, nombreChantiers <= 1 && styles.stepperBtnDisabled]}
+                  onPress={() => setNombreChantiers((prev) => Math.max(1, prev - 1))}
+                  disabled={nombreChantiers <= 1}
+                  activeOpacity={0.7}
+                >
+                  <Ionicons
+                    name="remove"
+                    size={22}
+                    color={nombreChantiers <= 1 ? Palette.textLight : Palette.primary}
+                  />
+                </TouchableOpacity>
+
+                <View style={styles.stepperValueBox}>
+                  <Text style={styles.stepperValueText} weight="bold">
+                    {nombreChantiers}
+                  </Text>
+                  <Text style={styles.stepperValueUnit}>
+                    {nombreChantiers === 1 ? 'lot' : 'lots'}
+                  </Text>
+                </View>
+
+                <TouchableOpacity
+                  style={styles.stepperBtn}
+                  onPress={() => setNombreChantiers((prev) => Math.min(50, prev + 1))}
+                  activeOpacity={0.7}
+                >
+                  <Ionicons name="add" size={22} color={Palette.primary} />
+                </TouchableOpacity>
+              </View>
+
+              {/* Quick Presets */}
+              <View style={styles.presetsRow}>
+                {[1, 2, 3, 4, 5].map((num) => (
+                  <TouchableOpacity
+                    key={num}
+                    style={[
+                      styles.presetChip,
+                      nombreChantiers === num && styles.presetChipActive,
+                    ]}
+                    onPress={() => setNombreChantiers(num)}
+                    activeOpacity={0.7}
+                  >
+                    <Text
+                      style={[
+                        styles.presetChipText,
+                        nombreChantiers === num && styles.presetChipTextActive,
+                      ]}
+                      weight={nombreChantiers === num ? 'bold' : 'normal'}
+                    >
+                      {num} {num === 1 ? 'lot' : 'lots'}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+
             <View style={styles.flowNoticeBox}>
               <Ionicons name="git-network-outline" size={22} color={Palette.primary} />
               <View style={{ flex: 1 }}>
                 <Text style={styles.flowNoticeTitle} weight="bold">
-                  Étape suivante : Structuration des chantiers
+                  Étape suivante : Structuration des {nombreChantiers} chantiers
                 </Text>
                 <Text style={styles.flowNoticeText}>
-                  Définissez le nombre de chantiers pour ce projet avant de procéder au cadrage spatial et au découpage en tronçons.
+                  Les {nombreChantiers} chantiers seront immédiatement créés dans le projet. Vous pourrez ensuite procéder au cadrage spatial et découpage en tronçons du Chantier 1.
                 </Text>
               </View>
             </View>
@@ -580,5 +651,92 @@ const styles = StyleSheet.create({
     color: Palette.textMuted,
     marginTop: 2,
     lineHeight: 16,
+  },
+  chantiersSection: {
+    marginTop: 6,
+    marginBottom: 12,
+  },
+  chantiersHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  chantiersCountBadge: {
+    backgroundColor: '#EFF6FF',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#BFDBFE',
+  },
+  chantiersCountBadgeText: {
+    fontSize: 11,
+    color: '#1E40AF',
+  },
+  stepperContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#F8FAFC',
+    borderRadius: 14,
+    borderWidth: 1.5,
+    borderColor: '#E2E8F0',
+    padding: 6,
+    gap: 12,
+  },
+  stepperBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 10,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1.5,
+    borderColor: '#E2E8F0',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  stepperBtnDisabled: {
+    opacity: 0.4,
+  },
+  stepperValueBox: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  stepperValueText: {
+    fontSize: 22,
+    color: Palette.text,
+  },
+  stepperValueUnit: {
+    fontSize: 11,
+    color: Palette.textMuted,
+    marginTop: 1,
+  },
+  presetsRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 8,
+    marginTop: 10,
+    flexWrap: 'wrap',
+  },
+  presetChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: '#F1F5F9',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  presetChipActive: {
+    backgroundColor: 'rgba(23, 107, 91, 0.1)',
+    borderColor: Palette.primary,
+  },
+  presetChipText: {
+    fontSize: 12,
+    color: Palette.textMuted,
+  },
+  presetChipTextActive: {
+    color: Palette.primary,
+    fontWeight: 'bold',
   },
 });

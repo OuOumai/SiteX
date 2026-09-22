@@ -191,98 +191,165 @@ export default function ProjectDetailResponsableScreen() {
               const hasAlignment = ch.gis_status === 'ALIGNEMENT_IMPORTE';
 
               return (
-                <Card key={ch.id} variant="elevated" style={styles.chantierCard}>
-                  <View style={styles.chantierHeader}>
-                    <View style={{ flex: 1 }}>
-                      <Text variant="h3" style={styles.chantierTitle}>
-                        {ch.nom}
-                      </Text>
-                      <Text style={styles.chantierSubtitle}>
-                        Responsable : {ch.responsable_nom || 'Responsable'}
-                      </Text>
-                    </View>
-
-                    {/* GIS Status Badge */}
-                    <View
-                      style={[
-                        styles.gisBadge,
-                        isGisReady
-                          ? styles.gisBadgeReady
-                          : hasAlignment
-                          ? styles.gisBadgeImported
-                          : styles.gisBadgeUnset,
-                      ]}
-                    >
-                      <Ionicons
-                        name={isGisReady ? 'checkmark-circle' : hasAlignment ? 'git-branch' : 'alert-circle'}
-                        size={12}
-                        color={isGisReady ? '#16A34A' : hasAlignment ? '#2563EB' : '#D97706'}
-                      />
-                      <Text
-                        style={[
-                          styles.gisBadgeText,
-                          {
-                            color: isGisReady ? '#16A34A' : hasAlignment ? '#2563EB' : '#D97706',
-                          },
-                        ]}
-                        weight="semibold"
-                      >
-                        {isGisReady ? 'GIS Prêt' : hasAlignment ? 'Alignement prêt' : 'GIS non configuré'}
-                      </Text>
-                    </View>
-                  </View>
-
-                  <View style={styles.chantierMetaRow}>
-                    <View style={styles.metaBadge}>
-                      <Ionicons name="speedometer-outline" size={13} color={Palette.primary} />
-                      <Text style={styles.metaBadgeText}>{ch.avancement || 0}%</Text>
-                    </View>
-
-                    {ch.length_km ? (
-                      <View style={styles.metaBadge}>
-                        <Ionicons name="git-network-outline" size={13} color="#0284C7" />
-                        <Text style={styles.metaBadgeText}>
-                          {ch.length_km} km ({ch.nombre_troncons || 0} tronçons)
+                <Card
+                  key={ch.id}
+                  variant="elevated"
+                  style={[
+                    styles.chantierCard,
+                    !isGisReady && styles.chantierCardUnconfigured,
+                  ]}
+                >
+                  <TouchableOpacity
+                    activeOpacity={0.8}
+                    onPress={() => {
+                      if (!isGisReady) {
+                        router.push(`/responsable/chantier/${ch.id}/gis?projectId=${projectId}` as any);
+                      } else {
+                        router.push(`/responsable/chantier/${ch.id}` as any);
+                      }
+                    }}
+                  >
+                    <View style={styles.chantierHeader}>
+                      <View style={{ flex: 1 }}>
+                        <Text variant="h3" style={styles.chantierTitle}>
+                          {ch.nom}
+                        </Text>
+                        <Text style={styles.chantierSubtitle}>
+                          Responsable : {ch.responsable_nom || 'Responsable'}
                         </Text>
                       </View>
-                    ) : null}
 
-                    {ch.surface_reference ? (
-                      <View style={styles.metaBadge}>
-                        <Ionicons name="cube-outline" size={13} color={Palette.textMuted} />
-                        <Text style={styles.metaBadgeText}>Réf: {ch.surface_reference} m²</Text>
+                      {/* Status Badge */}
+                      <View
+                        style={[
+                          styles.gisBadge,
+                          isGisReady
+                            ? styles.gisBadgeReady
+                            : hasAlignment
+                            ? styles.gisBadgeImported
+                            : styles.gisBadgeUnset,
+                        ]}
+                      >
+                        <Ionicons
+                          name={
+                            isGisReady
+                              ? 'checkmark-circle'
+                              : hasAlignment
+                              ? 'git-branch'
+                              : 'ellipse-outline'
+                          }
+                          size={13}
+                          color={
+                            isGisReady ? '#16A34A' : hasAlignment ? '#2563EB' : '#D97706'
+                          }
+                        />
+                        <Text
+                          style={[
+                            styles.gisBadgeText,
+                            {
+                              color: isGisReady
+                                ? '#16A34A'
+                                : hasAlignment
+                                ? '#2563EB'
+                                : '#D97706',
+                            },
+                          ]}
+                          weight="semibold"
+                        >
+                          {isGisReady
+                            ? 'Configuré'
+                            : hasAlignment
+                            ? 'Alignement prêt'
+                            : 'À configurer'}
+                        </Text>
                       </View>
-                    ) : null}
-                  </View>
+                    </View>
+
+                    <View style={styles.chantierMetaRow}>
+                      <View style={styles.metaBadge}>
+                        <Ionicons name="speedometer-outline" size={13} color={Palette.primary} />
+                        <Text style={styles.metaBadgeText}>{ch.avancement || 0}%</Text>
+                      </View>
+
+                      {ch.length_km ? (
+                        <View style={styles.metaBadge}>
+                          <Ionicons name="git-network-outline" size={13} color="#0284C7" />
+                          <Text style={styles.metaBadgeText}>
+                            {ch.length_km} km ({ch.nombre_troncons || 0} tronçons)
+                          </Text>
+                        </View>
+                      ) : (
+                        <View style={styles.metaBadge}>
+                          <Ionicons name="git-network-outline" size={13} color={Palette.textMuted} />
+                          <Text style={styles.metaBadgeText}>0 tronçon</Text>
+                        </View>
+                      )}
+
+                      {ch.surface_reference ? (
+                        <View style={styles.metaBadge}>
+                          <Ionicons name="cube-outline" size={13} color={Palette.textMuted} />
+                          <Text style={styles.metaBadgeText}>Réf: {ch.surface_reference} m²</Text>
+                        </View>
+                      ) : null}
+                    </View>
+                  </TouchableOpacity>
 
                   <View style={styles.chantierActions}>
-                    <Button
-                      title="Détails →"
-                      variant="primary"
-                      size="sm"
-                      onPress={() => router.push(`/responsable/chantier/${ch.id}` as any)}
-                    />
-                    <Button
-                      title="🗺️ Carte"
-                      variant="secondary"
-                      size="sm"
-                      onPress={() =>
-                        router.push({
-                          pathname: '/(tabs)/map',
-                          params: {
-                            projectId: String(projectId),
-                            chantierId: String(ch.id),
-                          },
-                        } as any)
-                      }
-                    />
-                    {!isOpenedFromDashboard && (
-                      <Button
-                        title={isGisReady ? '⚙️ Reconfigurer' : '⚙️ Configurer'}
-                        variant="secondary"
-                        size="sm"
-                        onPress={() => router.push(`/responsable/chantier/${ch.id}/gis` as any)}
-                      />
+                    {!isGisReady ? (
+                      <>
+                        <Button
+                          title="⚙️ Configurer le SIG →"
+                          variant="primary"
+                          size="sm"
+                          onPress={() =>
+                            router.push(
+                              `/responsable/chantier/${ch.id}/gis?projectId=${projectId}` as any
+                            )
+                          }
+                          style={{ flex: 1 }}
+                        />
+                        <Button
+                          title="Détails"
+                          variant="secondary"
+                          size="sm"
+                          onPress={() => router.push(`/responsable/chantier/${ch.id}` as any)}
+                        />
+                      </>
+                    ) : (
+                      <>
+                        <Button
+                          title="Détails →"
+                          variant="primary"
+                          size="sm"
+                          onPress={() => router.push(`/responsable/chantier/${ch.id}` as any)}
+                        />
+                        <Button
+                          title="🗺️ Carte"
+                          variant="secondary"
+                          size="sm"
+                          onPress={() =>
+                            router.push({
+                              pathname: '/(tabs)/map',
+                              params: {
+                                projectId: String(projectId),
+                                chantierId: String(ch.id),
+                              },
+                            } as any)
+                          }
+                        />
+                        {!isOpenedFromDashboard && (
+                          <Button
+                            title="⚙️ Reconfigurer"
+                            variant="secondary"
+                            size="sm"
+                            onPress={() =>
+                              router.push(
+                                `/responsable/chantier/${ch.id}/gis?projectId=${projectId}` as any
+                              )
+                            }
+                          />
+                        )}
+                      </>
                     )}
                   </View>
                 </Card>
@@ -464,6 +531,10 @@ const styles = StyleSheet.create({
     padding: 14,
     borderRadius: 12,
     backgroundColor: '#FFFFFF',
+  },
+  chantierCardUnconfigured: {
+    borderLeftWidth: 3.5,
+    borderLeftColor: '#D97706',
   },
   chantierHeader: {
     flexDirection: 'row',

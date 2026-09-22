@@ -24,12 +24,13 @@ const INFRA_ICONS: Record<string, string> = {
 };
 
 export default function ProjectConfigureScreen() {
-  const { projectId } = useLocalSearchParams<{ projectId: string }>();
+  const { projectId, count } = useLocalSearchParams<{ projectId: string; count?: string }>();
   const router = useRouter();
   const { token, user } = useAuth();
 
   const [project, setProject] = useState<ProjectDetails | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isStarting, setIsStarting] = useState(false);
   const [chantierCount, setChantierCount] = useState<number>(3);
 
   useEffect(() => {
@@ -38,6 +39,12 @@ export default function ProjectConfigureScreen() {
       try {
         const res = await api.getProjectDetails(token, projectId);
         setProject(res.project);
+        if (res.project.chantiers && res.project.chantiers.length > 0) {
+          setChantierCount(res.project.chantiers.length);
+        } else if (count) {
+          const parsed = parseInt(count, 10);
+          if (parsed > 0) setChantierCount(parsed);
+        }
       } catch (err) {
         console.error('Erreur chargement projet configure:', err);
       } finally {
@@ -45,7 +52,7 @@ export default function ProjectConfigureScreen() {
       }
     }
     load();
-  }, [token, projectId]);
+  }, [token, projectId, count]);
 
   const handleDecrement = () => {
     setChantierCount((prev) => Math.max(1, prev - 1));
@@ -55,11 +62,33 @@ export default function ProjectConfigureScreen() {
     setChantierCount((prev) => Math.min(50, prev + 1));
   };
 
-  const handleStartWorkflow = () => {
-    if (!projectId) return;
-    router.replace(
-      `/responsable/projet/${projectId}/chantier/create?current=1&total=${chantierCount}` as any
-    );
+  const handleStartWorkflow = async () => {
+    if (!projectId || !token || isStarting) return;
+    setIsStarting(true);
+    try {
+      // Ensure all planned chantiers are registered immediately in PostgreSQL
+      const res = await api.initializeProjectChantiers(token, projectId, chantierCount);
+      const chantiers = res.chantiers || [];
+      const firstChantierId = chantiers.length > 0 ? chantiers[0].id : null;
+
+      if (firstChantierId) {
+        // Open Chantier 1 automatically for GIS configuration
+        router.replace(
+          `/responsable/chantier/${firstChantierId}/gis?current=1&total=${chantierCount}&projectId=${projectId}` as any
+        );
+      } else {
+        router.replace(
+          `/responsable/projet/${projectId}/chantier/create?current=1&total=${chantierCount}` as any
+        );
+      }
+    } catch (err: any) {
+      console.error('Erreur initialisation chantiers:', err.message);
+      router.replace(
+        `/responsable/projet/${projectId}/chantier/create?current=1&total=${chantierCount}` as any
+      );
+    } finally {
+      setIsStarting(false);
+    }
   };
 
   if (isLoading) {
@@ -266,6 +295,8 @@ export default function ProjectConfigureScreen() {
             title={`Continuer la configuration (Chantier 1/${chantierCount}) →`}
             variant="primary"
             size="lg"
+            loading={isStarting}
+            disabled={isStarting}
             onPress={handleStartWorkflow}
             style={{ marginTop: 24 }}
           />

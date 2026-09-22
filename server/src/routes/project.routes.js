@@ -27,6 +27,7 @@ router.get('/', authenticateToken, projectController.getAllProjects);
 router.get('/:id', authenticateToken, projectController.getProjectDetails);
 router.post('/', authenticateToken, requireResponsableOrAdmin, projectController.createProject);
 router.post('/:projectId/chantiers', authenticateToken, requireResponsableOrAdmin, chantierController.createChantier);
+router.post('/:projectId/chantiers/init', authenticateToken, requireResponsableOrAdmin, projectController.initializeProjectChantiers);
 // ⚠️  Use POST for bulk-delete so Express reliably parses the JSON body (DELETE+body is unreliable)
 router.post('/bulk-delete', authenticateToken, requireResponsableOrAdmin, projectController.bulkDeleteProjects);
 router.delete('/:id', authenticateToken, requireResponsableOrAdmin, projectController.deleteProject);

@@ -688,7 +688,7 @@ export default function ResponsableDashboardScreen() {
                         ]}
                       >
                         <Ionicons
-                          name={isGisReady ? 'checkmark-circle' : hasAlignment ? 'git-branch' : 'alert-circle'}
+                          name={isGisReady ? 'checkmark-circle' : hasAlignment ? 'git-branch' : 'ellipse-outline'}
                           size={12}
                           color={isGisReady ? '#16A34A' : hasAlignment ? '#2563EB' : '#D97706'}
                         />
@@ -702,10 +702,10 @@ export default function ResponsableDashboardScreen() {
                           weight="semibold"
                         >
                           {isGisReady
-                            ? 'GIS Prêt'
+                            ? 'Configuré'
                             : hasAlignment
                             ? 'Alignement prêt'
-                            : 'GIS non configuré'}
+                            : 'À configurer'}
                         </Text>
                       </View>
                     </View>

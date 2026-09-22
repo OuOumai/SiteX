@@ -557,6 +557,7 @@ export interface CreateProjectPayload {
   date_debut?: string;
   date_fin?: string;
   statut?: string;
+  nombre_chantiers?: number;
 }
 
 export interface CreateChantierPayload {
@@ -1477,6 +1478,20 @@ class ApiClient {
         Authorization: `Bearer ${token}`,
       },
       body: JSON.stringify(payload),
+    });
+  }
+
+  async initializeProjectChantiers(
+    token: string,
+    projectId: number | string,
+    count: number
+  ): Promise<{ message: string; chantiers: ProjectChantier[] }> {
+    return this.request<{ message: string; chantiers: ProjectChantier[] }>(`/projects/${projectId}/chantiers/init`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ count }),
     });
   }
 

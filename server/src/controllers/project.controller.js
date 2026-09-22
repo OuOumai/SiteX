@@ -298,13 +298,24 @@ async function getProjectDetails(req, res) {
  * Creates a new project in public.projet.
  * Accessible to Responsable and Admin.
  */
+/**
+ * POST /projects
+ * Creates a new project in public.projet.
+ * If nombre_chantiers is specified, creates the planned chantiers immediately in public.chantier.
+ * Accessible to Responsable and Admin.
+ */
 async function createProject(req, res) {
+  const client = await db.pool.connect();
   try {
-    const { nom, description, type_projet, date_debut, date_fin, statut } = req.body;
+    const { nom, description, type_projet, date_debut, date_fin, statut, nombre_chantiers } = req.body;
+    const userId = req.user?.id || null;
 
     if (!nom || !nom.trim()) {
+      client.release();
       return res.status(400).json({ message: 'Le nom du projet est obligatoire.' });
     }
+
+    await client.query('BEGIN');
 
     const query = `
       INSERT INTO public.projet (nom, description, type_projet, date_debut, date_fin, statut)
@@ -328,20 +339,141 @@ async function createProject(req, res) {
       statut || 'En cours',
     ];
 
-    const result = await db.query(query, values);
+    const result = await client.query(query, values);
     const createdProject = result.rows[0];
+
+    const count = parseInt(nombre_chantiers, 10);
+    const initialCount = Number.isFinite(count) && count > 0 ? count : 0;
+    const createdChantiers = [];
+
+    for (let i = 1; i <= initialCount; i++) {
+      const cRes = await client.query(
+        `INSERT INTO public.chantier (
+          projet_id,
+          responsable_id,
+          nom,
+          statut,
+          date_debut,
+          date_fin_prevue,
+          d_max_position_meters,
+          date_creation
+        )
+        VALUES ($1, $2, $3, 'En attente', $4, $5, 50, NOW())
+        RETURNING id, projet_id, responsable_id, nom, statut, TO_CHAR(date_debut, 'YYYY-MM-DD') AS date_debut, TO_CHAR(date_fin_prevue, 'YYYY-MM-DD') AS date_fin_prevue, d_max_position_meters`,
+        [createdProject.id, userId, `Chantier ${i}`, date_debut || null, date_fin || null]
+      );
+      createdChantiers.push({
+        ...cRes.rows[0],
+        gis_status: 'NON_CONFIGURE',
+      });
+    }
+
+    await client.query('COMMIT');
+    client.release();
 
     return res.status(201).json({
       message: 'Projet créé avec succès.',
       project: createdProject,
+      chantiers: createdChantiers,
     });
   } catch (error) {
+    await client.query('ROLLBACK');
+    client.release();
     console.error('❌ CreateProject error:', error.message);
     return res.status(500).json({
-      message: 'Erreur lors de la création du projet.',
+      message: 'Erreur lors de la création du projet: ' + error.message,
     });
   }
 }
+
+/**
+ * POST /projects/:projectId/chantiers/init
+ * Ensures that the project has at least `count` chantiers created in public.chantier.
+ * Creates placeholder chantiers with status 'En attente' and gis_status 'NON_CONFIGURE'.
+ */
+async function initializeProjectChantiers(req, res) {
+  const client = await db.pool.connect();
+  try {
+    const projectId = req.params.projectId || req.params.id;
+    const count = Math.max(1, Math.min(50, parseInt(req.body.count, 10) || 1));
+    const userId = req.user?.id || null;
+
+    const projCheck = await client.query('SELECT id, date_debut, date_fin FROM public.projet WHERE id = $1', [projectId]);
+    if (projCheck.rows.length === 0) {
+      client.release();
+      return res.status(404).json({ message: 'Projet introuvable.' });
+    }
+    const project = projCheck.rows[0];
+
+    await client.query('BEGIN');
+
+    // Fetch existing chantiers for this project
+    const existingRes = await client.query(
+      'SELECT id, nom FROM public.chantier WHERE projet_id = $1 ORDER BY id ASC',
+      [projectId]
+    );
+    const existing = existingRes.rows;
+
+    if (existing.length < count) {
+      for (let i = existing.length + 1; i <= count; i++) {
+        await client.query(
+          `INSERT INTO public.chantier (
+            projet_id,
+            responsable_id,
+            nom,
+            statut,
+            date_debut,
+            date_fin_prevue,
+            d_max_position_meters,
+            date_creation
+          )
+          VALUES ($1, $2, $3, 'En attente', $4, $5, 50, NOW())`,
+          [projectId, userId, `Chantier ${i}`, project.date_debut || null, project.date_fin || null]
+        );
+      }
+    }
+
+    await client.query('COMMIT');
+    client.release();
+
+    // Query all chantiers for this project with GIS status
+    const allChantiersRes = await db.query(
+      `SELECT 
+        c.id, c.projet_id, c.nom, c.statut, c.surface, c.surface_reference,
+        TO_CHAR(c.date_debut, 'YYYY-MM-DD') AS date_debut,
+        TO_CHAR(c.date_fin_prevue, 'YYYY-MM-DD') AS date_fin_prevue,
+        c.d_max_position_meters,
+        COUNT(t.id)::int AS nombre_troncons,
+        CASE 
+          WHEN COUNT(t.id) > 0 THEN 'PRET_POUR_SUIVI'
+          WHEN ref.id IS NOT NULL THEN 'ALIGNEMENT_IMPORTE'
+          ELSE 'NON_CONFIGURE'
+        END AS gis_status
+      FROM public.chantier c
+      LEFT JOIN LATERAL (
+        SELECT id FROM public.reference_alignment WHERE chantier_id = c.id ORDER BY id DESC LIMIT 1
+      ) ref ON true
+      LEFT JOIN public.troncon t ON t.chantier_id = c.id
+      WHERE c.projet_id = $1
+      GROUP BY c.id, ref.id
+      ORDER BY c.id ASC`,
+      [projectId]
+    );
+
+    return res.status(200).json({
+      message: 'Chantiers initialisés avec succès.',
+      chantiers: allChantiersRes.rows,
+    });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    client.release();
+    console.error('❌ initializeProjectChantiers error:', error.message);
+    return res.status(500).json({
+      message: 'Erreur lors de l\'initialisation des chantiers: ' + error.message,
+    });
+  }
+}
+
 
 /**
  * DELETE /projects/:id
@@ -609,6 +741,8 @@ module.exports = {
   getAllProjects,
   getProjectDetails,
   createProject,
+  initializeProjectChantiers,
   deleteProject,
   bulkDeleteProjects,
 };
+

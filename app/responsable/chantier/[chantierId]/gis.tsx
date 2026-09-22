@@ -2157,8 +2157,28 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
                     title={`Passer au Chantier ${currentNum + 1} sur ${totalNum} →`}
                     variant="primary"
                     size="lg"
-                    onPress={() => {
+                    onPress={async () => {
                       const pId = projectId || (chantier?.projet_id ? String(chantier.projet_id) : undefined);
+                      if (!pId) return;
+                      try {
+                        if (token) {
+                          const pRes = await api.getProjectDetails(token, pId);
+                          const chantiers = pRes.project.chantiers || [];
+                          const nextIndex = currentNum; // 0-based index: Chantier 1 is 0, Chantier 2 is 1
+                          const nextChantier =
+                            chantiers[nextIndex] ||
+                            chantiers.find((c, idx) => idx === nextIndex || c.nom === `Chantier ${currentNum + 1}`);
+                          if (nextChantier) {
+                            router.replace(
+                              `/responsable/chantier/${nextChantier.id}/gis?current=${currentNum + 1}&total=${totalNum}&projectId=${pId}` as any
+                            );
+                            return;
+                          }
+                        }
+                      } catch (navErr) {
+                        console.warn('Erreur navigation prochain chantier:', navErr);
+                      }
+                      // Fallback
                       router.replace(
                         `/responsable/projet/${pId}/chantier/create?current=${currentNum + 1}&total=${totalNum}` as any
                       );

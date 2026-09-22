@@ -228,7 +228,7 @@ export default function ChantierDetailResponsableScreen() {
               ]}
             >
               <Ionicons
-                name={isGisReady ? 'checkmark-circle' : hasAlignment ? 'git-branch' : 'alert-circle'}
+                name={isGisReady ? 'checkmark-circle' : hasAlignment ? 'git-branch' : 'ellipse-outline'}
                 size={12}
                 color={isGisReady ? '#16A34A' : hasAlignment ? '#2563EB' : '#D97706'}
               />
@@ -239,7 +239,7 @@ export default function ChantierDetailResponsableScreen() {
                 ]}
                 weight="semibold"
               >
-                {isGisReady ? 'GIS Prêt' : hasAlignment ? 'Alignement prêt' : 'GIS non configuré'}
+                {isGisReady ? 'Configuré' : hasAlignment ? 'Alignement prêt' : 'À configurer'}
               </Text>
             </View>
           </View>
