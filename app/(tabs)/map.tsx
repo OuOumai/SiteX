@@ -1,7 +1,8 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import {
   ActivityIndicator,
   StyleSheet,
+  TouchableOpacity,
   useWindowDimensions,
   View,
 } from 'react-native';
@@ -10,6 +11,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 
 import { InteractiveGisMap, GisChantierAlignment, GisTronconSegment } from '@/components/gis/InteractiveGisMap';
+import { InteractiveGis3DMap } from '@/components/gis/InteractiveGis3DMap';
 import { MapDesktopPanel } from '@/components/map/MapDesktopPanel';
 import { MapMonitoringSheet } from '@/components/map/MapMonitoringSheet';
 import { StationDetailModal } from '@/components/map/StationDetailModal';
@@ -17,6 +19,7 @@ import { ProjectMapSearch } from '@/components/map/ProjectMapSearch';
 import { Text } from '@/components/ui/text';
 import { Palette } from '@/constants/theme';
 import { useAuth } from '@/hooks/useAuth';
+import { SiteXHeader } from '@/components/navigation/SiteXHeader';
 import {
   api,
   AgentAssignmentItem,
@@ -65,6 +68,7 @@ export default function MapScreen() {
   const [stationObservations, setStationObservations] = useState<TerrainObservationItem[]>([]);
   const [selectedObservation, setSelectedObservation] = useState<TerrainObservationItem | null>(null);
   const [focusedStationId, setFocusedStationId] = useState<number | null>(null);
+  const [mapMode, setMapMode] = useState<'2d' | '3d'>('2d');
 
   // Helper to apply navigation params to project/chantier selection
   const applyRequestedSelection = useCallback((data: ResponsableDashboardData) => {
@@ -310,7 +314,17 @@ export default function MapScreen() {
       const results = await Promise.allSettled(projectChantiers.map(async (chantier) => {
         const response = await api.getReferenceAlignment(token, chantier.id);
         const alignment = response.reference_alignment;
-        return alignment?.geometry ? { id: chantier.id, nom: chantier.nom, length_km: alignment.length_km, geometry: alignment.geometry } : null;
+        return alignment?.geometry ? {
+          id: chantier.id,
+          nom: chantier.nom,
+          length_km: alignment.length_km,
+          geometry: alignment.geometry,
+          chantier_id: chantier.id,
+          projet_id: chantier.projet_id,
+          source: alignment.source || 'KML',
+          original_filename: alignment.original_filename || alignment.nom,
+          ref_id: alignment.id,
+        } : null;
       }));
       if (!active) return;
       setProjectAlignments(results.flatMap((result) => result.status === 'fulfilled' && result.value ? [result.value] : []));
@@ -423,10 +437,133 @@ export default function MapScreen() {
     setStationObservations([]);
   }, [isAgent]);
 
+  // ── Diagnostics: Section 2 [2D KML DEBUG] and Section 3 [3D KML DEBUG] ──
+  const prev2dLogRef = useRef<string>('');
+  const prev3dLogRef = useRef<string>('');
+
+  const kmlElements2D = useMemo(() => {
+    if (isAgent) {
+      return activeReference?.geometry ? [{
+        id: activeReference.id,
+        name: activeReference.original_filename || activeReference.nom || 'Alignement',
+        chantierId: selectedChantierId ?? 'N/A',
+        projectId: selectedProjectId ?? 'N/A',
+        source: activeReference.source || 'KML',
+        geometry: activeReference.geometry?.type || 'LineString',
+      }] : [];
+    }
+    return projectAlignments.map((a) => ({
+      id: a.ref_id || a.id,
+      name: a.original_filename || a.nom,
+      chantierId: a.chantier_id || a.id,
+      projectId: a.projet_id || selectedProjectId || 'N/A',
+      source: a.source || 'KML',
+      geometry: a.geometry?.type || 'LineString',
+    }));
+  }, [isAgent, activeReference, projectAlignments, selectedChantierId, selectedProjectId]);
+
+  const kmlElements3D = useMemo(() => {
+    const list: Array<{
+      id: any;
+      name: string;
+      chantierId: any;
+      projectId: any;
+      geometry: string;
+    }> = [];
+    if (!isAgent && projectAlignments && projectAlignments.length > 0) {
+      projectAlignments.forEach((a) => {
+        list.push({
+          id: a.ref_id || a.id,
+          name: a.original_filename || a.nom,
+          chantierId: a.chantier_id || a.id,
+          projectId: a.projet_id || selectedProjectId || 'N/A',
+          geometry: a.geometry?.type || 'LineString',
+        });
+      });
+    }
+    if (activeReference?.original_geometry) {
+      list.push({
+        id: activeReference.id,
+        name: activeReference.original_filename || `${activeReference.nom} (original_geometry)`,
+        chantierId: selectedChantierId ?? 'N/A',
+        projectId: selectedProjectId ?? 'N/A',
+        geometry: activeReference.original_geometry?.type || 'LineString',
+      });
+    }
+    return list;
+  }, [isAgent, projectAlignments, activeReference, selectedChantierId, selectedProjectId]);
+
+  useEffect(() => {
+    if (mapMode === '2d') {
+      const sig = JSON.stringify(kmlElements2D);
+      if (prev2dLogRef.current !== sig && kmlElements2D.length > 0) {
+        prev2dLogRef.current = sig;
+        let msg = `[2D KML DEBUG]\ncount: ${kmlElements2D.length}\n`;
+        kmlElements2D.forEach((k, idx) => {
+          msg += `\nKML ${idx + 1}\nid: ${k.id}\nname: ${k.name}\nchantierId: ${k.chantierId}\nprojectId: ${k.projectId}\nsource: ${k.source}\ngeometry: ${k.geometry}\n`;
+        });
+        console.log(msg.trim());
+      }
+    } else {
+      const sig = JSON.stringify(kmlElements3D) + `_${selectedChantierId}_${Boolean(activeReference?.geometry)}`;
+      if (prev3dLogRef.current !== sig && kmlElements3D.length > 0) {
+        prev3dLogRef.current = sig;
+        let msg = `[3D KML DEBUG]\ncount: ${kmlElements3D.length}\n`;
+        kmlElements3D.forEach((k, idx) => {
+          msg += `\nKML ${idx + 1}\nid: ${k.id}\nname: ${k.name}\nchantierId: ${k.chantierId}\nprojectId: ${k.projectId}\ngeometry: ${k.geometry}\n`;
+        });
+        console.log(msg.trim());
+      }
+    }
+  }, [mapMode, kmlElements2D, kmlElements3D, selectedChantierId, activeReference]);
+
   const mobileSheetHeight = Math.min(height * 0.62, 540);
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
+      {/* ── Global SiteX Header with 2D / 3D Mode Switcher ── */}
+      <SiteXHeader
+        title="Carte SIG"
+        rightContent={
+          <View style={styles.headerModeToggle}>
+            <TouchableOpacity
+              style={[styles.headerModeBtn, mapMode === '2d' && styles.headerModeBtnActive]}
+              onPress={() => setMapMode('2d')}
+              activeOpacity={0.8}
+            >
+              <Ionicons
+                name="map"
+                size={13}
+                color={mapMode === '2d' ? '#FFFFFF' : '#64748B'}
+              />
+              <Text
+                style={[styles.headerModeText, mapMode === '2d' && styles.headerModeTextActive]}
+                weight="bold"
+              >
+                2D
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.headerModeBtn, mapMode === '3d' && styles.headerModeBtnActive]}
+              onPress={() => setMapMode('3d')}
+              activeOpacity={0.8}
+            >
+              <Ionicons
+                name="cube"
+                size={13}
+                color={mapMode === '3d' ? '#FFFFFF' : '#64748B'}
+              />
+              <Text
+                style={[styles.headerModeText, mapMode === '3d' && styles.headerModeTextActive]}
+                weight="bold"
+              >
+                3D
+              </Text>
+            </TouchableOpacity>
+          </View>
+        }
+      />
       <View style={styles.workspace}>
         {isDesktop && (
           <MapDesktopPanel
@@ -450,27 +587,51 @@ export default function MapScreen() {
         )}
 
         <View style={styles.mapArea}>
-          <InteractiveGisMap
-            referenceGeometry={isAgent ? activeReference?.geometry : undefined}
-            chantierAlignments={isAgent ? null : projectAlignments}
-            selectedChantierId={selectedChantierId}
-            onSelectChantierAlignment={(id) => {
-              const chantier = projectChantiers.find((item) => String(item.id) === String(id));
-              if (chantier) handleSelectChantier(chantier);
-            }}
-            troncons={mapTroncons.length > 0 ? mapTroncons : null}
-            selectedTronconId={selectedTronconId || undefined}
-            onSelectTroncon={handleSelectTroncon}
-            height="100%"
-            fitPaddingBottom={!isDesktop ? (isSheetExpanded ? mobileSheetHeight : 145) : 35}
-            optimizePkLabels
-            customMarkers={mapStations}
-            selectedMarkerId={focusedStationId}
-            onSelectMarker={(id) => {
-              const observation = stationObservations.find((item) => String(item.id) === String(id));
-              if (observation) handleSelectObservation(observation);
-            }}
-          />
+          {mapMode === '2d' ? (
+            <InteractiveGisMap
+              referenceGeometry={isAgent ? activeReference?.geometry : undefined}
+              chantierAlignments={isAgent ? null : projectAlignments}
+              selectedChantierId={selectedChantierId}
+              onSelectChantierAlignment={(id) => {
+                const chantier = projectChantiers.find((item) => String(item.id) === String(id));
+                if (chantier) handleSelectChantier(chantier);
+              }}
+              troncons={mapTroncons.length > 0 ? mapTroncons : null}
+              selectedTronconId={selectedTronconId || undefined}
+              onSelectTroncon={handleSelectTroncon}
+              height="100%"
+              fitPaddingBottom={!isDesktop ? (isSheetExpanded ? mobileSheetHeight : 145) : 35}
+              optimizePkLabels
+              customMarkers={mapStations}
+              selectedMarkerId={focusedStationId}
+              onSelectMarker={(id) => {
+                const observation = stationObservations.find((item) => String(item.id) === String(id));
+                if (observation) handleSelectObservation(observation);
+              }}
+            />
+          ) : (
+            <InteractiveGis3DMap
+              referenceGeometry={isAgent ? activeReference?.geometry : (activeReference?.geometry || null)}
+              kmlGeometry={activeReference?.original_geometry || undefined}
+              chantierAlignments={isAgent ? null : projectAlignments}
+              selectedChantierId={selectedChantierId}
+              onSelectChantierAlignment={(id) => {
+                const chantier = projectChantiers.find((item) => String(item.id) === String(id));
+                if (chantier) handleSelectChantier(chantier);
+              }}
+              troncons={mapTroncons.length > 0 ? mapTroncons : null}
+              selectedTronconId={selectedTronconId || undefined}
+              onSelectTroncon={handleSelectTroncon}
+              aoiGeometry={selectedChantier?.localisation}
+              customMarkers={mapStations}
+              selectedMarkerId={focusedStationId}
+              onSelectMarker={(id) => {
+                const observation = stationObservations.find((item) => String(item.id) === String(id));
+                if (observation) handleSelectObservation(observation);
+              }}
+              height="100%"
+            />
+          )}
 
           {!isDesktop && (
             <View style={styles.mobileSearch}>
@@ -571,4 +732,36 @@ const styles = StyleSheet.create({
   initialLoadingCard: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 18, paddingVertical: 14, borderRadius: 16, backgroundColor: '#FFFFFF', shadowColor: '#0F172A', shadowOpacity: 0.16, shadowRadius: 16, elevation: 8 },
   loadingIcon: { width: 38, height: 38, borderRadius: 12, backgroundColor: Palette.primary, alignItems: 'center', justifyContent: 'center' },
   initialLoadingText: { fontSize: 12, color: Palette.text },
+  headerModeToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F1F5F9',
+    borderRadius: 20,
+    padding: 2,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  headerModeBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 16,
+  },
+  headerModeBtnActive: {
+    backgroundColor: Palette.primary,
+    shadowColor: '#0F172A',
+    shadowOpacity: 0.12,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  headerModeText: {
+    fontSize: 11,
+    color: '#64748B',
+  },
+  headerModeTextActive: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+  },
 });

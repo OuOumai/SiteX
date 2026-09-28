@@ -19,6 +19,7 @@ import { Text } from '@/components/ui/text';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Palette } from '@/constants/theme';
+import { SiteXHeader } from '@/components/navigation/SiteXHeader';
 import {
   api,
   getMediaUrl,
@@ -264,18 +265,8 @@ export default function EquipeTerrainScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom', 'left', 'right']}>
-      {/* ── Screen Header ── */}
-      <View style={styles.header}>
-        <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
-          <Ionicons name="arrow-back" size={22} color={Palette.text} />
-        </TouchableOpacity>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.headerSubtitle}>RESPONSABLE DE PROJET</Text>
-          <Text variant="h1" style={styles.headerTitle}>
-            Équipe terrain
-          </Text>
-        </View>
-      </View>
+      {/* ── Global SiteX Contextual Header with Back Navigation ── */}
+      <SiteXHeader showBack title="Équipe terrain" />
 
       <ScrollView
         contentContainerStyle={styles.scrollContent}

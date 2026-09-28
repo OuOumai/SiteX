@@ -202,9 +202,13 @@ async function login(req, res) {
       [email]
     );
 
-    // 3. Use a generic error message whether the user exists or not
+    // 3. Check if user exists
     if (userResult.rows.length === 0) {
-      return res.status(401).json({ message: 'Email ou mot de passe incorrect.' });
+      return res.status(401).json({
+        message: 'Email ou mot de passe incorrect.',
+        error: 'Invalid credentials',
+        code: 'INVALID_CREDENTIALS',
+      });
     }
 
     const user = userResult.rows[0];
@@ -213,13 +217,19 @@ async function login(req, res) {
     if (!user.actif) {
       return res.status(403).json({
         message: 'Compte désactivé. Veuillez contacter un administrateur.',
+        error: 'Account inactive',
+        code: 'ACCOUNT_INACTIVE',
       });
     }
 
     // 5. Compare submitted password against stored hash
     const isMatch = await bcrypt.compare(mot_de_passe, user.mot_de_passe);
     if (!isMatch) {
-      return res.status(401).json({ message: 'Email ou mot de passe incorrect.' });
+      return res.status(401).json({
+        message: 'Mot de passe incorrect.',
+        error: 'Password is wrong',
+        code: 'INVALID_PASSWORD',
+      });
     }
 
     // 6. Fetch active role request if exists

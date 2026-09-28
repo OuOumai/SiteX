@@ -114,29 +114,72 @@ async function getDashboardData(req, res) {
   try {
     const userId = req.user.id;
 
-    // 1. Projects: Fetch projects where responsable has chantiers OR all active projects
+    // 1. Projects: Fetch all projects with authoritative progress, linear length, active agents, and cover photo
     const projectsQuery = `
       SELECT 
         p.id,
         p.nom,
         p.description,
         p.type_projet,
+        p.cover_image_url,
         TO_CHAR(p.date_debut, 'YYYY-MM-DD') AS date_debut,
         TO_CHAR(p.date_fin, 'YYYY-MM-DD') AS date_fin,
         COALESCE(p.statut, 'En cours') AS statut,
         COUNT(DISTINCT c.id)::int AS nombre_chantiers,
-        COALESCE(AVG(latest_avancement.pourcentage), 0)::int AS avancement_moyen
+        COALESCE(ROUND(AVG(chantier_avancement.avancement))::int, 0) AS avancement_moyen,
+        COALESCE(SUM(c_length.length_km), 0)::numeric(10,2) AS total_km,
+        COUNT(DISTINCT a_agent.agent_id)::int AS agents_count,
+        latest_photo.photo_url AS image_url,
+        TO_CHAR(
+          GREATEST(
+            p.date_debut::timestamp,
+            MAX(c.date_creation),
+            MAX(latest_obs.max_obs_date),
+            MAX(latest_rec.max_rec_date)
+          ),
+          'YYYY-MM-DD'
+        ) AS derniere_activite
       FROM public.projet p
       LEFT JOIN public.chantier c ON c.projet_id = p.id
       LEFT JOIN LATERAL (
-        SELECT a.pourcentage
-        FROM public.avancement a
-        WHERE a.chantier_id = c.id
-        ORDER BY a.date DESC, a.id DESC
-        LIMIT 1
-      ) latest_avancement ON true
-      GROUP BY p.id
-      ORDER BY p.id ASC;
+        SELECT COALESCE(ROUND(AVG(COALESCE(t.avancement, 0)))::int, 0) AS avancement
+        FROM public.troncon t
+        WHERE t.chantier_id = c.id
+      ) chantier_avancement ON true
+      LEFT JOIN LATERAL (
+        SELECT ROUND((ST_Length(COALESCE(ra.original_geometry, ra.geometry)::geography) / 1000.0)::numeric, 2) AS length_km
+        FROM public.reference_alignment ra
+        WHERE ra.chantier_id = c.id
+        ORDER BY ra.id DESC LIMIT 1
+      ) c_length ON true
+      LEFT JOIN LATERAL (
+        SELECT DISTINCT at_ag.agent_id
+        FROM public.troncon t_ag
+        JOIN public.affectation_troncon at_ag ON at_ag.troncon_id = t_ag.id
+        WHERE t_ag.chantier_id = c.id AND at_ag.statut = 'ACTIF'
+      ) a_agent ON true
+      LEFT JOIN LATERAL (
+        SELECT pt.fichier AS photo_url
+        FROM public.photo_terrain pt
+        JOIN public.observation_terrain ot ON pt.observation_id = ot.id
+        JOIN public.chantier c_pt ON ot.chantier_id = c_pt.id
+        WHERE c_pt.projet_id = p.id
+        ORDER BY pt.id DESC LIMIT 1
+      ) latest_photo ON true
+      LEFT JOIN LATERAL (
+        SELECT MAX(ot_d.date_heure) AS max_obs_date
+        FROM public.observation_terrain ot_d
+        WHERE ot_d.chantier_id = c.id
+      ) latest_obs ON true
+      LEFT JOIN LATERAL (
+        SELECT MAX(r_d.date_creation) AS max_rec_date
+        FROM public.reclamation r_d
+        WHERE r_d.chantier_id = c.id
+      ) latest_rec ON true
+      GROUP BY p.id, p.cover_image_url, latest_photo.photo_url
+      ORDER BY 
+        CASE WHEN LOWER(COALESCE(p.statut, 'En cours')) LIKE '%cours%' THEN 1 ELSE 2 END,
+        p.id DESC;
     `;
     const projectsRes = await db.query(projectsQuery);
     const projects = projectsRes.rows;
@@ -231,9 +274,12 @@ async function getDashboardData(req, res) {
         r.statut,
         TO_CHAR(r.date_creation, 'YYYY-MM-DD HH24:MI') AS date_creation,
         c.nom AS chantier_nom,
+        c.projet_id,
+        p.nom AS projet_nom,
         TRIM(CONCAT(u.prenom, ' ', u.nom)) AS client_nom
       FROM public.reclamation r
       LEFT JOIN public.chantier c ON c.id = r.chantier_id
+      LEFT JOIN public.projet p ON p.id = c.projet_id
       LEFT JOIN public.utilisateur u ON u.id = r.utilisateur_id
       ORDER BY r.date_creation DESC, r.id DESC
       LIMIT 20;
@@ -246,52 +292,195 @@ async function getDashboardData(req, res) {
       reclamations = [];
     }
 
-    // 5. Global indicators & Attention Required Alerts
+    // 5. Demandes d'explication A.T.
+    let explications = [];
+    try {
+      const expRes = await db.query(`
+        SELECT 
+          de.id,
+          de.chantier_id,
+          de.troncon_id,
+          de.agent_id,
+          de.statut,
+          de.message_responsable,
+          de.motif_agent,
+          de.reponse_agent,
+          TO_CHAR(de.date_demande, 'YYYY-MM-DD HH24:MI') AS date_demande,
+          c.nom AS chantier_nom,
+          c.projet_id,
+          p.nom AS projet_nom,
+          t.nom AS troncon_nom,
+          TRIM(CONCAT(u.prenom, ' ', u.nom)) AS agent_nom
+        FROM public.demande_explication de
+        JOIN public.chantier c ON c.id = de.chantier_id
+        LEFT JOIN public.projet p ON p.id = c.projet_id
+        LEFT JOIN public.troncon t ON t.id = de.troncon_id
+        LEFT JOIN public.utilisateur u ON u.id = de.agent_id
+        ORDER BY de.id DESC
+        LIMIT 10;
+      `);
+      explications = expRes.rows;
+    } catch (e) {
+      explications = [];
+    }
+
+    // 6. Registered Clients in system (for report generation wizard)
+    let clients = [];
+    try {
+      const clientsRes = await db.query(`
+        SELECT 
+          u.id,
+          u.nom,
+          u.prenom,
+          u.email,
+          COALESCE(u.entreprise, 'Société Partenaire') AS entreprise
+        FROM public.utilisateur u
+        JOIN public.role r ON u.role_id = r.id
+        WHERE r.nom = 'Client' OR u.role_id = 4
+        ORDER BY u.nom ASC;
+      `);
+      clients = clientsRes.rows;
+    } catch (e) {
+      clients = [];
+    }
+
+    // 7. Global indicators & Breakdown calculations
     const totalProjects = projects.length;
+    const projectsEnCours = projects.filter((p) => (p.statut || '').toLowerCase().includes('cours')).length;
+    const projectsTermines = projects.filter((p) => (p.statut || '').toLowerCase().includes('termin')).length;
+
     const totalChantiers = chantiers.length;
+    const chantiersEnCours = chantiers.filter((c) => (c.statut || '').toLowerCase().includes('cours')).length;
+    const chantiersEnAttente = chantiers.filter((c) => (c.statut || '').toLowerCase().includes('attente')).length;
+    const chantiersTermines = chantiers.filter((c) => (c.statut || '').toLowerCase().includes('termin')).length;
     const chantiersPrets = chantiers.filter((c) => c.gis_status === 'PRET_POUR_SUIVI').length;
+
+    // Authoritative global progress: average across all chantiers tracked
     const totalAvancement = chantiers.reduce((sum, c) => sum + (c.avancement || 0), 0);
     const avancementMoyen = totalChantiers > 0 ? Math.round(totalAvancement / totalChantiers) : 0;
 
+    // Chantier status distribution for analytical chart
+    const chantiersDistribution = [
+      {
+        statut: 'En cours',
+        count: chantiersEnCours,
+        percentage: totalChantiers > 0 ? Math.round((chantiersEnCours / totalChantiers) * 100) : 0,
+        color: '#10B981',
+      },
+      {
+        statut: 'En attente',
+        count: chantiersEnAttente,
+        percentage: totalChantiers > 0 ? Math.round((chantiersEnAttente / totalChantiers) * 100) : 0,
+        color: '#F59E0B',
+      },
+      {
+        statut: 'Terminés',
+        count: chantiersTermines,
+        percentage: totalChantiers > 0 ? Math.round((chantiersTermines / totalChantiers) * 100) : 0,
+        color: '#8B5CF6',
+      },
+    ].filter((item) => item.count > 0);
+
+    // 8. Actionable "À Surveiller" items
     const alerts = [];
+
+    // GIS missing alignment alerts
     chantiers.forEach((c) => {
       if (c.gis_status === 'NON_CONFIGURE') {
         alerts.push({
           id: `gis_unset_${c.id}`,
           type: 'GIS_NON_CONFIGURE',
+          category: 'GIS',
           severity: 'HIGH',
           chantierId: c.id,
           chantierNom: c.nom,
+          projectId: c.projet_id,
           projetNom: c.projet_nom,
+          title: 'Configuration GIS manquante',
           message: `Le tracé GeoJSON n'a pas encore été importé pour le chantier "${c.nom}".`,
+          actionLabel: 'Configurer le GIS →',
+          actionRoute: `/responsable/chantier/${c.id}/gis`,
         });
       } else if (c.gis_status === 'ALIGNEMENT_IMPORTE') {
         alerts.push({
           id: `no_troncon_${c.id}`,
           type: 'AUCUN_TRONCON',
+          category: 'TRONCON',
           severity: 'MEDIUM',
           chantierId: c.id,
           chantierNom: c.nom,
+          projectId: c.projet_id,
           projetNom: c.projet_nom,
+          title: 'Tronçons non découpés',
           message: `L'alignement est importé mais aucun tronçon n'a été découpé pour "${c.nom}".`,
+          actionLabel: 'Découper les tronçons →',
+          actionRoute: `/responsable/chantier/${c.id}/gis`,
         });
       }
     });
 
+    // Project without chantiers
     projects.forEach((p) => {
       if (p.nombre_chantiers === 0) {
         alerts.push({
           id: `no_chantier_proj_${p.id}`,
           type: 'PROJET_SANS_CHANTIER',
+          category: 'PROJET',
           severity: 'LOW',
           projectId: p.id,
           projetNom: p.nom,
+          title: 'Projet sans chantier',
           message: `Le projet "${p.nom}" n'a aucun chantier configuré.`,
+          actionLabel: 'Ajouter un chantier →',
+          actionRoute: `/responsable/projet/${p.id}/chantier/create`,
         });
       }
     });
 
-    // 5. Equipe Terrain Summary Stats for this Responsable (ONLY Admin-validated A.T.)
+    // Pending or answered field agent explanation requests
+    explications.forEach((exp) => {
+      if (exp.statut === 'EN_ATTENTE') {
+        alerts.push({
+          id: `exp_${exp.id}`,
+          type: 'EXPLICATION_EN_ATTENTE',
+          category: 'AT',
+          severity: 'MEDIUM',
+          chantierId: exp.chantier_id,
+          chantierNom: exp.chantier_nom,
+          tronconId: exp.troncon_id,
+          tronconNom: exp.troncon_nom,
+          projectId: exp.projet_id,
+          projetNom: exp.projet_nom,
+          title: 'Explication A.T. en attente',
+          message: `Demande envoyée à ${exp.agent_nom || 'Agent'} sur ${exp.troncon_nom || exp.chantier_nom}.`,
+          actionLabel: 'Consulter l\'équipe →',
+          actionRoute: '/responsable/equipe-terrain',
+        });
+      }
+    });
+
+    // Open Client Reclamations requiring attention
+    reclamations.forEach((rec) => {
+      const isClosed = (rec.statut || '').toLowerCase().includes('resolu') || (rec.statut || '').toLowerCase().includes('clos');
+      if (!isClosed) {
+        alerts.push({
+          id: `rec_${rec.id}`,
+          type: 'RECLAMATION',
+          category: 'RECLAMATION',
+          severity: 'HIGH',
+          chantierId: rec.chantier_id,
+          chantierNom: rec.chantier_nom,
+          projectId: rec.projet_id,
+          projetNom: rec.projet_nom,
+          title: 'Réclamation client à traiter',
+          message: `« ${rec.titre} » par ${rec.client_nom || 'Client'} (${rec.chantier_nom}).`,
+          actionLabel: 'Voir le chantier →',
+          actionRoute: `/chantier/${rec.chantier_id}`,
+        });
+      }
+    });
+
+    // 9. Equipe Terrain Summary Stats for this Responsable (ONLY Admin-validated A.T.)
     const isAdmin = req.user.role_nom === 'Administrateur' || req.user.role_id === 1;
     const equipeStatsQuery = `
       WITH all_active_agents AS (
@@ -333,11 +522,18 @@ async function getDashboardData(req, res) {
     return res.status(200).json({
       stats: {
         totalProjects,
+        projectsEnCours,
+        projectsTermines,
         totalChantiers,
+        chantiersEnCours,
+        chantiersEnAttente,
+        chantiersTermines,
         chantiersPrets,
         avancementMoyen,
         totalObservations: observations.length,
         totalReclamations: reclamations.length,
+        totalAlerts: alerts.length,
+        chantiersDistribution,
         equipeTerrain: {
           totalAvailable,
           totalAssigned,
@@ -349,6 +545,8 @@ async function getDashboardData(req, res) {
       chantiers,
       observations,
       reclamations,
+      explications,
+      clients,
       alerts,
     });
   } catch (error) {

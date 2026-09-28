@@ -18,6 +18,7 @@ const fs = require('fs');
 const path = require('path');
 const db = require('../db');
 const crsService = require('../services/crs.service');
+const kmlService = require('../services/kml.service');
 
 /**
  * Helper: Normalizes input GeoJSON to a single LineString geometry object
@@ -646,25 +647,77 @@ async function detectSourceCrs(req, res) {
   try {
     const { chantierId } = req.params;
     let geojsonData = null;
+    let isKmlFile = false;
 
     if (req.file) {
+      const ext = path.extname(req.file.originalname || '').toLowerCase();
       const fileContent = fs.readFileSync(req.file.path, 'utf8');
-      try {
-        geojsonData = JSON.parse(fileContent);
-      } catch {
-        return res.status(400).json({ message: "Le fichier téléchargé n'est pas un JSON valide." });
-      }
-    } else if (req.body && (req.body.geojson || req.body.geometry)) {
-      geojsonData = req.body.geojson || req.body.geometry;
-      if (typeof geojsonData === 'string') {
+      if (ext === '.kml' || kmlService.isKml(fileContent)) {
+        isKmlFile = true;
         try {
-          geojsonData = JSON.parse(geojsonData);
+          geojsonData = kmlService.parseKmlToGeoJson(fileContent, { defaultName: req.file.originalname });
+        } catch (kmlErr) {
+          return res.status(400).json({ message: kmlErr.message });
+        }
+      } else {
+        try {
+          geojsonData = JSON.parse(fileContent);
         } catch {
-          return res.status(400).json({ message: "Le corps GeoJSON n'est pas un JSON valide." });
+          return res.status(400).json({ message: "Le fichier téléchargé n'est pas un JSON valide." });
+        }
+      }
+    } else if (req.body && (req.body.kml || req.body.kmlText || req.body.geojson || req.body.geometry)) {
+      const rawData = req.body.kml || req.body.kmlText || req.body.geojson || req.body.geometry;
+      if (typeof rawData === 'string' && (rawData.trim().endsWith('.kml') || kmlService.isKml(rawData))) {
+        isKmlFile = true;
+        try {
+          geojsonData = kmlService.parseKmlToGeoJson(rawData, { defaultName: req.body.original_filename });
+        } catch (kmlErr) {
+          return res.status(400).json({ message: kmlErr.message });
+        }
+      } else {
+        geojsonData = rawData;
+        if (typeof geojsonData === 'string') {
+          try {
+            geojsonData = JSON.parse(geojsonData);
+          } catch {
+            return res.status(400).json({ message: "Le corps GeoJSON n'est pas un JSON valide." });
+          }
         }
       }
     } else {
       return res.status(400).json({ message: 'Aucune donnée spatiale fournie pour la détection du CRS.' });
+    }
+
+    // KML uses canonical WGS 84 (EPSG:4326) standard
+    if (isKmlFile) {
+      const wgsCrs = crsService.getCrsBySrid(4326) || {
+        srid: 4326,
+        code: 'EPSG:4326',
+        name: 'WGS 84 (GPS standard)',
+        zone_label: 'Monde / GPS Standard',
+        type: 'geographic',
+        unit: 'degrés décimaux',
+        description: 'Système géodésique mondial standard WGS 84 natif KML (Google Earth)',
+      };
+
+      return res.status(200).json({
+        message: 'Détection du système de coordonnées effectuée (KML natif WGS 84).',
+        detected_srid: 4326,
+        crs_name: 'WGS 84 (GPS standard)',
+        epsg_code: 'EPSG:4326',
+        confidence: 'HIGH',
+        unit: 'degrés décimaux',
+        type: 'geographic',
+        explanation: 'Le fichier KML utilise nativement le système géodésique mondial WGS 84 (EPSG:4326).',
+        is_ambiguous: false,
+        candidates: [wgsCrs],
+        supported_crs: crsService.SUPPORTED_CRS,
+        normalized_geojson: geojsonData,
+        source_format: 'KML',
+        source_crs: 'EPSG:4326',
+        kml_metadata: geojsonData.metadata || geojsonData.properties?.kml_metadata || null,
+      });
     }
 
     const passedAoi = req.body ? (req.body.aoi || req.body.aoi_geometry) : null;
@@ -701,38 +754,73 @@ async function analyzeGeoJSONSource(req, res) {
     let geojsonData = null;
     let originalFilename = 'source.geojson';
     let passedAoi = req.body ? (req.body.aoi || req.body.aoi_geometry) : null;
+    let isKmlFile = false;
 
     if (req.file) {
       originalFilename = req.file.originalname || req.file.filename;
+      const ext = path.extname(originalFilename || '').toLowerCase();
       const fileContent = fs.readFileSync(req.file.path, 'utf8');
-      try {
-        geojsonData = JSON.parse(fileContent);
-      } catch (err) {
-        return res.status(400).json({ message: 'Le fichier téléchargé n\'est pas un JSON valide.' });
-      }
-    } else if (req.body && (req.body.geojson || req.body.geometry)) {
-      geojsonData = req.body.geojson || req.body.geometry;
-      if (typeof geojsonData === 'string') {
+      if (ext === '.kml' || kmlService.isKml(fileContent)) {
+        isKmlFile = true;
         try {
-          geojsonData = JSON.parse(geojsonData);
-        } catch {
-          return res.status(400).json({ message: 'Le corps GeoJSON n\'est pas un JSON valide.' });
+          geojsonData = kmlService.parseKmlToGeoJson(fileContent, { defaultName: originalFilename });
+        } catch (kmlErr) {
+          return res.status(400).json({ message: kmlErr.message });
+        }
+      } else {
+        try {
+          geojsonData = JSON.parse(fileContent);
+        } catch (err) {
+          return res.status(400).json({ message: 'Le fichier téléchargé n\'est pas un JSON valide.' });
         }
       }
-      originalFilename = req.body.original_filename || 'source.geojson';
+    } else if (req.body && (req.body.kml || req.body.kmlText || req.body.geojson || req.body.geometry)) {
+      const rawData = req.body.kml || req.body.kmlText || req.body.geojson || req.body.geometry;
+      if (typeof rawData === 'string' && (rawData.trim().endsWith('.kml') || kmlService.isKml(rawData))) {
+        isKmlFile = true;
+        try {
+          geojsonData = kmlService.parseKmlToGeoJson(rawData, { defaultName: req.body.original_filename });
+        } catch (kmlErr) {
+          return res.status(400).json({ message: kmlErr.message });
+        }
+      } else {
+        geojsonData = rawData;
+        if (typeof geojsonData === 'string') {
+          try {
+            geojsonData = JSON.parse(geojsonData);
+          } catch {
+            return res.status(400).json({ message: 'Le corps GeoJSON n\'est pas un JSON valide.' });
+          }
+        }
+      }
+      originalFilename = req.body.original_filename || (isKmlFile ? 'source.kml' : 'source.geojson');
     } else {
-      return res.status(400).json({ message: 'Aucun fichier GeoJSON ni géométrie fournie.' });
+      return res.status(400).json({ message: 'Aucun fichier spatial ni géométrie fournie.' });
     }
 
-    // 1. Automatic Multi-Criteria CRS Detection
-    const requestedSrid = req.body.source_srid || req.body.srid;
-    const crsInfo = await crsService.detectSourceCrs(geojsonData, {
-      chantierId,
-      aoiGeometry: passedAoi,
-      explicitSrid: requestedSrid,
-    });
+    // 1. CRS Determination (KML uses native EPSG:4326, GeoJSON uses crsService detection)
+    let crsInfo;
+    let sourceSrid;
 
-    const sourceSrid = crsInfo.detected_srid || (requestedSrid ? parseInt(requestedSrid, 10) : 4326);
+    if (isKmlFile) {
+      sourceSrid = 4326;
+      crsInfo = {
+        detected_srid: 4326,
+        crs_name: 'WGS 84 (GPS standard)',
+        epsg_code: 'EPSG:4326',
+        confidence: 'HIGH',
+        unit: 'degrés décimaux',
+        type: 'geographic',
+      };
+    } else {
+      const requestedSrid = req.body.source_srid || req.body.srid;
+      crsInfo = await crsService.detectSourceCrs(geojsonData, {
+        chantierId,
+        aoiGeometry: passedAoi,
+        explicitSrid: requestedSrid,
+      });
+      sourceSrid = crsInfo.detected_srid || (requestedSrid ? parseInt(requestedSrid, 10) : 4326);
+    }
 
     // 2. Extract line features
     let lineFeatures = [];
@@ -933,6 +1021,8 @@ async function analyzeGeoJSONSource(req, res) {
       selected_alignment_length_km: candidateCorridors.length > 0 ? candidateCorridors[0].length_km : null,
       crs_info: crsInfo,
       source_srid: sourceSrid,
+      source_format: isKmlFile ? 'KML' : 'GeoJSON',
+      kml_metadata: isKmlFile ? (geojsonData.metadata || geojsonData.properties?.kml_metadata || null) : null,
     });
   } catch (error) {
     console.error('❌ AnalyzeGeoJSONSource error:', error.message);
@@ -953,26 +1043,47 @@ async function uploadReferenceAlignment(req, res) {
     const { chantierId } = req.params;
     let geojsonData = null;
     let originalFilename = 'reference_alignment.geojson';
+    let isKmlFile = false;
 
     // 1. Check if uploaded via Multer or body
     if (req.file) {
       originalFilename = req.file.originalname || req.file.filename;
+      const ext = path.extname(originalFilename || '').toLowerCase();
       const fileContent = fs.readFileSync(req.file.path, 'utf8');
-      try {
-        geojsonData = JSON.parse(fileContent);
-      } catch (err) {
-        return res.status(400).json({ message: 'Le fichier téléchargé n\'est pas un JSON valide.' });
-      }
-    } else if (req.body && (req.body.geojson || req.body.geometry)) {
-      geojsonData = req.body.geojson || req.body.geometry;
-      if (typeof geojsonData === 'string') {
+      if (ext === '.kml' || kmlService.isKml(fileContent)) {
+        isKmlFile = true;
         try {
-          geojsonData = JSON.parse(geojsonData);
-        } catch {
-          return res.status(400).json({ message: 'Le corps GeoJSON n\'est pas un JSON valide.' });
+          geojsonData = kmlService.parseKmlToGeoJson(fileContent, { defaultName: originalFilename });
+        } catch (kmlErr) {
+          return res.status(400).json({ message: kmlErr.message });
+        }
+      } else {
+        try {
+          geojsonData = JSON.parse(fileContent);
+        } catch (err) {
+          return res.status(400).json({ message: 'Le fichier téléchargé n\'est pas un JSON valide.' });
         }
       }
-      originalFilename = req.body.original_filename || 'reference_alignment.geojson';
+    } else if (req.body && (req.body.kml || req.body.kmlText || req.body.geojson || req.body.geometry)) {
+      const rawData = req.body.kml || req.body.kmlText || req.body.geojson || req.body.geometry;
+      if (typeof rawData === 'string' && (rawData.trim().endsWith('.kml') || kmlService.isKml(rawData))) {
+        isKmlFile = true;
+        try {
+          geojsonData = kmlService.parseKmlToGeoJson(rawData, { defaultName: req.body.original_filename });
+        } catch (kmlErr) {
+          return res.status(400).json({ message: kmlErr.message });
+        }
+      } else {
+        geojsonData = rawData;
+        if (typeof geojsonData === 'string') {
+          try {
+            geojsonData = JSON.parse(geojsonData);
+          } catch {
+            return res.status(400).json({ message: 'Le corps GeoJSON n\'est pas un JSON valide.' });
+          }
+        }
+      }
+      originalFilename = req.body.original_filename || (isKmlFile ? 'reference_alignment.kml' : 'reference_alignment.geojson');
     } else {
       return res.status(400).json({ message: 'Aucune donnée d\'alignement fournie.' });
     }
@@ -993,8 +1104,8 @@ async function uploadReferenceAlignment(req, res) {
     }
 
     // Determine Source CRS (explicit or auto-detected)
-    let sourceSrid = req.body.source_srid ? parseInt(req.body.source_srid, 10) : null;
-    let sourceCrsName = req.body.source_crs_name || null;
+    let sourceSrid = isKmlFile ? 4326 : (req.body.source_srid ? parseInt(req.body.source_srid, 10) : null);
+    let sourceCrsName = isKmlFile ? 'WGS 84 (GPS standard)' : (req.body.source_crs_name || null);
 
     if (!sourceSrid) {
       const crsDetection = await crsService.detectSourceCrs(targetGeom, { chantierId });
@@ -1008,7 +1119,7 @@ async function uploadReferenceAlignment(req, res) {
     }
 
     const alignmentName = req.body.nom || `Alignement Référence - ${chantier.nom}`;
-    const source = req.body.source || 'GeoJSON';
+    const source = req.body.source || (isKmlFile ? 'KML' : 'GeoJSON');
 
     // 2. PostGIS validation query: transform to WGS84, preserve unclipped original geometry,
     // clip to Chantier AOI (Zone d'étude) if present, and validate continuous ST_LineString
@@ -1160,6 +1271,8 @@ async function uploadReferenceAlignment(req, res) {
     return res.status(201).json({
       message: 'Alignement de référence validé, transformé et enregistré avec succès.',
       reference_alignment: savedAlignment,
+      source_format: isKmlFile ? 'KML' : 'GeoJSON',
+      kml_metadata: isKmlFile ? (geojsonData.metadata || geojsonData.properties?.kml_metadata || null) : null,
     });
   } catch (error) {
     console.error('❌ UploadReferenceAlignment error:', error.message);
@@ -2719,6 +2832,201 @@ async function requestExplanation(req, res) {
   }
 }
 
+/**
+ * GET /chantiers/:chantierId/timeline
+ * Level 6 — Spatio-Temporal Monitoring & Replay
+ * Returns normalized chronological events, historical observations, photos,
+ * and strictly non-regressive authoritative progress snapshots.
+ */
+async function getChantierTimeline(req, res) {
+  try {
+    const id = req.params.chantierId || req.params.id;
+
+    // 1. Fetch Chantier metadata
+    const chantierRes = await db.query(
+      `SELECT id, nom, statut, 
+              TO_CHAR(date_debut, 'YYYY-MM-DD') AS date_debut,
+              TO_CHAR(date_fin_prevue, 'YYYY-MM-DD') AS date_fin_prevue
+       FROM public.chantier WHERE id = $1;`,
+      [id]
+    );
+
+    if (chantierRes.rows.length === 0) {
+      return res.status(404).json({ message: 'Chantier introuvable.' });
+    }
+
+    const chantier = chantierRes.rows[0];
+
+    // 2. Fetch Tronçons
+    const tronconsRes = await db.query(
+      `SELECT id, nom, pk_debut, pk_fin,
+              ROUND((ST_Length(geometry::geography) / 1000.0)::numeric, 3) AS length_km,
+              COALESCE(avancement, 0)::int AS current_avancement,
+              ST_AsGeoJSON(geometry)::json AS geometry
+       FROM public.troncon
+       WHERE chantier_id = $1
+       ORDER BY pk_debut ASC, id ASC;`,
+      [id]
+    );
+
+    const troncons = tronconsRes.rows;
+    const N = troncons.length;
+
+    // 3. Fetch Observations & Photos in chronological order
+    const obsQuery = `
+      SELECT 
+        o.id,
+        o.troncon_id,
+        t.nom AS troncon_nom,
+        o.date_heure,
+        TO_CHAR(o.date_heure, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS date_iso,
+        TO_CHAR(o.date_heure, 'YYYY-MM-DD') AS date_day,
+        COALESCE(o.progress_percentage, 0)::double precision AS raw_progress,
+        COALESCE(o.authoritative_progress_percentage, o.progress_percentage, 0)::double precision AS authoritative_progress,
+        o.agent_lat,
+        o.agent_lng,
+        o.projected_lat,
+        o.projected_lng,
+        o.phase,
+        o.phase_statut,
+        o.commentaire AS remarques,
+        TRIM(CONCAT(u.prenom, ' ', u.nom)) AS agent_nom,
+        COALESCE(photos.list, '[]'::json) AS photos
+      FROM public.observation_terrain o
+      LEFT JOIN public.troncon t ON t.id = o.troncon_id
+      LEFT JOIN public.utilisateur u ON u.id = o.agent_id
+      LEFT JOIN LATERAL (
+        SELECT json_agg(json_build_object(
+          'id', p.id,
+          'url', p.fichier,
+          'description', p.description,
+          'date_prise', TO_CHAR(p.date_prise, 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
+        )) AS list
+        FROM public.photo_terrain p
+        WHERE p.observation_id = o.id
+      ) photos ON true
+      WHERE o.chantier_id = $1
+      ORDER BY o.date_heure ASC, o.id ASC;
+    `;
+    const obsRes = await db.query(obsQuery, [id]);
+    const rawObs = obsRes.rows;
+
+    // 4. Build Spatio-Temporal History & Non-Regressive Progress Series
+    const tronconProgressMap = {};
+    const rawTronconProgressMap = {};
+    troncons.forEach((t) => {
+      tronconProgressMap[t.id] = 0;
+      rawTronconProgressMap[t.id] = 0;
+    });
+
+    const events = [];
+    const progressHistory = [];
+    let cumulativePhotosCount = 0;
+
+    // Optional initial 0% baseline if date_debut is known and earlier than first observation
+    if (chantier.date_debut) {
+      const firstObsDate = rawObs.length > 0 ? rawObs[0].date_day : null;
+      if (!firstObsDate || chantier.date_debut < firstObsDate) {
+        progressHistory.push({
+          date: chantier.date_debut,
+          dateTime: `${chantier.date_debut}T00:00:00Z`,
+          rawChantierProgress: 0,
+          authoritativeChantierProgress: 0,
+          tronconsProgress: { ...tronconProgressMap },
+          observationsCount: 0,
+          photosCount: 0,
+          isBaseline: true,
+        });
+      }
+    }
+
+    let runningMaxAuthoritativeChantier = 0;
+
+    for (let i = 0; i < rawObs.length; i++) {
+      const o = rawObs[i];
+      const tId = o.troncon_id;
+      const obsPhotos = Array.isArray(o.photos) ? o.photos : [];
+      cumulativePhotosCount += obsPhotos.length;
+
+      // Update per-tronçon progress (authoritative is strictly non-regressing)
+      if (tId && tronconProgressMap[tId] !== undefined) {
+        rawTronconProgressMap[tId] = o.raw_progress;
+        tronconProgressMap[tId] = Math.max(tronconProgressMap[tId], o.raw_progress);
+      }
+
+      // Compute aggregate Chantier progress
+      const sumAuth = troncons.reduce((sum, t) => sum + (tronconProgressMap[t.id] || 0), 0);
+      const sumRaw = troncons.reduce((sum, t) => sum + (rawTronconProgressMap[t.id] || 0), 0);
+      const calculatedAuthProgress = N > 0 ? Math.round(sumAuth / N) : 0;
+      const rawChantierProgress = N > 0 ? Math.round(sumRaw / N) : 0;
+
+      // Strict Non-Regression business rule: authoritative progress never regresses
+      runningMaxAuthoritativeChantier = Math.max(runningMaxAuthoritativeChantier, calculatedAuthProgress);
+
+      const lat = o.projected_lat != null ? Number(o.projected_lat) : (o.agent_lat != null ? Number(o.agent_lat) : null);
+      const lng = o.projected_lng != null ? Number(o.projected_lng) : (o.agent_lng != null ? Number(o.agent_lng) : null);
+
+      const eventItem = {
+        id: `obs-${o.id}`,
+        type: 'observation',
+        date: o.date_iso,
+        dateDay: o.date_day,
+        observationId: o.id,
+        tronconId: o.troncon_id,
+        tronconNom: o.troncon_nom,
+        rawProgress: o.raw_progress,
+        authoritativeProgress: tronconProgressMap[tId] || o.raw_progress,
+        chantierProgress: runningMaxAuthoritativeChantier,
+        coordinates: lat != null && lng != null ? { lat, lng } : null,
+        agentNom: o.agent_nom,
+        phase: o.phase,
+        phaseStatut: o.phase_statut,
+        remarques: o.remarques,
+        photos: obsPhotos,
+      };
+      events.push(eventItem);
+
+      progressHistory.push({
+        date: o.date_day,
+        dateTime: o.date_iso,
+        rawChantierProgress,
+        authoritativeChantierProgress: runningMaxAuthoritativeChantier,
+        tronconsProgress: { ...tronconProgressMap },
+        observationsCount: i + 1,
+        photosCount: cumulativePhotosCount,
+      });
+    }
+
+    // Temporal bounds calculation
+    const allDates = [
+      ...(chantier.date_debut ? [chantier.date_debut] : []),
+      ...rawObs.map((o) => o.date_day),
+    ];
+    const minDate = allDates.length > 0 ? allDates[0] : null;
+    const maxDate = allDates.length > 0 ? allDates[allDates.length - 1] : null;
+
+    return res.status(200).json({
+      chantierId: chantier.id,
+      chantierNom: chantier.nom,
+      dateDebut: chantier.date_debut,
+      dateFinPrevue: chantier.date_fin_prevue,
+      troncons,
+      events,
+      progressHistory,
+      temporalBounds: {
+        minDate,
+        maxDate,
+      },
+    });
+  } catch (error) {
+    console.error('❌ GetChantierTimeline error:', error.message, error.stack);
+    return res.status(500).json({
+      message: 'Erreur lors de la récupération de la chronologie du chantier.',
+      detail: error.message,
+    });
+  }
+}
+
 module.exports = {
   getChantierDetails,
   createChantier,
@@ -2738,5 +3046,7 @@ module.exports = {
   getChantierAvancementStats,
   getChantierJournal,
   requestExplanation,
+  getChantierTimeline,
 };
+
 

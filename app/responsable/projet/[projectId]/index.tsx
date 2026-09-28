@@ -6,6 +6,7 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   RefreshControl,
+  Image,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -16,6 +17,9 @@ import { Button } from '@/components/ui/button';
 import { Palette } from '@/constants/theme';
 import { useAuth } from '@/hooks/useAuth';
 import { api, ProjectDetails, ProjectChantier } from '@/services/api';
+import { getProjectCover } from '@/constants/projectCover';
+import { ProjectCoverModal } from '@/components/dashboard/ProjectCoverModal';
+import { SiteXHeader } from '@/components/navigation/SiteXHeader';
 
 export default function ProjectDetailResponsableScreen() {
   const { projectId, source } = useLocalSearchParams<{
@@ -29,6 +33,7 @@ export default function ProjectDetailResponsableScreen() {
   const [project, setProject] = useState<ProjectDetails | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [coverModalVisible, setCoverModalVisible] = useState(false);
 
   const fetchDetails = useCallback(async (isRefresh = false) => {
     if (!token || !projectId) return;
@@ -61,14 +66,22 @@ export default function ProjectDetailResponsableScreen() {
 
   const chantiers = project?.chantiers || [];
   const globalProgress = project?.indicateurs?.avancementGlobal || 0;
+  const cover = project
+    ? getProjectCover({
+        cover_image_url: project.cover_image_url,
+        type_projet: project.type_projet,
+        nom: project.nom,
+        description: project.description,
+      })
+    : null;
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom', 'left', 'right']}>
-      {/* Header */}
+      {/* ── Global SiteX Contextual Header with Back Navigation ── */}
+      <SiteXHeader showBack title={project?.nom || 'Détails du projet'} />
+
+      {/* Screen Title & Badges Banner */}
       <View style={styles.header}>
-        <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
-          <Ionicons name="arrow-back" size={22} color={Palette.text} />
-        </TouchableOpacity>
         <View style={{ flex: 1 }}>
           <View style={styles.typeBadgeRow}>
             {project?.type_projet ? (
@@ -95,6 +108,25 @@ export default function ProjectDetailResponsableScreen() {
           />
         }
       >
+        {/* Project Cover Banner */}
+        {cover && (
+          <View style={styles.coverBannerContainer}>
+            <Image source={cover.source} style={styles.coverBannerImage} resizeMode="cover" />
+            <View style={styles.coverBannerOverlay} />
+            <TouchableOpacity
+              style={styles.changeCoverBtn}
+              onPress={() => setCoverModalVisible(true)}
+              activeOpacity={0.8}
+              accessibilityLabel="Modifier la couverture du projet"
+            >
+              <Ionicons name="camera" size={15} color="#FFFFFF" />
+              <Text style={styles.changeCoverBtnText} weight="bold">
+                Modifier la couverture
+              </Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
         {/* Project Summary Card with Progress */}
         <Card variant="elevated" style={styles.summaryCard}>
           <Text style={styles.sectionLabel}>Avancement Global du Projet</Text>
@@ -366,6 +398,26 @@ export default function ProjectDetailResponsableScreen() {
           </Card>
         )}
       </ScrollView>
+
+      <ProjectCoverModal
+        visible={coverModalVisible}
+        onClose={() => setCoverModalVisible(false)}
+        project={
+          project
+            ? {
+                id: Number(project.id),
+                nom: project.nom,
+                description: project.description,
+                type_projet: project.type_projet,
+                cover_image_url: project.cover_image_url,
+                statut: project.statut,
+                nombre_chantiers: chantiers.length,
+                avancement_moyen: globalProgress,
+              }
+            : null
+        }
+        onCoverUpdated={() => fetchDetails(true)}
+      />
     </SafeAreaView>
   );
 }
@@ -617,5 +669,41 @@ const styles = StyleSheet.create({
     color: Palette.textMuted,
     textAlign: 'center',
     marginTop: 4,
+  },
+  coverBannerContainer: {
+    height: 160,
+    borderRadius: 16,
+    overflow: 'hidden',
+    marginBottom: 16,
+    backgroundColor: '#0F172A',
+    position: 'relative',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  coverBannerImage: {
+    width: '100%',
+    height: '100%',
+  },
+  coverBannerOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(15, 23, 42, 0.35)',
+  },
+  changeCoverBtn: {
+    position: 'absolute',
+    bottom: 12,
+    right: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: 'rgba(15, 23, 42, 0.78)',
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.25)',
+  },
+  changeCoverBtnText: {
+    color: '#FFFFFF',
+    fontSize: 12,
   },
 });

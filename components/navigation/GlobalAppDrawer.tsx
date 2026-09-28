@@ -1,3 +1,9 @@
+import { DeleteConfirmationModal } from '@/components/ui/delete-confirmation-modal';
+import { Text } from '@/components/ui/text';
+import { Palette } from '@/constants/theme';
+import { useAuth } from '@/hooks/useAuth';
+import { Ionicons } from '@expo/vector-icons';
+import { useRouter } from 'expo-router';
 import React, { useEffect, useRef, useState } from 'react';
 import {
   Animated,
@@ -5,18 +11,15 @@ import {
   Modal,
   Platform,
   Pressable,
+  Text as RNText,
   StyleSheet,
   TouchableOpacity,
-  View,
   useWindowDimensions,
+  View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
-import { Text } from '@/components/ui/text';
-import { Palette } from '@/constants/theme';
-import { useAuth } from '@/hooks/useAuth';
-import { DeleteConfirmationModal } from '@/components/ui/delete-confirmation-modal';
+
+const SiteXIcon = require('@/assets/images/sitex-icon-master.png');
 
 interface GlobalAppDrawerProps {
   visible: boolean;
@@ -105,7 +108,7 @@ export function GlobalAppDrawer({
   };
 
   // Role Badge Info
-  let roleBadgeText = 'ESPACE SITEX';
+  let roleBadgeText = 'ESPACE SiteX';
   let roleBadgeBg = Palette.primary;
   let roleBadgeIcon: any = 'briefcase';
 
@@ -177,11 +180,11 @@ export function GlobalAppDrawer({
             <View style={styles.header}>
               <View style={styles.brandRow}>
                 <View style={styles.brandLogoBox}>
-                  <Ionicons name="git-network" size={20} color="#FFFFFF" />
+                  <Image source={SiteXIcon} style={styles.brandLogoImg} resizeMode="contain" />
                 </View>
                 <View>
                   <Text variant="h2" style={styles.brandTitle} weight="bold">
-                    SiteX
+                    Site<RNText style={styles.brandAccent}>X</RNText>
                   </Text>
                   <Text style={styles.brandSubtitle}>Plateforme SIG Linéaire</Text>
                 </View>
@@ -480,15 +483,24 @@ const styles = StyleSheet.create({
   brandLogoBox: {
     width: 36,
     height: 36,
-    borderRadius: 10,
-    backgroundColor: Palette.primary,
+    borderRadius: 9,
+    overflow: 'hidden',
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  brandLogoImg: {
+    width: '100%',
+    height: '100%',
   },
   brandTitle: {
     fontSize: 18,
     color: Palette.text,
     letterSpacing: -0.3,
+  },
+  brandAccent: {
+    color: Palette.primary,
+    fontSize: 18,
+    fontWeight: '700',
   },
   brandSubtitle: {
     fontSize: 10,

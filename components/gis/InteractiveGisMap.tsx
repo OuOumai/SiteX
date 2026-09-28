@@ -2,7 +2,10 @@ import React, { useMemo, useRef, useEffect, useImperativeHandle, forwardRef } fr
 import { View, StyleSheet, Platform, ActivityIndicator, DimensionValue } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { Palette } from '@/constants/theme';
+import { KmlMetadata, KmlGroundOverlay, KmlPhotoOverlay } from '@/services/api';
 import { LEAFLET_CSS, LEAFLET_JS, PROJ4_JS } from './leafletAssets';
+import type { DerivedTemporalState } from '@/lib/temporal';
+import { applyTemporalProgressToSegments, isKmlElementVisible } from '@/lib/temporal';
 
 export interface InteractiveGisMapRef {
   undo: () => void;
@@ -10,6 +13,8 @@ export interface InteractiveGisMapRef {
   finish: () => void;
   recenter?: () => void;
   toggleSatellite?: () => void;
+  toggleKml?: () => void;
+  toggleKmlImages?: () => void;
 }
 
 export interface GisFeatureGeometry {
@@ -38,6 +43,11 @@ export interface GisChantierAlignment {
   length_km?: number | null;
   geometry: GisFeatureGeometry;
   color?: string;
+  chantier_id?: number | string;
+  projet_id?: number | string;
+  source?: string;
+  original_filename?: string;
+  ref_id?: number | string;
 }
 
 export interface GisCandidateCorridor {
@@ -121,6 +131,20 @@ export interface InteractiveGisMapProps {
     color?: string;
   }[] | null;
   onInteractionChange?: (interacting: boolean) => void;
+  // Level 3 — KML 2D Visualization
+  kmlGeometry?: GisFeatureGeometry | null;
+  kmlMetadata?: KmlMetadata | null;
+  showKmlLayer?: boolean;
+  onToggleKmlVisibility?: (visible: boolean) => void;
+  onSelectKml?: (metadata: KmlMetadata) => void;
+  // Level 4 — KML Images (GroundOverlay & PhotoOverlay)
+  kmlGroundOverlays?: KmlGroundOverlay[] | null;
+  kmlPhotoOverlays?: KmlPhotoOverlay[] | null;
+  showKmlImages?: boolean;
+  onToggleKmlImagesVisibility?: (visible: boolean) => void;
+  onSelectKmlImage?: (overlay: KmlGroundOverlay | KmlPhotoOverlay) => void;
+  // Level 6B — Temporal synchronization
+  temporalState?: DerivedTemporalState | null;
 }
 
 export const TRONCON_PALETTE = [
@@ -172,11 +196,22 @@ export function InteractiveGisMap({
   onSelectMarker,
   customLines = null,
   onInteractionChange,
+  kmlGeometry = null,
+  kmlMetadata = null,
+  showKmlLayer = true,
+  onToggleKmlVisibility,
+  onSelectKml,
+  kmlGroundOverlays = null,
+  kmlPhotoOverlays = null,
+  showKmlImages = true,
+  onToggleKmlImagesVisibility,
+  onSelectKmlImage,
+  temporalState = null,
 }: InteractiveGisMapProps) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const webViewRef = useRef<WebView | null>(null);
 
-  const executeAction = (action: 'undo' | 'clear' | 'finish' | 'recenter' | 'toggleSatellite') => {
+  const executeAction = (action: 'undo' | 'clear' | 'finish' | 'recenter' | 'toggleSatellite' | 'toggleKml' | 'toggleKmlImages') => {
     if (Platform.OS === 'web') {
       try {
         const iframe = iframeRef.current;
@@ -206,6 +241,8 @@ export function InteractiveGisMap({
     finish: () => executeAction('finish'),
     recenter: () => executeAction('recenter'),
     toggleSatellite: () => executeAction('toggleSatellite'),
+    toggleKml: () => executeAction('toggleKml'),
+    toggleKmlImages: () => executeAction('toggleKmlImages'),
   }));
 
     // Listen to messages from Leaflet (Web)
@@ -223,12 +260,16 @@ export function InteractiveGisMap({
           if (event.data.type === 'SELECT_MARKER' && event.data.markerId !== undefined) onSelectMarker?.(event.data.markerId);
           if (event.data.type === 'SELECT_CHANTIER' && event.data.chantierId !== undefined) onSelectChantierAlignment?.(event.data.chantierId);
           if (event.data.type === 'MAP_INTERACTION') onInteractionChange?.(!!event.data.active);
+          if (event.data.type === 'SELECT_KML' && event.data.metadata !== undefined) onSelectKml?.(event.data.metadata);
+          if (event.data.type === 'TOGGLE_KML_VISIBILITY' && typeof event.data.visible === 'boolean') onToggleKmlVisibility?.(event.data.visible);
+          if (event.data.type === 'SELECT_KML_IMAGE' && event.data.overlay !== undefined) onSelectKmlImage?.(event.data.overlay);
+          if (event.data.type === 'TOGGLE_KML_IMAGES_VISIBILITY' && typeof event.data.visible === 'boolean') onToggleKmlImagesVisibility?.(event.data.visible);
         };
 
         window.addEventListener('message', handleMessage);
         return () => window.removeEventListener('message', handleMessage);
       }
-    }, [onAoiChange, onSelectCorridor, onSelectTroncon, onSelectMarker, onSelectChantierAlignment, onInteractionChange]);
+    }, [onAoiChange, onSelectCorridor, onSelectTroncon, onSelectMarker, onSelectChantierAlignment, onInteractionChange, onSelectKml, onToggleKmlVisibility, onSelectKmlImage, onToggleKmlImagesVisibility]);
 
     // Handle messages on React Native Mobile WebView
     const handleWebViewMessage = (event: any) => {
@@ -246,6 +287,18 @@ export function InteractiveGisMap({
         if (data.type === 'MAP_INTERACTION') {
           onInteractionChange?.(!!data.active);
         }
+        if (data.type === 'SELECT_KML' && data.metadata !== undefined) {
+          onSelectKml?.(data.metadata);
+        }
+        if (data.type === 'TOGGLE_KML_VISIBILITY' && typeof data.visible === 'boolean') {
+          onToggleKmlVisibility?.(data.visible);
+        }
+        if (data.type === 'SELECT_KML_IMAGE' && data.overlay !== undefined) {
+          onSelectKmlImage?.(data.overlay);
+        }
+        if (data.type === 'TOGGLE_KML_IMAGES_VISIBILITY' && typeof data.visible === 'boolean') {
+          onToggleKmlImagesVisibility?.(data.visible);
+        }
         if (data.type === 'MAP_ERROR') {
           console.warn('GIS Map Warning:', data.error);
         }
@@ -254,19 +307,50 @@ export function InteractiveGisMap({
 
   // Generate self-contained Leaflet HTML with inlined assets and robust corridor selection
   const leafletHtml = useMemo(() => {
+    // ── Level 6B: Apply temporal filtering before building config ──────────
+    const isHistorical = temporalState && temporalState.mode === 'historical';
+
+    // Filter tronçons: inject historical progress/statut (geometry unchanged)
+    const temporalTroncons = isHistorical && troncons && troncons.length > 0
+      ? applyTemporalProgressToSegments(troncons, temporalState!)
+      : (troncons && troncons.length > 0 ? troncons : []);
+
+    // Filter customMarkers: only show observations visible at selected date
+    const temporalMarkers = (() => {
+      if (!customMarkers || customMarkers.length === 0) return [];
+      if (!isHistorical || !temporalState!.visibleObservationIds) return customMarkers;
+      return customMarkers.filter(m => {
+        if (m.id === undefined || m.id === null) return true; // unknown date — keep
+        const numId = typeof m.id === 'number' ? m.id : Number(m.id);
+        return temporalState!.visibleObservationIds!.has(numId);
+      });
+    })();
+
+    // Filter KML main geometry by its temporal metadata
+    const showKmlLayerTemporal = showKmlLayer !== false && (
+      !isHistorical ||
+      isKmlElementVisible(kmlMetadata?.time, temporalState?.selectedDateTime ?? null)
+    );
+
     const mapConfig = {
       rawRef: referenceGeometry || null,
       rawChantierAlignments: chantierAlignments && chantierAlignments.length > 0 ? chantierAlignments : [],
       selectedChantierId: selectedChantierId ?? null,
       rawGeoJson: rawGeoJson || null,
+      rawKmlGeom: kmlGeometry || null,
+      rawKmlMeta: kmlMetadata || null,
+      showKmlLayer: showKmlLayerTemporal,
+      rawKmlGroundOverlays: kmlGroundOverlays || (kmlMetadata && kmlMetadata.groundOverlays) || [],
+      rawKmlPhotoOverlays: kmlPhotoOverlays || (kmlMetadata && kmlMetadata.photoOverlays) || [],
+      showKmlImages: showKmlImages !== false,
       rawSearchLoc: searchLocation || null,
-      rawTroncons: troncons && troncons.length > 0 ? troncons : [],
+      rawTroncons: temporalTroncons,
       rawCorridors: corridors && corridors.length > 0 ? corridors : [],
       selectedCorridorId: selectedCorridorId !== undefined && selectedCorridorId !== null ? selectedCorridorId : null,
       rawAoi: aoiGeometry || null,
       rawExistingAois: existingAois && existingAois.length > 0 ? existingAois : [],
       enableDrawing: !!enableAoiDrawing,
-      customMarkers: customMarkers && customMarkers.length > 0 ? customMarkers : [],
+      customMarkers: temporalMarkers,
       customLines: customLines && customLines.length > 0 ? customLines : [],
       selectedId: selectedTronconId || null,
       selectedMarkerId: selectedMarkerId ?? null,
@@ -275,6 +359,10 @@ export function InteractiveGisMap({
       fitPaddingBottom: fitPaddingBottom || 35,
       optimizePkLabels: !!optimizePkLabels,
       colors: TRONCON_COLORS,
+      // Level 6B: temporal info for the Leaflet overlay badge
+      temporalMode: isHistorical ? 'historical' : 'current',
+      temporalDate: temporalState?.selectedDateLabel ?? null,
+      temporalProgress: isHistorical ? temporalState!.chantierProgress : -1,
     };
 
     const serializedConfig = JSON.stringify(mapConfig).replace(/<\/script/gi, '<\\/script');
@@ -444,6 +532,71 @@ export function InteractiveGisMap({
       pointer-events: none !important;
     }
 
+    /* KML Source Layer Tooltip & Floating Toggle */
+    .kml-source-tooltip {
+      background: rgba(15, 23, 42, 0.94) !important;
+      border: 1.5px solid #F97316 !important;
+      border-radius: 8px !important;
+      color: #FFFFFF !important;
+      font-size: 11px !important;
+      font-weight: 700 !important;
+      padding: 4px 8px !important;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5) !important;
+    }
+    .kml-toggles-container {
+      position: absolute;
+      bottom: 22px;
+      right: 12px;
+      z-index: 1100;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      align-items: flex-end;
+    }
+    .kml-toggle-badge {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: #1E293B;
+      border: 1.5px solid rgba(249, 115, 22, 0.7);
+      border-radius: 20px;
+      padding: 6px 12px;
+      color: #F8FAFC;
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
+      user-select: none;
+      -webkit-user-select: none;
+      transition: all 0.2s ease;
+    }
+    .kml-toggle-badge:active {
+      transform: scale(0.96);
+    }
+    .kml-toggle-badge-off {
+      border-color: #64748B;
+      background: #0F172A;
+      color: #94A3B8;
+      opacity: 0.85;
+    }
+    .kml-photo-marker {
+      transition: transform 0.15s ease;
+    }
+    .kml-photo-marker:hover {
+      transform: scale(1.15);
+    }
+    .kml-toggle-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #F97316;
+      box-shadow: 0 0 6px #F97316;
+    }
+    .kml-toggle-dot-off {
+      background: #64748B;
+      box-shadow: none;
+    }
+
     /* Floating Navigation Controls (Left side, below top search bar) */
     .map-nav-toolbar {
       position: absolute;
@@ -536,10 +689,79 @@ export function InteractiveGisMap({
       50% { transform: scale(1.35); opacity: 0.2; }
       100% { transform: scale(0.9); opacity: 0.85; }
     }
+
+    /* Level 6B — Temporal mode indicator badge */
+    #temporal-badge {
+      position: absolute;
+      top: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 1200;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      background: linear-gradient(135deg, rgba(124,58,237,0.92) 0%, rgba(79,70,229,0.88) 100%);
+      border: 1.5px solid rgba(167,139,250,0.6);
+      border-radius: 20px;
+      padding: 5px 13px 5px 10px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-size: 12px;
+      font-weight: 700;
+      color: #F8FAFC;
+      box-shadow: 0 4px 20px rgba(124,58,237,0.5), 0 2px 6px rgba(0,0,0,0.4);
+      pointer-events: none;
+      white-space: nowrap;
+      backdrop-filter: blur(6px);
+      letter-spacing: 0.3px;
+    }
+    #temporal-badge.hidden { display: none !important; }
+    .temporal-clock-icon {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      border: 2px solid rgba(253,230,138,0.9);
+      position: relative;
+      flex-shrink: 0;
+    }
+    .temporal-clock-icon::before {
+      content: '';
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      width: 4px;
+      height: 1.5px;
+      background: rgba(253,230,138,0.9);
+      transform-origin: left center;
+      transform: translate(-1px,-50%) rotate(-45deg);
+    }
+    .temporal-clock-icon::after {
+      content: '';
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      width: 3px;
+      height: 1.5px;
+      background: rgba(253,230,138,0.9);
+      transform-origin: left center;
+      transform: translate(-1px,-50%) rotate(75deg);
+    }
+    #temporal-date { color: #FDE68A; }
+    #temporal-sep { color: rgba(248,250,252,0.4); margin: 0 1px; }
+    #temporal-pct { color: rgba(167,243,208,0.9); }
   </style>
 </head>
 <body>
   <div id="map"></div>
+
+  <!-- Level 6B: Temporal mode indicator (hidden by default, shown by JS) -->
+  <div id="temporal-badge" class="hidden">
+    <div class="temporal-clock-icon"></div>
+    <span>HISTORIQUE</span>
+    <span id="temporal-sep">·</span>
+    <span id="temporal-date"></span>
+    <span id="temporal-sep2" style="color:rgba(248,250,252,0.4);margin:0 1px">·</span>
+    <span id="temporal-pct"></span>
+  </div>
 
   <!-- Floating Navigation Controls (+ / - / Fit Bounds) -->
   <div class="map-nav-toolbar">
@@ -595,6 +817,9 @@ export function InteractiveGisMap({
       var rawRef = config.rawRef;
       var rawChantierAlignments = config.rawChantierAlignments || [];
       var rawGeoJson = config.rawGeoJson;
+      var rawKmlGeom = config.rawKmlGeom;
+      var rawKmlMeta = config.rawKmlMeta;
+      var showKmlLayer = config.showKmlLayer !== false;
       var rawSearchLoc = config.rawSearchLoc;
       var rawTroncons = config.rawTroncons || [];
       var rawCustomMarkers = config.customMarkers || [];
@@ -607,6 +832,30 @@ export function InteractiveGisMap({
       var colors = config.colors || ["#0EA5E9", "#10B981", "#F59E0B"];
       var optimizePkLabels = !!config.optimizePkLabels;
       var fitPaddingBottom = config.fitPaddingBottom || 35;
+
+      // KML AABBGGRR hex color converter to Leaflet (#RRGGBB + opacity)
+      function convertKmlColorToLeaflet(kmlColor, defaultColor, defaultOpacity) {
+        var defCol = defaultColor || '#F97316';
+        var defOp = defaultOpacity !== undefined ? defaultOpacity : 0.95;
+        if (!kmlColor || typeof kmlColor !== 'string') {
+          return { color: defCol, opacity: defOp };
+        }
+        var raw = kmlColor.trim().replace(/^#/, '');
+        if (/^[0-9a-fA-F]{8}$/.test(raw)) {
+          var aHex = raw.slice(0, 2);
+          var bHex = raw.slice(2, 4);
+          var gHex = raw.slice(4, 6);
+          var rHex = raw.slice(6, 8);
+          var alpha = parseInt(aHex, 16) / 255;
+          var opacity = isNaN(alpha) ? defOp : Math.round(alpha * 100) / 100;
+          var color = '#' + rHex + gHex + bHex;
+          return { color: color.toLowerCase(), opacity: Math.max(0, Math.min(1, opacity)) };
+        }
+        if (/^[0-9a-fA-F]{6}$/.test(raw)) {
+          return { color: '#' + raw.toLowerCase(), opacity: defOp };
+        }
+        return { color: defCol, opacity: defOp };
+      }
       var mapContainer = document.getElementById('map');
       if (mapContainer) {
         function startInteracting() {
@@ -779,30 +1028,59 @@ export function InteractiveGisMap({
         attribution: "&copy; OpenStreetMap"
       });
 
-      // Default to Google Streets / Carto with seamless fallback
-      googleStreets.addTo(map);
+      // Default to OpenStreetMap (public, robust, no API key required)
+      osmLayer.addTo(map);
+
+      osmLayer.on("tileerror", function() {
+        if (map.hasLayer(osmLayer)) {
+          map.removeLayer(osmLayer);
+          esriStreet.addTo(map);
+        }
+      });
 
       googleStreets.on("tileerror", function() {
         if (map.hasLayer(googleStreets)) {
           map.removeLayer(googleStreets);
-          cartoVoyager.addTo(map);
+          osmLayer.addTo(map);
         }
       });
 
       cartoVoyager.on("tileerror", function() {
         if (map.hasLayer(cartoVoyager)) {
           map.removeLayer(cartoVoyager);
-          esriStreet.addTo(map);
+          osmLayer.addTo(map);
         }
       });
 
+      var overlayLayers = {};
+      var kmlLayerGroup = L.layerGroup();
+      if (rawKmlGeom) {
+        overlayLayers["🗺️ Tracé Source KML"] = kmlLayerGroup;
+      }
+      if (showKmlLayer && rawKmlGeom) {
+        kmlLayerGroup.addTo(map);
+      }
+
+      var rawKmlGroundOverlays = config.rawKmlGroundOverlays || [];
+      var rawKmlPhotoOverlays = config.rawKmlPhotoOverlays || [];
+      var showKmlImages = config.showKmlImages !== false;
+      var kmlImageLayerGroup = L.layerGroup();
+      var hasKmlImages = (rawKmlGroundOverlays && rawKmlGroundOverlays.length > 0) || (rawKmlPhotoOverlays && rawKmlPhotoOverlays.length > 0);
+
+      if (hasKmlImages) {
+        overlayLayers["🖼️ Images KML"] = kmlImageLayerGroup;
+      }
+      if (showKmlImages && hasKmlImages) {
+        kmlImageLayerGroup.addTo(map);
+      }
+
       L.control.layers({
-        "Google Plan": googleStreets,
+        "OpenStreetMap": osmLayer,
         "Google Satellite": googleHybrid,
-        "Plan Urbain (CARTO)": cartoVoyager,
+        "Google Plan": googleStreets,
         "Rues & Relief (Esri)": esriStreet,
-        "OpenStreetMap": osmLayer
-      }, null, { position: "topright" }).addTo(map);
+        "Plan Urbain (CARTO)": cartoVoyager
+      }, Object.keys(overlayLayers).length > 0 ? overlayLayers : null, { position: "topright" }).addTo(map);
 
       L.control.scale({ imperial: false, metric: true, position: "bottomleft" }).addTo(map);
 
@@ -824,6 +1102,39 @@ export function InteractiveGisMap({
             if (fgBounds && fgBounds.isValid && fgBounds.isValid()) {
               combinedBounds = L.latLngBounds(fgBounds.getSouthWest(), fgBounds.getNorthEast());
             }
+          }
+
+          // Include KML source geometry if visible on map
+          if (map.hasLayer(kmlLayerGroup) && kmlLayerGroup.getLayers && kmlLayerGroup.getLayers().length > 0) {
+            kmlLayerGroup.eachLayer(function(l) {
+              if (l.getBounds && l.getBounds().isValid && l.getBounds().isValid()) {
+                if (!combinedBounds) {
+                  combinedBounds = L.latLngBounds(l.getBounds().getSouthWest(), l.getBounds().getNorthEast());
+                } else {
+                  combinedBounds.extend(l.getBounds());
+                }
+              }
+            });
+          }
+
+          // Include KML image overlays if visible on map
+          if (map.hasLayer(kmlImageLayerGroup) && kmlImageLayerGroup.getLayers && kmlImageLayerGroup.getLayers().length > 0) {
+            kmlImageLayerGroup.eachLayer(function(l) {
+              if (l.getBounds && l.getBounds().isValid && l.getBounds().isValid()) {
+                if (!combinedBounds) {
+                  combinedBounds = L.latLngBounds(l.getBounds().getSouthWest(), l.getBounds().getNorthEast());
+                } else {
+                  combinedBounds.extend(l.getBounds());
+                }
+              } else if (l.getLatLng && l.getLatLng()) {
+                var ll = l.getLatLng();
+                if (!combinedBounds) {
+                  combinedBounds = L.latLngBounds([ll, ll]);
+                } else {
+                  combinedBounds.extend(ll);
+                }
+              }
+            });
           }
 
           // Include any interactive drawing polygon points
@@ -943,6 +1254,238 @@ export function InteractiveGisMap({
               .addTo(featureGroup);
           }
         } catch(e) {}
+      }
+
+      // Render KML Source Geometry Layer (Level 3 Visualization)
+      var safeKmlGeom = sanitizeToWgs84(rawKmlGeom);
+      if (safeKmlGeom) {
+        try {
+          var kmlStyle = {
+            color: "#F97316",
+            weight: 4.5,
+            opacity: 0.95
+          };
+
+          if (rawKmlMeta && rawKmlMeta.styles && rawKmlMeta.styles.line) {
+            var lineStyle = rawKmlMeta.styles.line;
+            if (lineStyle.color) {
+              var conv = convertKmlColorToLeaflet(lineStyle.color, "#F97316", 0.95);
+              kmlStyle.color = conv.color;
+              kmlStyle.opacity = conv.opacity;
+            }
+            if (typeof lineStyle.width === "number" && !isNaN(lineStyle.width) && lineStyle.width > 0) {
+              kmlStyle.weight = Math.max(1, Math.min(15, lineStyle.width));
+            }
+          }
+
+          // 1. Subtle dark casing underneath the KML line so it stays visible over satellite/terrain
+          L.geoJSON(safeKmlGeom, {
+            style: {
+              color: "#0F172A",
+              weight: kmlStyle.weight + 3,
+              opacity: 0.65,
+              lineCap: "round",
+              lineJoin: "round"
+            },
+            interactive: false
+          }).addTo(kmlLayerGroup);
+
+          // 2. Main styled KML source line
+          var kmlLine = L.geoJSON(safeKmlGeom, {
+            style: {
+              color: kmlStyle.color,
+              weight: kmlStyle.weight,
+              opacity: kmlStyle.opacity,
+              lineCap: "round",
+              lineJoin: "round"
+            }
+          }).addTo(kmlLayerGroup);
+
+          var kmlPlacemarkName = (rawKmlMeta && rawKmlMeta.name) || "Tracé source KML";
+          kmlLine.bindTooltip(
+            '<span class="kml-source-tooltip">🗺️ ' + escapeHtml(kmlPlacemarkName) + ' (Source KML)</span>',
+            { sticky: true, direction: "top" }
+          );
+
+          // Interactive click handler: select KML element and show metadata
+          // DomEvent.stopPropagation ensures clicking KML does not trigger AOI drawing or other actions
+          kmlLine.on("click", function(e) {
+            if (e && e.originalEvent) {
+              L.DomEvent.stopPropagation(e);
+            }
+            var payload = rawKmlMeta || {
+              name: kmlPlacemarkName,
+              sourceFormat: "KML",
+              sourceCrs: "EPSG:4326"
+            };
+            sendToParent({ type: "SELECT_KML", metadata: payload });
+          });
+
+          // Floating KML Layer Toggles Container
+          var kmlTogglesContainer = null;
+          function getOrCreateKmlTogglesContainer() {
+            if (!kmlTogglesContainer) {
+              kmlTogglesContainer = document.createElement("div");
+              kmlTogglesContainer.className = "kml-toggles-container";
+              L.DomEvent.disableClickPropagation(kmlTogglesContainer);
+              L.DomEvent.disableScrollPropagation(kmlTogglesContainer);
+              document.body.appendChild(kmlTogglesContainer);
+            }
+            return kmlTogglesContainer;
+          }
+
+          // 1. Floating KML line toggle button
+          var kmlVisibleState = showKmlLayer;
+          var toggleBadge = document.createElement("div");
+          toggleBadge.className = "kml-toggle-badge" + (kmlVisibleState ? "" : " kml-toggle-badge-off");
+          toggleBadge.id = "kml-visibility-toggle";
+          toggleBadge.innerHTML = '<span class="kml-toggle-dot' + (kmlVisibleState ? "" : " kml-toggle-dot-off") + '"></span><span>🗺️ Ligne KML ' + (kmlVisibleState ? 'ON' : 'OFF') + '</span>';
+          L.DomEvent.on(toggleBadge, "click", function(e) {
+            L.DomEvent.stopPropagation(e);
+            L.DomEvent.preventDefault(e);
+            kmlVisibleState = !kmlVisibleState;
+            if (kmlVisibleState) {
+              map.addLayer(kmlLayerGroup);
+              toggleBadge.className = "kml-toggle-badge";
+              toggleBadge.innerHTML = '<span class="kml-toggle-dot"></span><span>🗺️ Ligne KML ON</span>';
+            } else {
+              map.removeLayer(kmlLayerGroup);
+              toggleBadge.className = "kml-toggle-badge kml-toggle-badge-off";
+              toggleBadge.innerHTML = '<span class="kml-toggle-dot kml-toggle-dot-off"></span><span>🗺️ Ligne KML OFF</span>';
+            }
+            sendToParent({ type: "TOGGLE_KML_VISIBILITY", visible: kmlVisibleState });
+          });
+          getOrCreateKmlTogglesContainer().appendChild(toggleBadge);
+        } catch(e) {
+          console.warn("KML layer render warning:", e);
+        }
+      }
+
+      // Render KML Images Layer (Level 4: GroundOverlay & PhotoOverlay)
+      if (hasKmlImages) {
+        try {
+          // A. GroundOverlays
+          if (rawKmlGroundOverlays && rawKmlGroundOverlays.length > 0) {
+            rawKmlGroundOverlays.forEach(function(go) {
+              if (!go || !go.latLonBox) return;
+              var box = go.latLonBox;
+              if (typeof box.north !== "number" || typeof box.south !== "number" || typeof box.east !== "number" || typeof box.west !== "number") return;
+              if (box.south >= box.north) return;
+
+              var bounds = L.latLngBounds([box.south, box.west], [box.north, box.east]);
+              var overlayName = escapeHtml(go.name || "GroundOverlay");
+              var opacity = typeof go.opacity === "number" ? Math.max(0, Math.min(1, go.opacity)) : 1.0;
+              var zIndex = typeof go.drawOrder === "number" ? go.drawOrder : 1;
+
+              var canRenderImage = Boolean(go.isSafe && go.isAvailable && go.icon && go.icon.href);
+              if (canRenderImage) {
+                try {
+                  var imgOverlay = L.imageOverlay(go.icon.href, bounds, {
+                    opacity: opacity,
+                    zIndex: zIndex,
+                    interactive: true
+                  }).addTo(kmlImageLayerGroup);
+
+                  var rotNotice = (box.rotation && box.rotation !== 0) ? ' <span style="color:#F59E0B;">(Rot: ' + box.rotation + '°)</span>' : '';
+                  imgOverlay.bindTooltip('<span class="kml-source-tooltip">🖼️ ' + overlayName + ' (GroundOverlay)' + rotNotice + '</span>', { sticky: true, direction: "top" });
+
+                  imgOverlay.on("click", function(e) {
+                    if (e && e.originalEvent) L.DomEvent.stopPropagation(e);
+                    sendToParent({ type: "SELECT_KML_IMAGE", overlay: go });
+                  });
+                } catch(imgErr) {
+                  canRenderImage = false;
+                }
+              }
+
+              if (!canRenderImage) {
+                // Safe visual footprint fallback for local or unavailable images
+                var rect = L.rectangle(bounds, {
+                  color: "#F97316",
+                  weight: 1.5,
+                  dashArray: "5, 5",
+                  fillColor: "#F97316",
+                  fillOpacity: Math.min(0.25, opacity * 0.25),
+                  interactive: true
+                }).addTo(kmlImageLayerGroup);
+
+                var statusNotice = go.isAvailable ? '' : ' <span style="color:#EF4444;">(Image non disponible)</span>';
+                rect.bindTooltip('<span class="kml-source-tooltip">🖼️ ' + overlayName + ' (GroundOverlay)' + statusNotice + '</span>', { sticky: true, direction: "top" });
+
+                rect.on("click", function(e) {
+                  if (e && e.originalEvent) L.DomEvent.stopPropagation(e);
+                  sendToParent({ type: "SELECT_KML_IMAGE", overlay: go });
+                });
+              }
+            });
+          }
+
+          // B. PhotoOverlays
+          if (rawKmlPhotoOverlays && rawKmlPhotoOverlays.length > 0) {
+            rawKmlPhotoOverlays.forEach(function(po) {
+              if (!po || !po.position || !Array.isArray(po.position) || po.position.length < 2) return;
+              var lon = po.position[0];
+              var lat = po.position[1];
+              if (typeof lon !== "number" || typeof lat !== "number" || isNaN(lon) || isNaN(lat)) return;
+              if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return;
+
+              var photoIcon = L.divIcon({
+                className: 'kml-photo-marker',
+                html: '<div style="background:#F97316;color:#FFF;border-radius:50%;width:28px;height:28px;display:flex;align-items:center;justify-content:center;box-shadow:0 3px 10px rgba(0,0,0,0.5);border:2px solid #FFF;font-size:14px;cursor:pointer;">📷</div>',
+                iconSize: [28, 28],
+                iconAnchor: [14, 14]
+              });
+
+              var pMarker = L.marker([lat, lon], {
+                icon: photoIcon,
+                zIndexOffset: 950,
+                interactive: true
+              }).addTo(kmlImageLayerGroup);
+
+              var poName = escapeHtml(po.name || "PhotoOverlay");
+              pMarker.bindTooltip('<span class="kml-source-tooltip">📷 ' + poName + ' (PhotoOverlay)</span>', { sticky: true, direction: "top" });
+
+              pMarker.on("click", function(e) {
+                if (e && e.originalEvent) L.DomEvent.stopPropagation(e);
+                sendToParent({ type: "SELECT_KML_IMAGE", overlay: po });
+              });
+            });
+          }
+
+          // Floating KML Images visibility toggle badge
+          var kmlImagesVisibleState = showKmlImages;
+          var imgToggleBadge = document.createElement("div");
+          imgToggleBadge.className = "kml-toggle-badge" + (kmlImagesVisibleState ? "" : " kml-toggle-badge-off");
+          imgToggleBadge.id = "kml-images-visibility-toggle";
+          imgToggleBadge.innerHTML = '<span class="kml-toggle-dot' + (kmlImagesVisibleState ? "" : " kml-toggle-dot-off") + '"></span><span>🖼️ Images KML ' + (kmlImagesVisibleState ? 'ON' : 'OFF') + '</span>';
+          L.DomEvent.on(imgToggleBadge, "click", function(e) {
+            L.DomEvent.stopPropagation(e);
+            L.DomEvent.preventDefault(e);
+            kmlImagesVisibleState = !kmlImagesVisibleState;
+            if (kmlImagesVisibleState) {
+              map.addLayer(kmlImageLayerGroup);
+              imgToggleBadge.className = "kml-toggle-badge";
+              imgToggleBadge.innerHTML = '<span class="kml-toggle-dot"></span><span>🖼️ Images KML ON</span>';
+            } else {
+              map.removeLayer(kmlImageLayerGroup);
+              imgToggleBadge.className = "kml-toggle-badge kml-toggle-badge-off";
+              imgToggleBadge.innerHTML = '<span class="kml-toggle-dot kml-toggle-dot-off"></span><span>🖼️ Images KML OFF</span>';
+            }
+            sendToParent({ type: "TOGGLE_KML_IMAGES_VISIBILITY", visible: kmlImagesVisibleState });
+          });
+
+          // Ensure container exists if only images exist (without line geometry)
+          if (!kmlTogglesContainer) {
+            kmlTogglesContainer = document.createElement("div");
+            kmlTogglesContainer.className = "kml-toggles-container";
+            L.DomEvent.disableClickPropagation(kmlTogglesContainer);
+            L.DomEvent.disableScrollPropagation(kmlTogglesContainer);
+            document.body.appendChild(kmlTogglesContainer);
+          }
+          kmlTogglesContainer.appendChild(imgToggleBadge);
+        } catch(imgErr) {
+          console.warn("KML images layer render warning:", imgErr);
+        }
       }
 
       // Render AOI Polygon (Zone d'Étude)
@@ -1469,6 +2012,12 @@ export function InteractiveGisMap({
             if (drawnPoints.length >= 4) {
               notifyParentAOI();
             }
+          } else if (action === 'toggleKml') {
+            var btn = document.getElementById('kml-visibility-toggle');
+            if (btn) btn.click();
+          } else if (action === 'toggleKmlImages') {
+            var imgBtn = document.getElementById('kml-images-visibility-toggle');
+            if (imgBtn) imgBtn.click();
           }
         };
 
@@ -1595,6 +2144,23 @@ export function InteractiveGisMap({
             map.removeLayer(googleStreets);
             map.addLayer(googleHybrid);
           }
+        } else if (action === 'toggleKml') {
+          var toggleEl = document.getElementById('kml-visibility-toggle');
+          if (map.hasLayer(kmlLayerGroup)) {
+            map.removeLayer(kmlLayerGroup);
+            if (toggleEl) {
+              toggleEl.className = 'kml-toggle-badge kml-toggle-badge-off';
+              toggleEl.innerHTML = '<span class="kml-toggle-dot kml-toggle-dot-off"></span><span>KML OFF</span>';
+            }
+            sendToParent({ type: 'TOGGLE_KML_VISIBILITY', visible: false });
+          } else {
+            map.addLayer(kmlLayerGroup);
+            if (toggleEl) {
+              toggleEl.className = 'kml-toggle-badge';
+              toggleEl.innerHTML = '<span class="kml-toggle-dot"></span><span>KML ON</span>';
+            }
+            sendToParent({ type: 'TOGGLE_KML_VISIBILITY', visible: true });
+          }
         }
       };
 
@@ -1619,6 +2185,24 @@ export function InteractiveGisMap({
       setTimeout(function() { map.invalidateSize(); }, 500);
       window.addEventListener("resize", function() { map.invalidateSize(); });
 
+      // Level 6B: Activate temporal indicator badge
+      (function() {
+        var badge = document.getElementById('temporal-badge');
+        var dateEl = document.getElementById('temporal-date');
+        var pctEl = document.getElementById('temporal-pct');
+        if (!badge) return;
+        var tMode = config.temporalMode;
+        var tDate = config.temporalDate;
+        var tPct = config.temporalProgress;
+        if (tMode === 'historical' && tDate) {
+          if (dateEl) dateEl.textContent = tDate;
+          if (pctEl) pctEl.textContent = (tPct >= 0) ? Math.round(tPct) + '% av.' : '';
+          badge.classList.remove('hidden');
+        } else {
+          badge.classList.add('hidden');
+        }
+      })();
+
     } catch (err) {
       console.error("GIS map init error:", err);
       sendToParent({ type: "MAP_ERROR", error: String(err) });
@@ -1631,6 +2215,9 @@ export function InteractiveGisMap({
     chantierAlignments,
     selectedChantierId,
     rawGeoJson,
+    kmlGeometry,
+    kmlMetadata,
+    showKmlLayer,
     searchLocation,
     troncons,
     corridors,
@@ -1645,6 +2232,7 @@ export function InteractiveGisMap({
     optimizePkLabels,
     customMarkers,
     customLines,
+    temporalState,
   ]);
 
   if (Platform.OS === 'web') {

@@ -9,6 +9,7 @@ import {
   TextInput,
   Platform,
   Modal,
+  Image,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -34,8 +35,12 @@ import {
   CrsDetectionResponse,
   AoiConflictItem,
   SiblingChantierAoiItem,
+  KmlMetadata,
+  KmlGroundOverlay,
+  KmlPhotoOverlay,
 } from '@/services/api';
 import { InteractiveGisMap, InteractiveGisMapRef, GisTronconSegment, GisCandidateCorridor } from '@/components/gis/InteractiveGisMap';
+import { InteractiveGis3DMap } from '@/components/gis/InteractiveGis3DMap';
 
 // Sample infrastructure GeoJSON geometry for quick testing
 const SAMPLE_INFRASTRUCTURE_GEOJSON = {
@@ -149,6 +154,16 @@ export default function GisSetupScreen() {
   const [analysisResult, setAnalysisResult] = useState<GeoJSONAnalysisResponse | null>(null);
   const [selectedCorridor, setSelectedCorridor] = useState<GeoJSONCandidateCorridor | null>(null);
   const [isUploading, setIsUploading] = useState(false);
+  const [kmlMetadata, setKmlMetadata] = useState<KmlMetadata | null>(null);
+  const [kmlSourceGeometry, setKmlSourceGeometry] = useState<any>(null);
+  const [isKmlLayerVisible, setIsKmlLayerVisible] = useState<boolean>(true);
+  const [selectedKmlMetadata, setSelectedKmlMetadata] = useState<KmlMetadata | null>(null);
+  const [showKmlInfoModal, setShowKmlInfoModal] = useState<boolean>(false);
+  const [isKmlImagesVisible, setIsKmlImagesVisible] = useState<boolean>(true);
+  const [selectedKmlImage, setSelectedKmlImage] = useState<KmlGroundOverlay | KmlPhotoOverlay | null>(null);
+  const [showKmlImageModal, setShowKmlImageModal] = useState<boolean>(false);
+  const [gisViewMode, setGisViewMode] = useState<'2d' | '3d'>('2d');
+  const [selectedTronconId, setSelectedTronconId] = useState<number | string | null>(null);
 
   // Step 3 Corridor Pagination & Lazy Loading States
   const [corridorDisplayLimit, setCorridorDisplayLimit] = useState<number>(5);
@@ -247,13 +262,15 @@ export default function GisSetupScreen() {
   }, [loadChantierData]);
 
   // Automatic CRS Detection
-  const runCrsDetection = async (data: any, fileName?: string, explicitSrid?: number) => {
-    if (!token || !chantierId || !data) return;
+  // Automatic CRS Detection
+  const runCrsDetection = async (data: any, fileName?: string, explicitSrid?: number, kmlText?: string) => {
+    if (!token || !chantierId || (!data && !kmlText)) return;
     setIsDetectingCrs(true);
     try {
       const res = await api.detectCrs(token, chantierId, {
         geojson: data,
-        fileName: fileName || selectedFileName || 'source.geojson',
+        kmlText: kmlText,
+        fileName: fileName || selectedFileName || (kmlText ? 'source.kml' : 'source.geojson'),
         source_srid: explicitSrid,
       });
       setCrsDetection(res);
@@ -261,8 +278,27 @@ export default function GisSetupScreen() {
       if (res.supported_crs && res.supported_crs.length > 0) {
         setSupportedCrsList(res.supported_crs);
       }
+      if (res.kml_metadata) {
+        setKmlMetadata(res.kml_metadata);
+        const kmlGeom = res.normalized_geojson?.geometry || (res.normalized_geojson?.type === 'LineString' ? res.normalized_geojson : null);
+        setKmlSourceGeometry(kmlGeom);
+        setIsKmlLayerVisible(true);
+      } else {
+        setKmlMetadata(null);
+        setKmlSourceGeometry(null);
+      }
+      if (res.normalized_geojson) {
+        setGeojsonData(res.normalized_geojson);
+        const centerCoord = extractCenterFromGeoJson(res.normalized_geojson);
+        if (centerCoord) {
+          setMapCenter(centerCoord);
+          setMapZoom(12);
+          setSelectedLocation(null);
+        }
+      }
     } catch (err: any) {
       console.warn('CRS detection warning:', err.message);
+      Alert.alert('Erreur d\'analyse spatiale', err.message || 'Échec de lecture du fichier spatial.');
     } finally {
       setIsDetectingCrs(false);
     }
@@ -315,7 +351,14 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
       }
 
       const result = await DocumentPicker.getDocumentAsync({
-        type: ['application/geo+json', 'application/json', '*/*'],
+        type: [
+          'application/geo+json',
+          'application/json',
+          'application/vnd.google-earth.kml+xml',
+          'application/xml',
+          'text/xml',
+          '*/*',
+        ],
         copyToCacheDirectory: true,
       });
 
@@ -340,19 +383,27 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
         });
       }
 
-      const parsed = JSON.parse(content);
-      setSelectedFileName(fileName);
-      setGeojsonData(parsed);
-      setAnalysisResult(null);
+      const isKmlFile = fileName.toLowerCase().endsWith('.kml') || content.trim().startsWith('<') || content.includes('<kml');
 
-      const centerCoord = extractCenterFromGeoJson(parsed);
-      if (centerCoord) {
-        setMapCenter(centerCoord);
-        setMapZoom(12);
-        setSelectedLocation(null);
+      if (isKmlFile) {
+        setSelectedFileName(fileName);
+        setAnalysisResult(null);
+        await runCrsDetection(null, fileName, undefined, content);
+      } else {
+        const parsed = JSON.parse(content);
+        setSelectedFileName(fileName);
+        setGeojsonData(parsed);
+        setAnalysisResult(null);
+
+        const centerCoord = extractCenterFromGeoJson(parsed);
+        if (centerCoord) {
+          setMapCenter(centerCoord);
+          setMapZoom(12);
+          setSelectedLocation(null);
+        }
+
+        runCrsDetection(parsed, fileName);
       }
-
-      runCrsDetection(parsed, fileName);
     } catch (err: any) {
       if (err?.message?.includes('User cancelled') || err?.code === 'DOCUMENT_PICKER_CANCELED') {
         return;
@@ -360,7 +411,7 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
       console.error('Erreur lors du choix du fichier:', err);
       Alert.alert(
         'Fichier invalide',
-        "Le fichier sélectionné n'est pas un fichier JSON/GeoJSON valide ou n'a pas pu être lu."
+        err.message || "Le fichier sélectionné n'est pas un fichier spatial (GeoJSON/KML) valide ou n'a pas pu être lu."
       );
     }
   };
@@ -373,23 +424,30 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
 
       setSelectedFileName(file.name);
       const reader = new FileReader();
-      reader.onload = (e) => {
+      reader.onload = async (e) => {
         try {
           const content = e.target?.result as string;
-          const parsed = JSON.parse(content);
-          setGeojsonData(parsed);
-          setAnalysisResult(null);
+          const isKmlFile = file.name.toLowerCase().endsWith('.kml') || content.trim().startsWith('<') || content.includes('<kml');
 
-          const centerCoord = extractCenterFromGeoJson(parsed);
-          if (centerCoord) {
-            setMapCenter(centerCoord);
-            setMapZoom(12);
-            setSelectedLocation(null);
+          if (isKmlFile) {
+            setAnalysisResult(null);
+            await runCrsDetection(null, file.name, undefined, content);
+          } else {
+            const parsed = JSON.parse(content);
+            setGeojsonData(parsed);
+            setAnalysisResult(null);
+
+            const centerCoord = extractCenterFromGeoJson(parsed);
+            if (centerCoord) {
+              setMapCenter(centerCoord);
+              setMapZoom(12);
+              setSelectedLocation(null);
+            }
+
+            runCrsDetection(parsed, file.name);
           }
-
-          runCrsDetection(parsed, file.name);
-        } catch (err) {
-          Alert.alert('Fichier invalide', "Le fichier sélectionné n'est pas un fichier JSON/GeoJSON valide.");
+        } catch (err: any) {
+          Alert.alert('Fichier invalide', err.message || "Le fichier sélectionné n'est pas un fichier spatial (GeoJSON/KML) valide.");
         }
       };
       reader.readAsText(file);
@@ -402,6 +460,8 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
     setSelectedFileName('infrastructure_trace.geojson');
     setGeojsonData(SAMPLE_INFRASTRUCTURE_GEOJSON);
     setAnalysisResult(null);
+    setKmlMetadata(null);
+    setKmlSourceGeometry(null);
 
     const centerCoord = extractCenterFromGeoJson(SAMPLE_INFRASTRUCTURE_GEOJSON);
     if (centerCoord) {
@@ -875,9 +935,108 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
             {chantier ? `${chantier.nom} (${chantier.projet_nom || 'Projet'})` : 'Chantier'}
           </Text>
         </View>
+
+        {/* 2D / 3D GIS Mode Switcher */}
+        <View style={styles.gisViewModeToggleRow}>
+          <TouchableOpacity
+            style={[styles.gisViewModeBtn, gisViewMode === '2d' && styles.gisViewModeBtnActive]}
+            onPress={() => setGisViewMode('2d')}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="map-outline" size={13} color={gisViewMode === '2d' ? '#FFFFFF' : Palette.textMuted} />
+            <Text style={[styles.gisViewModeText, gisViewMode === '2d' && styles.gisViewModeTextActive]} weight="bold">
+              2D
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.gisViewModeBtn, gisViewMode === '3d' && styles.gisViewModeBtnActive]}
+            onPress={() => setGisViewMode('3d')}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="cube-outline" size={13} color={gisViewMode === '3d' ? '#FFFFFF' : '#10B981'} />
+            <Text style={[styles.gisViewModeText, gisViewMode === '3d' && styles.gisViewModeTextActive]} weight="bold">
+              3D
+            </Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
-      {/* Multi-Chantier Progress Banner */}
+      {gisViewMode === '3d' ? (
+        <View style={styles.view3DContainer}>
+          {/* 3D Top Status Bar */}
+          <View style={styles.view3DTopBar}>
+            <View style={{ flex: 1 }}>
+              <View style={styles.view3DBadgeRow}>
+                <View style={styles.view3DBadge}>
+                  <Text style={styles.view3DBadgeText} weight="bold">VUE 3D SPATIALE</Text>
+                </View>
+                {kmlMetadata?.hasAltitude ? (
+                  <View style={[styles.view3DBadge, { backgroundColor: 'rgba(56, 189, 248, 0.2)' }]}>
+                    <Text style={[styles.view3DBadgeText, { color: '#38BDF8' }]} weight="bold">
+                      ALTITUDE KML ACTIVE
+                    </Text>
+                  </View>
+                ) : (
+                  <View style={[styles.view3DBadge, { backgroundColor: 'rgba(148, 163, 184, 0.15)' }]}>
+                    <Text style={[styles.view3DBadgeText, { color: '#94A3B8' }]} weight="bold">
+                      ALTITUDE 2D AU SOL
+                    </Text>
+                  </View>
+                )}
+              </View>
+              <Text style={styles.view3DChantierTitle} weight="bold">
+                {chantier?.nom || 'Visualisation 3D du Chantier'}
+              </Text>
+              <Text style={styles.view3DChantierSubtitle}>
+                {referenceAlignment?.length_km ? `${referenceAlignment.length_km.toFixed(2)} km • ` : ''}
+                {editableTroncons.length > 0 ? `${editableTroncons.length} tronçons • ` : ''}
+                Système géodésique WGS 84 métrique (ENU)
+              </Text>
+            </View>
+
+            <TouchableOpacity
+              style={styles.returnTo2dBtn}
+              onPress={() => setGisViewMode('2d')}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="map" size={15} color="#FFFFFF" />
+              <Text style={styles.returnTo2dText} weight="semibold">
+                Retour Carte 2D
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* 3D Map Component */}
+          <View style={{ flex: 1, minHeight: 520 }}>
+            <InteractiveGis3DMap
+              aoiGeometry={savedAoiGeometry || (aoiCoordinates.length >= 3 ? { type: 'Polygon', coordinates: [aoiCoordinates] } : null)}
+              referenceGeometry={referenceAlignment?.geometry || (geojsonData?.geometry?.type === 'LineString' ? geojsonData.geometry : null)}
+              troncons={mapTroncons.length > 0 ? mapTroncons : null}
+              selectedTronconId={selectedTronconId}
+              onSelectTroncon={(id) => setSelectedTronconId(id)}
+              kmlGeometry={kmlSourceGeometry}
+              kmlMetadata={kmlMetadata}
+              kmlGroundOverlays={kmlMetadata?.groundOverlays || null}
+              kmlPhotoOverlays={kmlMetadata?.photoOverlays || null}
+              showKmlLayer={isKmlLayerVisible}
+              showKmlImages={isKmlImagesVisible}
+              onSelectKml={(meta) => {
+                setSelectedKmlMetadata(meta);
+                setShowKmlInfoModal(true);
+              }}
+              onSelectKmlImage={(overlay) => {
+                setSelectedKmlImage(overlay);
+                setShowKmlImageModal(true);
+              }}
+              center={mapCenter}
+              height="100%"
+            />
+          </View>
+        </View>
+      ) : (
+        <>
+          {/* Multi-Chantier Progress Banner */}
       {isMultiFlow && (
         <View style={styles.multiFlowHeaderBanner}>
           <View style={styles.multiFlowHeaderBadge}>
@@ -1137,6 +1296,111 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
               </View>
             )}
 
+            {/* Level 3 — KML Visualization & Intelligence Card */}
+            {geojsonData && kmlMetadata && (
+              <View style={styles.kmlDetectedCard}>
+                <View style={styles.kmlDetectedHeader}>
+                  <View style={styles.kmlDetectedIcon}>
+                    <Ionicons name="map-outline" size={20} color="#F97316" />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      <Text style={styles.kmlDetectedBadgeText}>✓ CALQUE SOURCE KML DÉTECTÉ</Text>
+                      <View style={styles.kmlSourceTag}>
+                        <Text style={styles.kmlSourceTagText}>Niveau 4 — 2D</Text>
+                      </View>
+                    </View>
+                    <Text style={styles.kmlDetectedName} weight="bold">
+                      {kmlMetadata.name}
+                    </Text>
+                    <Text style={styles.kmlDetectedDesc}>
+                      Visualisation 2D prête. Le tracé KML et les images associées (GroundOverlay & PhotoOverlay) sont affichés en 2D et inspectables séparément.
+                    </Text>
+                  </View>
+                </View>
+
+                {/* Overlays Summary if any */}
+                {Boolean((kmlMetadata.groundOverlays?.length || 0) + (kmlMetadata.photoOverlays?.length || 0) > 0) && (
+                  <View style={styles.kmlImagesSummaryRow}>
+                    <Ionicons name="images-outline" size={14} color="#F97316" />
+                    <Text style={styles.kmlImagesSummaryText}>
+                      Images KML :{' '}
+                      <Text weight="bold">
+                        {kmlMetadata.groundOverlays?.length || 0} GroundOverlay{(kmlMetadata.groundOverlays?.length || 0) > 1 ? 's' : ''}, {kmlMetadata.photoOverlays?.length || 0} PhotoOverlay{(kmlMetadata.photoOverlays?.length || 0) > 1 ? 's' : ''}
+                      </Text>
+                    </Text>
+                  </View>
+                )}
+
+                <View style={styles.kmlActionsRow}>
+                  <TouchableOpacity
+                    style={styles.kmlInspectBtn}
+                    onPress={() => {
+                      setSelectedKmlMetadata(kmlMetadata);
+                      setShowKmlInfoModal(true);
+                    }}
+                    activeOpacity={0.7}
+                  >
+                    <Ionicons name="information-circle-outline" size={15} color="#F97316" />
+                    <Text style={styles.kmlInspectBtnText} weight="semibold">
+                      Métadonnées KML
+                    </Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={[styles.kmlInspectBtn, { backgroundColor: 'rgba(56, 189, 248, 0.12)', borderColor: 'rgba(56, 189, 248, 0.3)' }]}
+                    onPress={() => setGisViewMode('3d')}
+                    activeOpacity={0.7}
+                  >
+                    <Ionicons name="cube-outline" size={15} color="#0284C7" />
+                    <Text style={[styles.kmlInspectBtnText, { color: '#0284C7' }]} weight="semibold">
+                      Explorer en 3D
+                    </Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={[styles.kmlToggleLayerBtn, !isKmlLayerVisible && styles.kmlToggleLayerBtnOff]}
+                    onPress={() => setIsKmlLayerVisible(!isKmlLayerVisible)}
+                    activeOpacity={0.7}
+                  >
+                    <Ionicons
+                      name={isKmlLayerVisible ? "eye-outline" : "eye-off-outline"}
+                      size={15}
+                      color={isKmlLayerVisible ? "#15803D" : "#64748B"}
+                    />
+                    <Text
+                      style={[styles.kmlToggleLayerText, !isKmlLayerVisible && styles.kmlToggleLayerTextOff]}
+                      weight="semibold"
+                    >
+                      {isKmlLayerVisible ? "Lignes : Activé" : "Lignes : Masqué"}
+                    </Text>
+                  </TouchableOpacity>
+
+                  {Boolean((kmlMetadata.groundOverlays?.length || 0) + (kmlMetadata.photoOverlays?.length || 0) > 0) && (
+                    <TouchableOpacity
+                      style={[styles.kmlToggleLayerBtn, !isKmlImagesVisible && styles.kmlToggleLayerBtnOff]}
+                      onPress={() => setIsKmlImagesVisible(!isKmlImagesVisible)}
+                      activeOpacity={0.7}
+                    >
+                      <Ionicons
+                        name={isKmlImagesVisible ? "image-outline" : "eye-off-outline"}
+                        size={15}
+                        color={isKmlImagesVisible ? "#EA580C" : "#64748B"}
+                      />
+                      <Text
+                        style={[styles.kmlToggleLayerText, !isKmlImagesVisible && styles.kmlToggleLayerTextOff]}
+                        weight="semibold"
+                      >
+                        {isKmlImagesVisible
+                          ? `Images (${(kmlMetadata.groundOverlays?.length || 0) + (kmlMetadata.photoOverlays?.length || 0)}) : Activé`
+                          : "Images : Masqué"}
+                      </Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+              </View>
+            )}
+
             {geojsonData && (
               <Button
                 title="Passer à la Zone d'Étude (AOI) →"
@@ -1249,6 +1513,22 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
                   ref={mapRef}
                   mapRef={mapRef}
                   rawGeoJson={geojsonData}
+                  kmlGeometry={kmlSourceGeometry}
+                  kmlMetadata={kmlMetadata}
+                  showKmlLayer={isKmlLayerVisible}
+                  onToggleKmlVisibility={setIsKmlLayerVisible}
+                  onSelectKml={(meta) => {
+                    setSelectedKmlMetadata(meta);
+                    setShowKmlInfoModal(true);
+                  }}
+                  kmlGroundOverlays={kmlMetadata?.groundOverlays || null}
+                  kmlPhotoOverlays={kmlMetadata?.photoOverlays || null}
+                  showKmlImages={isKmlImagesVisible}
+                  onToggleKmlImagesVisibility={setIsKmlImagesVisible}
+                  onSelectKmlImage={(overlay) => {
+                    setSelectedKmlImage(overlay);
+                    setShowKmlImageModal(true);
+                  }}
                   searchLocation={selectedLocation}
                   enableAoiDrawing={aoiMode === 'draw'}
                   aoiGeometry={currentAoiGeom}
@@ -1479,6 +1759,22 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
             <View style={styles.mapWrapper}>
               <InteractiveGisMap
                 aoiGeometry={analysisResult.aoi_geometry}
+                kmlGeometry={kmlSourceGeometry}
+                kmlMetadata={kmlMetadata}
+                showKmlLayer={isKmlLayerVisible}
+                onToggleKmlVisibility={setIsKmlLayerVisible}
+                onSelectKml={(meta) => {
+                  setSelectedKmlMetadata(meta);
+                  setShowKmlInfoModal(true);
+                }}
+                kmlGroundOverlays={kmlMetadata?.groundOverlays || null}
+                kmlPhotoOverlays={kmlMetadata?.photoOverlays || null}
+                showKmlImages={isKmlImagesVisible}
+                onToggleKmlImagesVisibility={setIsKmlImagesVisible}
+                onSelectKmlImage={(overlay) => {
+                  setSelectedKmlImage(overlay);
+                  setShowKmlImageModal(true);
+                }}
                 corridors={mapCorridors}
                 selectedCorridorId={selectedCorridor?.id}
                 center={mapCenter}
@@ -1777,6 +2073,22 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
               <InteractiveGisMap
                 aoiGeometry={savedAoiGeometry}
                 referenceGeometry={referenceAlignment.geometry}
+                kmlGeometry={kmlSourceGeometry}
+                kmlMetadata={kmlMetadata}
+                showKmlLayer={isKmlLayerVisible}
+                onToggleKmlVisibility={setIsKmlLayerVisible}
+                onSelectKml={(meta) => {
+                  setSelectedKmlMetadata(meta);
+                  setShowKmlInfoModal(true);
+                }}
+                kmlGroundOverlays={kmlMetadata?.groundOverlays || null}
+                kmlPhotoOverlays={kmlMetadata?.photoOverlays || null}
+                showKmlImages={isKmlImagesVisible}
+                onToggleKmlImagesVisibility={setIsKmlImagesVisible}
+                onSelectKmlImage={(overlay) => {
+                  setSelectedKmlImage(overlay);
+                  setShowKmlImageModal(true);
+                }}
                 center={mapCenter}
                 zoom={mapZoom}
                 onInteractionChange={handleMapInteractionChange}
@@ -2021,6 +2333,22 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
               <InteractiveGisMap
                 aoiGeometry={savedAoiGeometry}
                 referenceGeometry={referenceAlignment?.geometry}
+                kmlGeometry={kmlSourceGeometry}
+                kmlMetadata={kmlMetadata}
+                showKmlLayer={isKmlLayerVisible}
+                onToggleKmlVisibility={setIsKmlLayerVisible}
+                onSelectKml={(meta) => {
+                  setSelectedKmlMetadata(meta);
+                  setShowKmlInfoModal(true);
+                }}
+                kmlGroundOverlays={kmlMetadata?.groundOverlays || null}
+                kmlPhotoOverlays={kmlMetadata?.photoOverlays || null}
+                showKmlImages={isKmlImagesVisible}
+                onToggleKmlImagesVisibility={setIsKmlImagesVisible}
+                onSelectKmlImage={(overlay) => {
+                  setSelectedKmlImage(overlay);
+                  setShowKmlImageModal(true);
+                }}
                 troncons={mapTroncons}
                 center={mapCenter}
                 zoom={mapZoom}
@@ -2236,6 +2564,8 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
           </Card>
         )}
       </ScrollView>
+        </>
+      )}
 
       {/* ── Advanced Manual CRS Selection Modal ── */}
       <Modal
@@ -2417,6 +2747,441 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
                 variant="primary"
                 size="md"
                 onPress={() => setShowConflictModal(false)}
+              />
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ── LEVEL 3 KML METADATA INFORMATION MODAL ── */}
+      <Modal
+        visible={showKmlInfoModal && !!selectedKmlMetadata}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowKmlInfoModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.kmlModalContainer}>
+            {/* Header */}
+            <View style={styles.kmlModalHeader}>
+              <View style={styles.kmlModalIconWrap}>
+                <Ionicons name="map" size={22} color="#F97316" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <Text style={styles.kmlModalBadgeText}>INFORMATION KML</Text>
+                  <View style={styles.kmlSourceTag}>
+                    <Text style={styles.kmlSourceTagText}>Niveau 3 — 2D</Text>
+                  </View>
+                </View>
+                <Text variant="h2" style={styles.kmlModalTitle} weight="bold" numberOfLines={1}>
+                  {selectedKmlMetadata?.name || 'Tracé KML'}
+                </Text>
+                <Text style={styles.kmlModalSubtitle}>
+                  Calque contextuel de visualisation 2D
+                </Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => setShowKmlInfoModal(false)}
+                style={styles.crsModalCloseBtn}
+              >
+                <Ionicons name="close" size={22} color={Palette.text} />
+              </TouchableOpacity>
+            </View>
+
+            {/* Scrollable Metadata Details */}
+            <ScrollView style={{ maxHeight: 420 }} showsVerticalScrollIndicator={false}>
+              {/* General Info Section */}
+              <View style={styles.kmlSection}>
+                <Text style={styles.kmlSectionTitle}>IDENTIFICATION & GÉOMÉTRIE</Text>
+                
+                <View style={styles.kmlInfoRow}>
+                  <Text style={styles.kmlInfoLabel}>Nom :</Text>
+                  <Text style={styles.kmlInfoValue} weight="bold">
+                    {selectedKmlMetadata?.name || '—'}
+                  </Text>
+                </View>
+
+                <View style={styles.kmlInfoRow}>
+                  <Text style={styles.kmlInfoLabel}>Source :</Text>
+                  <Text style={styles.kmlInfoValue}>KML (Keyhole Markup Language)</Text>
+                </View>
+
+                <View style={styles.kmlInfoRow}>
+                  <Text style={styles.kmlInfoLabel}>Système (CRS) :</Text>
+                  <Text style={styles.kmlInfoValue}>EPSG:4326 (WGS 84)</Text>
+                </View>
+
+                {Boolean(selectedKmlMetadata?.documentName) && (
+                  <View style={styles.kmlInfoRow}>
+                    <Text style={styles.kmlInfoLabel}>Document :</Text>
+                    <Text style={styles.kmlInfoValue}>{selectedKmlMetadata?.documentName}</Text>
+                  </View>
+                )}
+
+                {Boolean(selectedKmlMetadata?.folders && selectedKmlMetadata.folders.length > 0) && (
+                  <View style={styles.kmlInfoRow}>
+                    <Text style={styles.kmlInfoLabel}>Dossier :</Text>
+                    <Text style={styles.kmlInfoValue}>{selectedKmlMetadata?.folders?.join(' ❯ ')}</Text>
+                  </View>
+                )}
+
+                {Boolean(selectedKmlMetadata?.description) && (
+                  <View style={styles.kmlInfoRowColumn}>
+                    <Text style={styles.kmlInfoLabel}>Description :</Text>
+                    <Text style={styles.kmlDescriptionBox}>{selectedKmlMetadata?.description}</Text>
+                  </View>
+                )}
+              </View>
+
+              {/* Style Section */}
+              {(Boolean(selectedKmlMetadata?.styleUrl) || Boolean(selectedKmlMetadata?.styles)) && (
+                <View style={styles.kmlSection}>
+                  <Text style={styles.kmlSectionTitle}>STYLE KML</Text>
+                  
+                  {Boolean(selectedKmlMetadata?.styleUrl) && (
+                    <View style={styles.kmlInfoRow}>
+                      <Text style={styles.kmlInfoLabel}>Référence (styleUrl) :</Text>
+                      <Text style={[styles.kmlInfoValue, { fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' }]}>
+                        {selectedKmlMetadata?.styleUrl}
+                      </Text>
+                    </View>
+                  )}
+
+                  {selectedKmlMetadata?.styles?.line?.color && (
+                    <View style={styles.kmlInfoRow}>
+                      <Text style={styles.kmlInfoLabel}>Couleur de ligne :</Text>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                        <View style={[styles.kmlColorSwatch, { backgroundColor: '#' + (selectedKmlMetadata.styles.line.color.length === 8 ? selectedKmlMetadata.styles.line.color.slice(6, 8) + selectedKmlMetadata.styles.line.color.slice(4, 6) + selectedKmlMetadata.styles.line.color.slice(2, 4) : 'F97316') }]} />
+                        <Text style={styles.kmlInfoValue}>
+                          {selectedKmlMetadata.styles.line.color} (KML AABBGGRR)
+                        </Text>
+                      </View>
+                    </View>
+                  )}
+
+                  {selectedKmlMetadata?.styles?.line?.width !== undefined && selectedKmlMetadata?.styles?.line?.width !== null && (
+                    <View style={styles.kmlInfoRow}>
+                      <Text style={styles.kmlInfoLabel}>Épaisseur (width) :</Text>
+                      <Text style={styles.kmlInfoValue}>{selectedKmlMetadata.styles.line.width} px</Text>
+                    </View>
+                  )}
+
+                  {selectedKmlMetadata?.styles?.styleMap && (
+                    <View style={styles.kmlInfoRow}>
+                      <Text style={styles.kmlInfoLabel}>StyleMap ID :</Text>
+                      <Text style={styles.kmlInfoValue}>{selectedKmlMetadata.styles.styleMap.id}</Text>
+                    </View>
+                  )}
+                </View>
+              )}
+
+              {/* ExtendedData Section */}
+              {Boolean(selectedKmlMetadata?.extendedData && Object.keys(selectedKmlMetadata.extendedData).length > 0) && (
+                <View style={styles.kmlSection}>
+                  <Text style={styles.kmlSectionTitle}>DONNÉES ÉTENDUES (EXTENDEDDATA)</Text>
+                  <View style={styles.kmlExtDataTable}>
+                    {Object.entries(selectedKmlMetadata!.extendedData!).map(([key, value]) => (
+                      <View key={key} style={styles.kmlExtDataRow}>
+                        <Text style={styles.kmlExtDataKey} weight="semibold">{key}</Text>
+                        <Text style={styles.kmlExtDataVal}>{String(value)}</Text>
+                      </View>
+                    ))}
+                  </View>
+                </View>
+              )}
+
+              {/* Temporal Data Section */}
+              {Boolean(selectedKmlMetadata?.time) && (
+                <View style={styles.kmlSection}>
+                  <Text style={styles.kmlSectionTitle}>MÉTADONNÉES TEMPORELLES</Text>
+                  {selectedKmlMetadata?.time?.type === 'timestamp' && (
+                    <View style={styles.kmlInfoRow}>
+                      <Text style={styles.kmlInfoLabel}>Horodatage (TimeStamp) :</Text>
+                      <Text style={styles.kmlInfoValue}>{selectedKmlMetadata.time.when || '—'}</Text>
+                    </View>
+                  )}
+                  {selectedKmlMetadata?.time?.type === 'timespan' && (
+                    <View style={styles.kmlInfoRow}>
+                      <Text style={styles.kmlInfoLabel}>Période (TimeSpan) :</Text>
+                      <Text style={styles.kmlInfoValue}>
+                        {selectedKmlMetadata.time.begin || '—'} ➔ {selectedKmlMetadata.time.end || '—'}
+                      </Text>
+                    </View>
+                  )}
+                </View>
+              )}
+
+              {/* Generator Info */}
+              {Boolean(selectedKmlMetadata?.generator) && (
+                <View style={styles.kmlSection}>
+                  <Text style={styles.kmlSectionTitle}>PROVENANCE LOGICIELLE</Text>
+                  <View style={styles.kmlInfoRow}>
+                    <Text style={styles.kmlInfoLabel}>Générateur :</Text>
+                    <Text style={styles.kmlInfoValue} weight="semibold">
+                      {selectedKmlMetadata?.generator}
+                    </Text>
+                  </View>
+                </View>
+              )}
+            </ScrollView>
+
+            {/* Modal Actions */}
+            <View style={styles.kmlModalFooter}>
+              <TouchableOpacity
+                style={[styles.kmlModalToggleBtn, !isKmlLayerVisible && styles.kmlModalToggleBtnOff]}
+                onPress={() => setIsKmlLayerVisible(!isKmlLayerVisible)}
+                activeOpacity={0.7}
+              >
+                <Ionicons
+                  name={isKmlLayerVisible ? "eye-off-outline" : "eye-outline"}
+                  size={16}
+                  color={isKmlLayerVisible ? "#DC2626" : "#15803D"}
+                />
+                <Text style={[styles.kmlModalToggleText, !isKmlLayerVisible && { color: "#15803D" }]} weight="semibold">
+                  {isKmlLayerVisible ? "Masquer le calque KML" : "Afficher le calque KML"}
+                </Text>
+              </TouchableOpacity>
+
+              <Button
+                title="Fermer"
+                variant="primary"
+                size="md"
+                onPress={() => setShowKmlInfoModal(false)}
+              />
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ── LEVEL 4 KML IMAGE DETAILS & PREVIEW MODAL ── */}
+      <Modal
+        visible={showKmlImageModal && !!selectedKmlImage}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowKmlImageModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.kmlModalContainer}>
+            {/* Header */}
+            <View style={styles.kmlModalHeader}>
+              <View style={[styles.kmlModalIconWrap, { backgroundColor: 'rgba(249, 115, 22, 0.15)' }]}>
+                <Ionicons
+                  name={selectedKmlImage?.type === 'PhotoOverlay' ? "camera" : "image"}
+                  size={22}
+                  color="#F97316"
+                />
+              </View>
+              <View style={{ flex: 1 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <Text style={styles.kmlModalBadgeText}>
+                    {selectedKmlImage?.type === 'PhotoOverlay' ? 'PHOTO KML (2D)' : 'IMAGE GÉORÉFÉRENCÉE KML'}
+                  </Text>
+                  <View style={styles.kmlSourceTag}>
+                    <Text style={styles.kmlSourceTagText}>Niveau 4 — 2D</Text>
+                  </View>
+                </View>
+                <Text variant="h2" style={styles.kmlModalTitle} weight="bold" numberOfLines={1}>
+                  {selectedKmlImage?.name || (selectedKmlImage?.type === 'PhotoOverlay' ? 'Photo KML' : 'Image KML')}
+                </Text>
+                <Text style={styles.kmlModalSubtitle}>
+                  {selectedKmlImage?.type === 'PhotoOverlay'
+                    ? 'Photo contextuelle 2D avec positionnement et orientation'
+                    : 'Superposition 2D d\'image sur emprise géographique (GroundOverlay)'}
+                </Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => setShowKmlImageModal(false)}
+                style={styles.crsModalCloseBtn}
+              >
+                <Ionicons name="close" size={22} color={Palette.text} />
+              </TouchableOpacity>
+            </View>
+
+            {/* Scrollable Content */}
+            <ScrollView style={{ maxHeight: 440 }} showsVerticalScrollIndicator={false}>
+              {/* Image Preview / Availability Box */}
+              <View style={styles.kmlSection}>
+                <Text style={styles.kmlSectionTitle}>APERÇU DE L'IMAGE</Text>
+                {selectedKmlImage?.isSafe && selectedKmlImage.isAvailable && selectedKmlImage.icon?.href ? (
+                  <View style={styles.kmlImagePreviewWrap}>
+                    <Image
+                      source={{ uri: selectedKmlImage.icon.href }}
+                      style={styles.kmlImagePreview}
+                      resizeMode="contain"
+                    />
+                    <Text style={styles.kmlImageHrefCaption} numberOfLines={1}>
+                      Source : {selectedKmlImage.icon.href}
+                    </Text>
+                  </View>
+                ) : (
+                  <View style={styles.kmlImageUnavailableBox}>
+                    <Ionicons name="image-outline" size={32} color={Palette.textMuted} />
+                    <Text style={styles.kmlImageUnavailableTitle} weight="bold">
+                      Ressource image non disponible
+                    </Text>
+                    <Text style={styles.kmlImageUnavailableDesc}>
+                      {selectedKmlImage?.securityWarning ||
+                        (selectedKmlImage?.icon?.href
+                          ? `Le fichier image référencé ("${selectedKmlImage.icon.href}") n'a pas été fourni avec le KML.`
+                          : 'Aucune référence d\'image <href> valide n\'est spécifiée.')}
+                    </Text>
+                    <Text style={styles.kmlImageUnavailableFootnote}>
+                      L'emprise et les métadonnées spatiales restent exploitables en 2D sur la carte.
+                    </Text>
+                  </View>
+                )}
+              </View>
+
+              {/* Identification & Spatial Attributes */}
+              <View style={styles.kmlSection}>
+                <Text style={styles.kmlSectionTitle}>ATTRIBUTS SPATIAUX & GÉOMÉTRIE</Text>
+                
+                <View style={styles.kmlInfoRow}>
+                  <Text style={styles.kmlInfoLabel}>Nom :</Text>
+                  <Text style={styles.kmlInfoValue} weight="bold">
+                    {selectedKmlImage?.name || '—'}
+                  </Text>
+                </View>
+
+                <View style={styles.kmlInfoRow}>
+                  <Text style={styles.kmlInfoLabel}>Type KML :</Text>
+                  <Text style={styles.kmlInfoValue}>
+                    {selectedKmlImage?.type === 'PhotoOverlay' ? 'PhotoOverlay' : 'GroundOverlay'}
+                  </Text>
+                </View>
+
+                <View style={styles.kmlInfoRow}>
+                  <Text style={styles.kmlInfoLabel}>Référence (href) :</Text>
+                  <Text style={[styles.kmlInfoValue, { fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' }]}>
+                    {selectedKmlImage?.icon?.href || '—'}
+                  </Text>
+                </View>
+
+                {selectedKmlImage?.type === 'GroundOverlay' && selectedKmlImage.latLonBox && (
+                  <>
+                    <View style={styles.kmlInfoRow}>
+                      <Text style={styles.kmlInfoLabel}>Emprise Nord :</Text>
+                      <Text style={styles.kmlInfoValue}>{selectedKmlImage.latLonBox.north.toFixed(6)}°</Text>
+                    </View>
+                    <View style={styles.kmlInfoRow}>
+                      <Text style={styles.kmlInfoLabel}>Emprise Sud :</Text>
+                      <Text style={styles.kmlInfoValue}>{selectedKmlImage.latLonBox.south.toFixed(6)}°</Text>
+                    </View>
+                    <View style={styles.kmlInfoRow}>
+                      <Text style={styles.kmlInfoLabel}>Emprise Est :</Text>
+                      <Text style={styles.kmlInfoValue}>{selectedKmlImage.latLonBox.east.toFixed(6)}°</Text>
+                    </View>
+                    <View style={styles.kmlInfoRow}>
+                      <Text style={styles.kmlInfoLabel}>Emprise Ouest :</Text>
+                      <Text style={styles.kmlInfoValue}>{selectedKmlImage.latLonBox.west.toFixed(6)}°</Text>
+                    </View>
+                    <View style={styles.kmlInfoRow}>
+                      <Text style={styles.kmlInfoLabel}>Opacité :</Text>
+                      <Text style={styles.kmlInfoValue}>
+                        {Math.round((selectedKmlImage.opacity || 1) * 100)}%
+                        {selectedKmlImage.color ? ` (${selectedKmlImage.color})` : ''}
+                      </Text>
+                    </View>
+                    <View style={styles.kmlInfoRow}>
+                      <Text style={styles.kmlInfoLabel}>Rotation :</Text>
+                      <Text style={styles.kmlInfoValue}>
+                        {selectedKmlImage.latLonBox.rotation !== undefined ? `${selectedKmlImage.latLonBox.rotation}°` : '0°'}
+                        {Boolean(selectedKmlImage.latLonBox.rotation && selectedKmlImage.latLonBox.rotation !== 0) && (
+                          <Text style={{ color: '#F59E0B', fontSize: 11 }}> (Visualisé sans rotation 2D)</Text>
+                        )}
+                      </Text>
+                    </View>
+                    {selectedKmlImage.drawOrder !== undefined && (
+                      <View style={styles.kmlInfoRow}>
+                        <Text style={styles.kmlInfoLabel}>Ordre d'affichage (drawOrder) :</Text>
+                        <Text style={styles.kmlInfoValue}>{selectedKmlImage.drawOrder}</Text>
+                      </View>
+                    )}
+                  </>
+                )}
+
+                {selectedKmlImage?.type === 'PhotoOverlay' && (
+                  <>
+                    <View style={styles.kmlInfoRow}>
+                      <Text style={styles.kmlInfoLabel}>Position 2D :</Text>
+                      <Text style={styles.kmlInfoValue}>
+                        {selectedKmlImage.position
+                          ? `${selectedKmlImage.position[1].toFixed(6)}° N, ${selectedKmlImage.position[0].toFixed(6)}° E`
+                          : '—'}
+                      </Text>
+                    </View>
+                    {selectedKmlImage.altitude !== null && selectedKmlImage.altitude !== undefined && (
+                      <View style={styles.kmlInfoRow}>
+                        <Text style={styles.kmlInfoLabel}>Altitude :</Text>
+                        <Text style={styles.kmlInfoValue}>{selectedKmlImage.altitude} m (non interprétée en 3D)</Text>
+                      </View>
+                    )}
+                    {selectedKmlImage.heading !== null && selectedKmlImage.heading !== undefined && (
+                      <View style={styles.kmlInfoRow}>
+                        <Text style={styles.kmlInfoLabel}>Cap (Heading) :</Text>
+                        <Text style={styles.kmlInfoValue}>{selectedKmlImage.heading}°</Text>
+                      </View>
+                    )}
+                    {selectedKmlImage.tilt !== null && selectedKmlImage.tilt !== undefined && (
+                      <View style={styles.kmlInfoRow}>
+                        <Text style={styles.kmlInfoLabel}>Inclinaison (Tilt) :</Text>
+                        <Text style={styles.kmlInfoValue}>{selectedKmlImage.tilt}°</Text>
+                      </View>
+                    )}
+                    {selectedKmlImage.roll !== null && selectedKmlImage.roll !== undefined && (
+                      <View style={styles.kmlInfoRow}>
+                        <Text style={styles.kmlInfoLabel}>Roulis (Roll) :</Text>
+                        <Text style={styles.kmlInfoValue}>{selectedKmlImage.roll}°</Text>
+                      </View>
+                    )}
+                    {selectedKmlImage.shape && (
+                      <View style={styles.kmlInfoRow}>
+                        <Text style={styles.kmlInfoLabel}>Forme :</Text>
+                        <Text style={styles.kmlInfoValue}>{selectedKmlImage.shape}</Text>
+                      </View>
+                    )}
+                  </>
+                )}
+
+                {Boolean(selectedKmlImage?.folders && selectedKmlImage.folders.length > 0) && (
+                  <View style={styles.kmlInfoRow}>
+                    <Text style={styles.kmlInfoLabel}>Dossier :</Text>
+                    <Text style={styles.kmlInfoValue}>{selectedKmlImage?.folders?.join(' ❯ ')}</Text>
+                  </View>
+                )}
+
+                {Boolean(selectedKmlImage?.description) && (
+                  <View style={styles.kmlInfoRowColumn}>
+                    <Text style={styles.kmlInfoLabel}>Description :</Text>
+                    <Text style={styles.kmlDescriptionBox}>{selectedKmlImage?.description}</Text>
+                  </View>
+                )}
+              </View>
+            </ScrollView>
+
+            {/* Modal Actions */}
+            <View style={styles.kmlModalFooter}>
+              <TouchableOpacity
+                style={[styles.kmlModalToggleBtn, !isKmlImagesVisible && styles.kmlModalToggleBtnOff]}
+                onPress={() => setIsKmlImagesVisible(!isKmlImagesVisible)}
+                activeOpacity={0.7}
+              >
+                <Ionicons
+                  name={isKmlImagesVisible ? "eye-off-outline" : "eye-outline"}
+                  size={16}
+                  color={isKmlImagesVisible ? "#DC2626" : "#15803D"}
+                />
+                <Text style={[styles.kmlModalToggleText, !isKmlImagesVisible && { color: "#15803D" }]} weight="semibold">
+                  {isKmlImagesVisible ? "Masquer calque Images" : "Afficher calque Images"}
+                </Text>
+              </TouchableOpacity>
+
+              <Button
+                title="Fermer"
+                variant="primary"
+                size="md"
+                onPress={() => setShowKmlImageModal(false)}
               />
             </View>
           </View>
@@ -3788,5 +4553,422 @@ const styles = StyleSheet.create({
     fontSize: 11.5,
     color: '#3730A3',
     lineHeight: 16,
+  },
+  // Level 3 — KML Visualization & Intelligence Styles
+  kmlDetectedCard: {
+    marginTop: 12,
+    padding: 14,
+    borderRadius: 12,
+    backgroundColor: '#FFF7ED',
+    borderWidth: 1.5,
+    borderColor: '#FFEDD5',
+    shadowColor: '#EA580C',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 6,
+    elevation: 2,
+  },
+  kmlDetectedHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+  },
+  kmlDetectedIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(249, 115, 22, 0.15)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  kmlDetectedBadgeText: {
+    fontSize: 10.5,
+    fontWeight: '800',
+    color: '#C2410C',
+    letterSpacing: 0.5,
+  },
+  kmlSourceTag: {
+    backgroundColor: '#FFEDD5',
+    paddingHorizontal: 6,
+    paddingVertical: 1.5,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: '#FDBA74',
+  },
+  kmlSourceTagText: {
+    fontSize: 9.5,
+    fontWeight: '700',
+    color: '#9A3412',
+  },
+  kmlDetectedName: {
+    fontSize: 14,
+    color: '#9A3412',
+    marginTop: 3,
+  },
+  kmlDetectedDesc: {
+    fontSize: 11.5,
+    color: '#7C2D12',
+    lineHeight: 16,
+    marginTop: 3,
+  },
+  kmlActionsRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 12,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(249, 115, 22, 0.2)',
+  },
+  kmlInspectBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1.2,
+    borderColor: '#FDBA74',
+    borderRadius: 8,
+    paddingVertical: 7,
+    paddingHorizontal: 10,
+  },
+  kmlInspectBtnText: {
+    fontSize: 11.5,
+    color: '#C2410C',
+  },
+  kmlToggleLayerBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: '#F0FDF4',
+    borderWidth: 1.2,
+    borderColor: '#BBF7D0',
+    borderRadius: 8,
+    paddingVertical: 7,
+    paddingHorizontal: 10,
+  },
+  kmlToggleLayerBtnOff: {
+    backgroundColor: '#F1F5F9',
+    borderColor: '#CBD5E1',
+  },
+  kmlToggleLayerText: {
+    fontSize: 11.5,
+    color: '#15803D',
+  },
+  kmlToggleLayerTextOff: {
+    color: '#64748B',
+  },
+  // KML Information Modal Styles
+  kmlModalContainer: {
+    width: '92%',
+    maxWidth: 540,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 18,
+    padding: 20,
+    maxHeight: '88%',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.28,
+    shadowRadius: 18,
+    elevation: 10,
+  },
+  kmlModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginBottom: 14,
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F1F5F9',
+  },
+  kmlModalIconWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#FFF7ED',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1.5,
+    borderColor: '#FFEDD5',
+  },
+  kmlModalBadgeText: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#EA580C',
+    letterSpacing: 0.4,
+  },
+  kmlModalTitle: {
+    fontSize: 16,
+    color: Palette.text,
+    marginTop: 1,
+  },
+  kmlModalSubtitle: {
+    fontSize: 11,
+    color: Palette.textMuted,
+    marginTop: 2,
+  },
+  kmlSection: {
+    marginBottom: 14,
+    backgroundColor: '#F8FAFC',
+    borderRadius: 10,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  kmlSectionTitle: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: Palette.primary,
+    letterSpacing: 0.6,
+    marginBottom: 8,
+    textTransform: 'uppercase',
+  },
+  kmlInfoRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 4,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F1F5F9',
+  },
+  kmlInfoRowColumn: {
+    paddingVertical: 4,
+  },
+  kmlInfoLabel: {
+    fontSize: 11.5,
+    color: Palette.textMuted,
+  },
+  kmlInfoValue: {
+    fontSize: 12,
+    color: Palette.text,
+    maxWidth: '65%',
+    textAlign: 'right',
+  },
+  kmlDescriptionBox: {
+    fontSize: 11.5,
+    color: Palette.text,
+    backgroundColor: '#FFFFFF',
+    padding: 8,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    marginTop: 4,
+    lineHeight: 16,
+  },
+  kmlColorSwatch: {
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    borderWidth: 1.5,
+    borderColor: '#FFFFFF',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.2,
+    shadowRadius: 2,
+  },
+  kmlExtDataTable: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    overflow: 'hidden',
+  },
+  kmlExtDataRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingVertical: 5,
+    paddingHorizontal: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F1F5F9',
+  },
+  kmlExtDataKey: {
+    fontSize: 11,
+    color: Palette.primary,
+  },
+  kmlExtDataVal: {
+    fontSize: 11,
+    color: Palette.text,
+    maxWidth: '60%',
+    textAlign: 'right',
+  },
+  kmlModalFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+    marginTop: 14,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#F1F5F9',
+  },
+  kmlModalToggleBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 9,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1.2,
+    borderColor: '#E2E8F0',
+  },
+  kmlModalToggleBtnOff: {
+    backgroundColor: '#F0FDF4',
+    borderColor: '#BBF7D0',
+  },
+  kmlModalToggleText: {
+    fontSize: 12,
+    color: '#DC2626',
+  },
+  kmlImagesSummaryRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: 'rgba(249, 115, 22, 0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(249, 115, 22, 0.25)',
+    borderRadius: 8,
+    paddingVertical: 5,
+    paddingHorizontal: 8,
+    marginTop: 8,
+  },
+  kmlImagesSummaryText: {
+    fontSize: 11,
+    color: '#C2410C',
+  },
+  kmlImagePreviewWrap: {
+    width: '100%',
+    borderRadius: 10,
+    overflow: 'hidden',
+    backgroundColor: '#0F172A',
+    borderWidth: 1,
+    borderColor: '#334155',
+    alignItems: 'center',
+    marginTop: 4,
+  },
+  kmlImagePreview: {
+    width: '100%',
+    height: 180,
+    backgroundColor: '#0F172A',
+  },
+  kmlImageHrefCaption: {
+    fontSize: 10,
+    color: '#94A3B8',
+    padding: 6,
+    width: '100%',
+    textAlign: 'center',
+    backgroundColor: 'rgba(15, 23, 42, 0.95)',
+  },
+  kmlImageUnavailableBox: {
+    padding: 16,
+    backgroundColor: '#F8FAFC',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 4,
+  },
+  kmlImageUnavailableTitle: {
+    fontSize: 12.5,
+    color: Palette.text,
+  },
+  kmlImageUnavailableDesc: {
+    fontSize: 11,
+    color: Palette.textMuted,
+    textAlign: 'center',
+    lineHeight: 16,
+  },
+  kmlImageUnavailableFootnote: {
+    fontSize: 10,
+    color: '#64748B',
+    fontStyle: 'italic',
+    textAlign: 'center',
+    marginTop: 2,
+  },
+  // Level 5 — 3D GIS Visualization Mode Styles
+  gisViewModeToggleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#0F172A',
+    borderRadius: 8,
+    padding: 3,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.12)',
+  },
+  gisViewModeBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 6,
+  },
+  gisViewModeBtnActive: {
+    backgroundColor: Palette.primary,
+  },
+  gisViewModeText: {
+    fontSize: 12,
+    color: Palette.textMuted,
+  },
+  gisViewModeTextActive: {
+    color: '#FFFFFF',
+  },
+  view3DContainer: {
+    flex: 1,
+    backgroundColor: '#070D1E',
+  },
+  view3DTopBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    backgroundColor: '#0F172A',
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  view3DBadgeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 2,
+  },
+  view3DBadge: {
+    backgroundColor: 'rgba(16, 185, 129, 0.2)',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  view3DBadgeText: {
+    color: '#10B981',
+    fontSize: 10,
+    letterSpacing: 0.6,
+  },
+  view3DChantierTitle: {
+    color: '#F8FAFC',
+    fontSize: 15,
+  },
+  view3DChantierSubtitle: {
+    color: '#94A3B8',
+    fontSize: 11,
+    marginTop: 1,
+  },
+  returnTo2dBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: Palette.primary,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  returnTo2dText: {
+    color: '#FFFFFF',
+    fontSize: 12,
   },
 });

@@ -17,6 +17,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { Text } from "@/components/ui/text";
 import { Card } from "@/components/ui/card";
 import { DeleteConfirmationModal } from "@/components/ui/delete-confirmation-modal";
+import { SiteXHeader } from "@/components/navigation/SiteXHeader";
 import { Palette } from "@/constants/theme";
 import { api, Project, PaginationMeta } from "@/services/api";
 
@@ -255,6 +256,9 @@ export default function ProjectsScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={["top", "left", "right"]}>
+      {/* ── Global SiteX Header ── */}
+      <SiteXHeader title="Projets" />
+
       {/* Custom Styled Delete Confirmation Modal */}
       <DeleteConfirmationModal
         visible={showConfirmModal}
@@ -290,14 +294,13 @@ export default function ProjectsScreen() {
         }
         keyboardShouldPersistTaps="handled"
       >
-        {/* Header */}
+        {/* Header Actions Row */}
         <View style={styles.header}>
           <View style={styles.headerTitleRow}>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 10, flex: 1 }}>
-              <View style={styles.headerIconContainer}>
-                <Ionicons name="folder-open" size={22} color={Palette.primary} />
-              </View>
-              <Text variant="h1" style={styles.headerTitle}>Projets</Text>
+            <View style={{ flex: 1 }}>
+              <Text variant="subtitle" style={styles.headerSubtitle}>
+                Suivi des programmes et chantiers de construction
+              </Text>
             </View>
             {isResponsable && !deleteMode && (
               <View style={styles.headerActions}>
@@ -312,9 +315,6 @@ export default function ProjectsScreen() {
               </View>
             )}
           </View>
-          {!deleteMode && (
-            <Text variant="subtitle" style={styles.headerSubtitle}>Suivi des programmes et chantiers de construction</Text>
-          )}
         </View>
 
         {/* Delete mode banner */}

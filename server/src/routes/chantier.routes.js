@@ -19,6 +19,7 @@ const router = express.Router();
 router.get('/:id', authenticateToken, chantierController.getChantierDetails);
 router.get('/:id/avancement', authenticateToken, requireResponsableOrAdmin, chantierController.getChantierAvancementStats);
 router.get('/:id/journal', authenticateToken, requireResponsableOrAdmin, chantierController.getChantierJournal);
+router.get('/:id/timeline', authenticateToken, chantierController.getChantierTimeline);
 router.post('/:id/justifications/demander', authenticateToken, requireResponsableOrAdmin, chantierController.requestExplanation);
 
 // Chantier Creation (Responsable / Admin)

@@ -28,13 +28,24 @@ const storage = multer.diskStorage({
 });
 
 const fileFilter = (req, file, cb) => {
-  const allowedExts = ['.geojson', '.json'];
+  const allowedExts = ['.geojson', '.json', '.kml'];
   const ext = path.extname(file.originalname || '').toLowerCase();
+  const mimetype = (file.mimetype || '').toLowerCase();
   
-  if (allowedExts.includes(ext) || file.mimetype.includes('json') || file.mimetype === 'application/octet-stream') {
+  const isKmlMime =
+    mimetype.includes('kml') ||
+    mimetype.includes('xml') ||
+    mimetype === 'application/vnd.google-earth.kml+xml';
+
+  if (
+    allowedExts.includes(ext) ||
+    mimetype.includes('json') ||
+    isKmlMime ||
+    mimetype === 'application/octet-stream'
+  ) {
     cb(null, true);
   } else {
-    cb(new Error('Format de fichier non supporté. Veuillez sélectionner un fichier .geojson ou .json.'), false);
+    cb(new Error('Format de fichier non supporté. Veuillez sélectionner un fichier .geojson, .json ou .kml.'), false);
   }
 };
 

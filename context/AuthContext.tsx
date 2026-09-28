@@ -128,7 +128,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } catch (err: any) {
       // Re-throw so login screen can display the error message
       if (__DEV__) {
-        console.error('[Auth] login failed — API URL:', api.baseUrl, '| Error:', err?.message);
+        console.log('[Auth] login failed — API URL:', api.baseUrl, '| Error:', err?.message);
       }
       throw err;
     } finally {
@@ -148,7 +148,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } catch (err: any) {
       // Re-throw so register screen can display the error message
       if (__DEV__) {
-        console.error('[Auth] register failed — API URL:', api.baseUrl, '| Error:', err?.message);
+        console.log('[Auth] register failed — API URL:', api.baseUrl, '| Error:', err?.message);
       }
       throw err;
     } finally {

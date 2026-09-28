@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   View,
   StyleSheet,
@@ -19,8 +19,17 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Palette } from '@/constants/theme';
 import { useAuth } from '@/hooks/useAuth';
-import { api, ChantierDetails, ChantierTroncon } from '@/services/api';
+import { api, ChantierDetails, ChantierTroncon, ChantierTimelineResponse } from '@/services/api';
 import { InteractiveGisMap, GisTronconSegment } from '@/components/gis/InteractiveGisMap';
+import { InteractiveGis3DMap } from '@/components/gis/InteractiveGis3DMap';
+import { ChantierTimeline } from '@/components/gis/ChantierTimeline';
+import {
+  TemporalViewState,
+  DerivedTemporalState,
+  deriveTemporalState,
+  makeCurrentTemporalState,
+  formatTemporalDateShort,
+} from '@/lib/temporal';
 
 function formatPK(val?: number | null): string {
   if (val === undefined || val === null) return 'PK 0+000';
@@ -53,6 +62,46 @@ export default function ChantierDetailResponsableScreen() {
   const [isManaging, setIsManaging] = useState(false);
   const [infoExpanded, setInfoExpanded] = useState(false);
   const [tronconsExpanded, setTronconsExpanded] = useState(true);
+  const [timelineExpanded, setTimelineExpanded] = useState(false);
+
+  // ── Level 6B: Temporal synchronization state ──────────────────────────────
+  /**
+   * Raw temporal selection from ChantierTimeline.
+   * Starts in 'current' mode (no filtering).
+   */
+  const [temporalView, setTemporalView] = useState<TemporalViewState>(
+    makeCurrentTemporalState()
+  );
+  /**
+   * Cached full timeline data so we can derive state without re-fetching.
+   * Populated from ChantierTimeline's internal load via a shared callback.
+   */
+  const [timelineData, setTimelineData] = useState<ChantierTimelineResponse | null>(null);
+  /** 2D/3D toggle for the GIS monitoring section */
+  const [gisMonitorMode, setGisMonitorMode] = useState<'2d' | '3d'>('2d');
+
+  /**
+   * Single derived temporal state shared by BOTH maps.
+   * Recomputes only when temporalView or timelineData changes.
+   */
+  const derivedTemporal: DerivedTemporalState = useMemo(
+    () => deriveTemporalState(temporalView, timelineData),
+    [temporalView, timelineData]
+  );
+
+  /**
+   * Called by ChantierTimeline whenever the user changes the selection.
+   * Updates temporalView; derivedTemporal is then recomputed.
+   * Does NOT reset camera/zoom/rotation.
+   */
+  const handleTemporalChange = useCallback((state: TemporalViewState) => {
+    setTemporalView(state);
+  }, []);
+
+  /** Resets to live 'current' view */
+  const resetToCurrentView = useCallback(() => {
+    setTemporalView(makeCurrentTemporalState());
+  }, []);
   const showChantierList = () => {
     if (chantier?.projet_id) router.replace(`/responsable/projet/${chantier.projet_id}` as any);
     else router.replace('/(tabs)/projects' as any);
@@ -532,6 +581,49 @@ export default function ChantierDetailResponsableScreen() {
           </TouchableOpacity>
         </View>
 
+        {/* ─── Level 6: Chronologie & Replay spatio-temporel ─── */}
+        {isGisReady && token && (
+          <Card variant="elevated" style={styles.sectionCard}>
+            <TouchableOpacity
+              style={styles.collapsibleHeader}
+              activeOpacity={0.7}
+              onPress={() => setTimelineExpanded(prev => !prev)}
+            >
+              <View style={styles.collapsibleTitleRow}>
+                <Ionicons name="time-outline" size={18} color="#8B5CF6" />
+                <Text style={styles.collapsibleTitle} weight="bold">
+                  Chronologie & Replay
+                </Text>
+                <View style={{
+                  backgroundColor: 'rgba(139,92,246,0.12)',
+                  borderRadius: 5,
+                  paddingHorizontal: 6,
+                  paddingVertical: 2,
+                  marginLeft: 6,
+                }}>
+                  <Text style={{ color: '#8B5CF6', fontSize: 10, fontWeight: '700' }}>NOUVEAU</Text>
+                </View>
+              </View>
+              <Ionicons
+                name={timelineExpanded ? 'chevron-up' : 'chevron-down'}
+                size={20}
+                color={Palette.textMuted}
+              />
+            </TouchableOpacity>
+
+            {timelineExpanded && (
+              <View style={{ marginTop: 8 }}>
+                <ChantierTimeline
+                  chantierId={chantierId as string}
+                  token={token}
+                  onTemporalChange={handleTemporalChange}
+                  onTimelineLoad={setTimelineData}
+                />
+              </View>
+            )}
+          </Card>
+        )}
+
         {/* Action Buttons */}
         <View style={styles.actionButtonsRow}>
           <Button
@@ -561,21 +653,123 @@ export default function ChantierDetailResponsableScreen() {
           </TouchableOpacity>
         </View>
 
-        {/* Map Preview with Multi-layers & Legend */}
+        {/* Map Preview — GIS Monitoring Panel (Level 6B) */}
         {mapSegments.length > 0 && (
           <Card variant="elevated" style={styles.mapCard}>
-            <View style={styles.mapCardHeader}>
-              <Ionicons name="map" size={18} color={Palette.primary} />
-              <Text style={styles.mapCardTitle} weight="bold">
-                Vue Cartographique des Tronçons
-              </Text>
+            {/* Card Header with 2D/3D toggle */}
+            <View style={styles.mapCardHeaderRow}>
+              <View style={styles.mapCardHeaderLeft}>
+                <Ionicons name="map" size={18} color={Palette.primary} />
+                <Text style={styles.mapCardTitle} weight="bold">
+                  Visualisation GIS
+                </Text>
+              </View>
+              {/* 2D / 3D toggle */}
+              <View style={styles.gisModeToggle}>
+                <TouchableOpacity
+                  style={[
+                    styles.gisModeBtn,
+                    gisMonitorMode === '2d' && styles.gisModeBtnActive,
+                  ]}
+                  onPress={() => setGisMonitorMode('2d')}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons
+                    name="map-outline"
+                    size={12}
+                    color={gisMonitorMode === '2d' ? '#FFFFFF' : Palette.textMuted}
+                  />
+                  <Text
+                    style={[
+                      styles.gisModeBtnText,
+                      gisMonitorMode === '2d' && styles.gisModeBtnTextActive,
+                    ]}
+                    weight="bold"
+                  >
+                    2D
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[
+                    styles.gisModeBtn,
+                    gisMonitorMode === '3d' && styles.gisModeBtn3DActive,
+                  ]}
+                  onPress={() => setGisMonitorMode('3d')}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons
+                    name="cube-outline"
+                    size={12}
+                    color={gisMonitorMode === '3d' ? '#FFFFFF' : '#10B981'}
+                  />
+                  <Text
+                    style={[
+                      styles.gisModeBtnText,
+                      gisMonitorMode === '3d' && styles.gisModeBtnTextActive,
+                    ]}
+                    weight="bold"
+                  >
+                    3D
+                  </Text>
+                </TouchableOpacity>
+              </View>
             </View>
-            <InteractiveGisMap
-              height={230}
-              aoiGeometry={chantier?.localisation}
-              referenceGeometry={chantier?.reference_alignment?.geometry}
-              troncons={mapSegments}
-            />
+
+            {/* Temporal mode indicator row */}
+            {derivedTemporal.mode === 'historical' && (
+              <View style={styles.temporalBanner}>
+                <View style={styles.temporalBannerLeft}>
+                  <Ionicons name="time" size={13} color="#A78BFA" />
+                  <Text style={styles.temporalBannerLabel} weight="semibold">
+                    HISTORIQUE
+                  </Text>
+                  {derivedTemporal.selectedDateLabel && (
+                    <Text style={styles.temporalBannerDate}>
+                      {formatTemporalDateShort(derivedTemporal.selectedDateLabel)}
+                    </Text>
+                  )}
+                  {derivedTemporal.chantierProgress >= 0 && (
+                    <View style={styles.temporalProgressBadge}>
+                      <Text style={styles.temporalProgressText} weight="bold">
+                        {Math.round(derivedTemporal.chantierProgress)}%
+                      </Text>
+                    </View>
+                  )}
+                </View>
+                <TouchableOpacity
+                  style={styles.temporalResetBtn}
+                  onPress={resetToCurrentView}
+                  activeOpacity={0.75}
+                >
+                  <Ionicons name="refresh" size={11} color="#10B981" />
+                  <Text style={styles.temporalResetText} weight="semibold">
+                    Présent
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {/* 2D Map */}
+            {gisMonitorMode === '2d' && (
+              <InteractiveGisMap
+                height={240}
+                aoiGeometry={chantier?.localisation}
+                referenceGeometry={chantier?.reference_alignment?.geometry}
+                troncons={mapSegments}
+                temporalState={derivedTemporal}
+              />
+            )}
+
+            {/* 3D Map */}
+            {gisMonitorMode === '3d' && (
+              <InteractiveGis3DMap
+                height={280}
+                aoiGeometry={chantier?.localisation}
+                referenceGeometry={chantier?.reference_alignment?.geometry}
+                troncons={mapSegments}
+                temporalState={derivedTemporal}
+              />
+            )}
 
             {/* Map Legend */}
             <View style={styles.legendContainer}>
@@ -1079,15 +1273,103 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
     marginBottom: 16,
   },
-  mapCardHeader: {
+  mapCardHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+  },
+  mapCardHeaderLeft: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    marginBottom: 10,
   },
   mapCardTitle: {
     fontSize: 13,
     color: Palette.text,
+  },
+  // 2D/3D toggle
+  gisModeToggle: {
+    flexDirection: 'row',
+    backgroundColor: '#F1F5F9',
+    borderRadius: 8,
+    padding: 2,
+    gap: 2,
+  },
+  gisModeBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+  },
+  gisModeBtnActive: {
+    backgroundColor: Palette.primary,
+  },
+  gisModeBtn3DActive: {
+    backgroundColor: '#10B981',
+  },
+  gisModeBtnText: {
+    fontSize: 11,
+    color: Palette.textMuted,
+  },
+  gisModeBtnTextActive: {
+    color: '#FFFFFF',
+  },
+  // Temporal mode banner
+  temporalBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: 'rgba(139,92,246,0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(139,92,246,0.25)',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    marginBottom: 8,
+  },
+  temporalBannerLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    flexWrap: 'wrap',
+    flex: 1,
+  },
+  temporalBannerLabel: {
+    fontSize: 10,
+    color: '#8B5CF6',
+    letterSpacing: 0.5,
+  },
+  temporalBannerDate: {
+    fontSize: 11,
+    color: '#1E293B',
+    fontWeight: '600',
+  },
+  temporalProgressBadge: {
+    backgroundColor: 'rgba(16,185,129,0.12)',
+    borderRadius: 5,
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+  },
+  temporalProgressText: {
+    fontSize: 11,
+    color: '#059669',
+  },
+  temporalResetBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: 'rgba(16,185,129,0.1)',
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    marginLeft: 8,
+  },
+  temporalResetText: {
+    fontSize: 10,
+    color: '#10B981',
   },
   sectionHeaderRow: {
     flexDirection: 'row',

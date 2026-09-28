@@ -57,9 +57,31 @@ export default function LoginScreen() {
       await login({ email, mot_de_passe: password });
       // Navigation will be automatically handled by root layout auth guard
     } catch (err: any) {
-      setErrors({
-        general: err.message || 'Échec de la connexion. Vérifiez vos identifiants.',
-      });
+      const code = err?.data?.code || err?.code;
+      const msg = (err?.data?.message || err?.data?.error || err?.message || '').toLowerCase();
+
+      const isPasswordWrong =
+        code === 'INVALID_PASSWORD' ||
+        msg.includes('mot de passe incorrect') ||
+        msg.includes('password is wrong') ||
+        msg.includes('wrong password') ||
+        msg.includes('incorrect password');
+
+      if (isPasswordWrong) {
+        setErrors({
+          password: 'Password is wrong / Mot de passe incorrect',
+          general: 'Password is wrong. Please check your password and try again.',
+        });
+      } else if (code === 'USER_NOT_FOUND' || msg.includes('aucun compte') || msg.includes('user not found')) {
+        setErrors({
+          email: 'Account not found / Aucun compte associé',
+          general: 'Account not found. Please check your email address.',
+        });
+      } else {
+        setErrors({
+          general: err?.data?.message || err?.message || 'Échec de la connexion. Vérifiez vos identifiants.',
+        });
+      }
     } finally {
       setIsLoading(false);
     }
@@ -116,7 +138,12 @@ export default function LoginScreen() {
             keyboardType="email-address"
             autoCapitalize="none"
             value={email}
-            onChangeText={setEmail}
+            onChangeText={(val) => {
+              setEmail(val);
+              if (errors.email || errors.general) {
+                setErrors((prev) => ({ ...prev, email: undefined, general: undefined }));
+              }
+            }}
             error={errors.email}
             leftIcon={<Ionicons name="mail-outline" size={20} color={Palette.textMuted} />}
           />
@@ -126,7 +153,12 @@ export default function LoginScreen() {
             placeholder="••••••••"
             isPassword
             value={password}
-            onChangeText={setPassword}
+            onChangeText={(val) => {
+              setPassword(val);
+              if (errors.password || errors.general) {
+                setErrors((prev) => ({ ...prev, password: undefined, general: undefined }));
+              }
+            }}
             error={errors.password}
             leftIcon={<Ionicons name="lock-closed-outline" size={20} color={Palette.textMuted} />}
           />

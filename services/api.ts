@@ -1,5 +1,6 @@
 import { Platform } from 'react-native';
 import Constants from 'expo-constants';
+import * as FileSystem from 'expo-file-system/legacy';
 
 /**
  * Dynamic API URL resolver — priority order:
@@ -12,10 +13,10 @@ import Constants from 'expo-constants';
  * NOTE: When using --tunnel, hostUri is a public ngrok hostname — we intentionally
  * SKIP that and fall through to DEV_LAN_IP so the backend is still reachable over LAN.
  *
- * YOUR MACHINE'S WI-FI IP: 192.168.100.249
+ * YOUR MACHINE'S WI-FI IP: 192.168.2.153
  * Update DEV_LAN_IP below if your router assigns a different IP.
  */
-const DEV_LAN_IP = '192.168.100.249';
+const DEV_LAN_IP = '192.168.2.153';
 const BACKEND_PORT = 5000;
 
 /** Returns true only for reachable RFC-1918 private LAN addresses (excluding VirtualBox host-only network) */
@@ -140,6 +141,7 @@ export interface Project {
   nom: string;
   description?: string | null;
   type_projet?: string | null;
+  cover_image_url?: string | null;
   date_debut?: string | null;
   date_fin?: string | null;
   statut?: string | null;
@@ -600,9 +602,99 @@ export interface CrsDetectionInfo {
   };
 }
 
+export interface KmlLatLonBox {
+  north: number;
+  south: number;
+  east: number;
+  west: number;
+  rotation?: number;
+}
+
+export interface KmlGroundOverlay {
+  id: string;
+  type: 'GroundOverlay';
+  name: string | null;
+  description: string | null;
+  folders: string[];
+  icon: {
+    href: string;
+    refreshMode?: string | null;
+    refreshInterval?: number | null;
+    viewBoundScale?: number | null;
+  };
+  latLonBox: KmlLatLonBox | null;
+  color?: string | null;
+  opacity: number;
+  drawOrder: number;
+  isRemote: boolean;
+  isSafe: boolean;
+  isAvailable: boolean;
+  securityWarning?: string | null;
+}
+
+export interface KmlPhotoOverlay {
+  id: string;
+  type: 'PhotoOverlay';
+  name: string | null;
+  description: string | null;
+  folders: string[];
+  icon: {
+    href: string;
+  };
+  position: [number, number] | null; // [longitude, latitude]
+  altitude?: number | null;
+  heading?: number | null;
+  tilt?: number | null;
+  roll?: number | null;
+  shape?: string | null;
+  viewVolume?: {
+    leftFov?: number | null;
+    rightFov?: number | null;
+    bottomFov?: number | null;
+    topFov?: number | null;
+    near?: number | null;
+  } | null;
+  isRemote: boolean;
+  isSafe: boolean;
+  isAvailable: boolean;
+  securityWarning?: string | null;
+}
+
+export interface KmlMetadata {
+  name: string;
+  description?: string | null;
+  folders?: string[];
+  styleUrl?: string | null;
+  styles?: {
+    styleUrl?: string | null;
+    line?: { color?: string | null; width?: number | null } | null;
+    styleMap?: { id?: string; pairs?: Array<{ key: string; styleUrl: string }> } | null;
+    definedStylesCount?: number;
+    definedStyleMapsCount?: number;
+  } | null;
+  extendedData?: Record<string, string>;
+  time?: {
+    type: 'timestamp' | 'timespan';
+    when?: string;
+    begin?: string;
+    end?: string;
+  } | null;
+  documentName?: string | null;
+  generator?: string | null;
+  groundOverlays?: KmlGroundOverlay[];
+  photoOverlays?: KmlPhotoOverlay[];
+  altitudeCoordinates?: Array<[number, number, number]> | null;
+  hasAltitude?: boolean;
+  altitudeRange?: { min: number; max: number } | null;
+}
+
 export interface CrsDetectionResponse extends CrsDetectionInfo {
   message?: string;
   supported_crs: SupportedCrs[];
+  normalized_geojson?: any;
+  source_format?: string;
+  source_crs?: string;
+  kml_metadata?: KmlMetadata | null;
 }
 
 export interface ReferenceAlignment {
@@ -618,6 +710,7 @@ export interface ReferenceAlignment {
   length_meters?: number;
   length_km?: number;
   geometry: any;
+  original_geometry?: any;
 }
 
 export interface GeoJSONCandidateCorridor {
@@ -656,6 +749,8 @@ export interface GeoJSONAnalysisResponse {
   selected_alignment_length_km?: number;
   crs_info?: CrsDetectionInfo;
   source_srid?: number;
+  source_format?: string;
+  kml_metadata?: KmlMetadata | null;
 }
 
 export interface AoiConflictItem {
@@ -710,14 +805,27 @@ export interface GenerateTronconsResponse {
   average_length_km: number;
   troncons: TronconItem[];
 }
+export interface ChantierStatusDistribution {
+  statut: string;
+  count: number;
+  percentage: number;
+  color: string;
+}
 
 export interface ResponsableDashboardStats {
   totalProjects: number;
+  projectsEnCours?: number;
+  projectsTermines?: number;
   totalChantiers: number;
+  chantiersEnCours?: number;
+  chantiersEnAttente?: number;
+  chantiersTermines?: number;
   chantiersPrets: number;
   avancementMoyen: number;
   totalObservations: number;
   totalReclamations: number;
+  totalAlerts?: number;
+  chantiersDistribution?: ChantierStatusDistribution[];
   equipeTerrain?: {
     totalAvailable: number;
     totalAssigned: number;
@@ -728,13 +836,19 @@ export interface ResponsableDashboardStats {
 
 export interface ResponsableDashboardAlert {
   id: string;
-  type: 'GIS_NON_CONFIGURE' | 'AUCUN_TRONCON' | 'PROJET_SANS_CHANTIER' | string;
+  type: 'GIS_NON_CONFIGURE' | 'AUCUN_TRONCON' | 'PROJET_SANS_CHANTIER' | 'EXPLICATION_EN_ATTENTE' | 'RECLAMATION' | string;
+  category?: 'GIS' | 'TRONCON' | 'PROJET' | 'AT' | 'RECLAMATION' | string;
   severity: 'HIGH' | 'MEDIUM' | 'LOW';
+  title?: string;
   chantierId?: number;
   chantierNom?: string;
+  tronconId?: number;
+  tronconNom?: string;
   projectId?: number;
   projetNom?: string;
   message: string;
+  actionLabel?: string;
+  actionRoute?: string;
 }
 
 export interface ResponsableProjectItem {
@@ -742,16 +856,29 @@ export interface ResponsableProjectItem {
   nom: string;
   description?: string | null;
   type_projet?: string | null;
+  cover_image_url?: string | null;
   date_debut?: string | null;
   date_fin?: string | null;
   statut?: string | null;
   nombre_chantiers: number;
   avancement_moyen: number;
+  total_km?: string | number;
+  agents_count?: number;
+  image_url?: string | null;
+  derniere_activite?: string | null;
 }
 
 export interface ResponsableChantierItem extends ProjectChantier {
   projet_nom: string;
   projet_type?: string | null;
+}
+
+export interface DashboardClientItem {
+  id: number;
+  nom: string;
+  prenom: string;
+  email: string;
+  entreprise?: string;
 }
 
 export interface ResponsableDashboardData {
@@ -760,6 +887,8 @@ export interface ResponsableDashboardData {
   chantiers: ResponsableChantierItem[];
   observations: any[];
   reclamations: any[];
+  explications?: any[];
+  clients?: DashboardClientItem[];
   alerts?: ResponsableDashboardAlert[];
 }
 
@@ -1064,6 +1193,85 @@ export interface TronconDetailsResponse {
   assigned_agents?: AssignedAgentItem[];
 }
 
+// ─── Level 6: Spatio-Temporal Timeline Types ─────────────────────────────────
+
+export interface TimelineEventPhoto {
+  id: number;
+  url: string;
+  description?: string | null;
+  date_prise?: string | null;
+}
+
+/**
+ * A single chronological event produced by GET /chantiers/:id/timeline.
+ * Each event corresponds to a field observation (observation_terrain row).
+ */
+export interface TimelineEvent {
+  id: string; // e.g. "obs-42"
+  type: 'observation';
+  date: string;        // ISO 8601 datetime string  e.g. "2026-03-14T09:32:00Z"
+  dateDay: string;     // YYYY-MM-DD   e.g. "2026-03-14"
+  observationId: number;
+  tronconId: number | null;
+  tronconNom: string | null;
+  rawProgress: number;               // 0-100 raw % at time of observation
+  authoritativeProgress: number;     // 0-100 non-regressive tronçon %
+  chantierProgress: number;          // 0-100 aggregated chantier %
+  coordinates: { lat: number; lng: number } | null;
+  agentNom: string | null;
+  phase?: string | null;
+  phaseStatut?: string | null;
+  remarques?: string | null;
+  photos: TimelineEventPhoto[];
+}
+
+/**
+ * A snapshot of chantier progress at a given moment in time.
+ * Used to draw the non-regressive progress chart.
+ */
+export interface TimelineProgressSnapshot {
+  date: string;         // YYYY-MM-DD
+  dateTime: string;     // ISO 8601
+  rawChantierProgress: number;           // 0-100 raw
+  authoritativeChantierProgress: number; // 0-100 strictly non-regressive
+  tronconsProgress: Record<number, number>; // tronconId → non-regressive %
+  observationsCount: number;
+  photosCount: number;
+  isBaseline?: boolean;
+}
+
+/**
+ * A tronçon summary as returned in the timeline (geometry included for replay).
+ */
+export interface TimelineTroncon {
+  id: number;
+  nom: string;
+  pk_debut: number;
+  pk_fin: number;
+  length_km?: number | null;
+  current_avancement: number;
+  geometry?: any;
+}
+
+/**
+ * Full response of GET /chantiers/:chantierId/timeline  (Level 6)
+ */
+export interface ChantierTimelineResponse {
+  chantierId: number;
+  chantierNom: string;
+  dateDebut: string | null;
+  dateFinPrevue: string | null;
+  troncons: TimelineTroncon[];
+  events: TimelineEvent[];
+  progressHistory: TimelineProgressSnapshot[];
+  temporalBounds: {
+    minDate: string | null;
+    maxDate: string | null;
+  };
+}
+
+// ─── End Level 6 Types ───────────────────────────────────────────────────────
+
 class ApiClient {
 
   get baseUrl(): string {
@@ -1120,6 +1328,7 @@ class ApiClient {
         const error: any = new Error(data.message || data.error || `Erreur HTTP ${response.status}`);
         error.status = response.status;
         error.data = data;
+        error.code = data?.code;
         throw error;
       }
 
@@ -1326,6 +1535,134 @@ class ApiClient {
   async getProjectDetails(token: string, id: number | string): Promise<{ project: ProjectDetails }> {
     return this.request<{ project: ProjectDetails }>(`/projects/${id}`, {
       method: 'GET',
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+  }
+
+  async uploadProjectCover(
+    token: string,
+    projectId: number | string,
+    imageUri: string
+  ): Promise<{ message: string; cover_image_url: string; project_id: number }> {
+    // 1. If imageUri is already a base64 data URI or raw base64, send clean JSON
+    if (
+      imageUri.startsWith('data:') ||
+      (imageUri.length > 500 && !imageUri.startsWith('http') && !imageUri.startsWith('file:') && !imageUri.startsWith('content:'))
+    ) {
+      const base64Payload = imageUri.startsWith('data:') ? imageUri : `data:image/jpeg;base64,${imageUri}`;
+      return this.request<{ message: string; cover_image_url: string; project_id: number }>(`/projects/${projectId}/cover`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ imageBase64: base64Payload }),
+      });
+    }
+
+    // 2. On Native (Android / iOS): Read file as base64 using expo-file-system to completely avoid React Native fetch multipart bug
+    if (Platform.OS !== 'web' && (imageUri.startsWith('file:') || imageUri.startsWith('content:'))) {
+      try {
+        const base64 = await FileSystem.readAsStringAsync(imageUri, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+        const cleanUri = imageUri.split('?')[0];
+        const match = /\.(\w+)$/.exec(cleanUri);
+        const ext = match ? match[1].toLowerCase() : 'jpg';
+        const dataUri = `data:image/${ext === 'jpg' ? 'jpeg' : ext};base64,${base64}`;
+        return this.request<{ message: string; cover_image_url: string; project_id: number }>(`/projects/${projectId}/cover`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ imageBase64: dataUri }),
+        });
+      } catch (fsErr) {
+        console.warn('[uploadProjectCover] FileSystem base64 notice, trying multipart:', fsErr);
+      }
+    }
+
+    // 3. On Web: Convert blob/image to base64 Data URL
+    if (Platform.OS === 'web') {
+      try {
+        const res = await fetch(imageUri);
+        const blob = await res.blob();
+        const base64Data = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onloadend = () => resolve(reader.result as string);
+          reader.onerror = reject;
+          reader.readAsDataURL(blob);
+        });
+        return this.request<{ message: string; cover_image_url: string; project_id: number }>(`/projects/${projectId}/cover`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ imageBase64: base64Data }),
+        });
+      } catch (webErr) {
+        console.warn('[uploadProjectCover] Web base64 notice, trying multipart:', webErr);
+      }
+    }
+
+    // 4. Multipart FormData fallback
+    try {
+      const formData = new FormData();
+      const cleanFilename = imageUri.split('/').pop()?.split('?')[0] || 'cover.jpg';
+      const fileNameToUse = cleanFilename.includes('.') ? cleanFilename : 'cover.jpg';
+      const match = /\.(\w+)$/.exec(fileNameToUse);
+      const ext = match ? match[1].toLowerCase() : 'jpg';
+      const type = `image/${ext === 'jpg' ? 'jpeg' : ext}`;
+
+      if (Platform.OS === 'web') {
+        const res = await fetch(imageUri);
+        const blob = await res.blob();
+        formData.append('cover', blob, fileNameToUse);
+      } else {
+        const formattedUri = Platform.OS === 'android' ? imageUri : imageUri.replace('file://', '');
+        formData.append('cover', {
+          uri: formattedUri,
+          name: fileNameToUse,
+          type,
+        } as any);
+      }
+
+      const url = `${this.baseUrl}/projects/${projectId}/cover`;
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'bypass-tunnel-reminder': 'true',
+          'ngrok-skip-browser-warning': 'true',
+        },
+        body: formData,
+      });
+
+      const text = await response.text();
+      let data: any;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        throw new Error(`Erreur serveur (${response.status})`);
+      }
+
+      if (!response.ok) {
+        throw new Error(data.message || data.error || `Erreur HTTP ${response.status}`);
+      }
+
+      return data;
+    } catch (formErr: any) {
+      throw formErr;
+    }
+  }
+
+  async resetProjectCover(
+    token: string,
+    projectId: number | string
+  ): Promise<{ message: string; cover_image_url: null; project_id: number }> {
+    return this.request<{ message: string; cover_image_url: null; project_id: number }>(`/projects/${projectId}/cover`, {
+      method: 'DELETE',
       headers: {
         Authorization: `Bearer ${token}`,
       },
@@ -1559,9 +1896,9 @@ class ApiClient {
   async detectCrs(
     token: string,
     chantierId: number | string,
-    payload: { fileUri?: string; fileName?: string; geojson?: any; aoi?: any; source_srid?: number }
+    payload: { fileUri?: string; fileName?: string; geojson?: any; kmlText?: string; aoi?: any; source_srid?: number }
   ): Promise<CrsDetectionResponse> {
-    if (payload.geojson) {
+    if (payload.geojson || payload.kmlText) {
       return this.request<CrsDetectionResponse>(`/chantiers/${chantierId}/crs/detect`, {
         method: 'POST',
         headers: {
@@ -1569,7 +1906,8 @@ class ApiClient {
         },
         body: JSON.stringify({
           geojson: payload.geojson,
-          original_filename: payload.fileName || 'source.geojson',
+          kmlText: payload.kmlText,
+          original_filename: payload.fileName || (payload.kmlText ? 'source.kml' : 'source.geojson'),
           aoi: payload.aoi,
           source_srid: payload.source_srid,
         }),
@@ -1579,6 +1917,7 @@ class ApiClient {
     if (payload.fileUri) {
       const formData = new FormData();
       const fileName = payload.fileName || 'source.geojson';
+      const isKml = fileName.toLowerCase().endsWith('.kml');
 
       if (Platform.OS === 'web') {
         const res = await fetch(payload.fileUri);
@@ -1588,7 +1927,7 @@ class ApiClient {
         formData.append('geojson', {
           uri: payload.fileUri,
           name: fileName,
-          type: 'application/geo+json',
+          type: isKml ? 'application/vnd.google-earth.kml+xml' : 'application/geo+json',
         } as any);
       }
 
@@ -2143,6 +2482,24 @@ class ApiClient {
       method: 'GET', headers: { Authorization: `Bearer ${token}` },
     });
   }
+
+  // ─── Level 6: Spatio-Temporal Timeline (Chantier Replay) ─────────────────
+
+  /**
+   * GET /chantiers/:chantierId/timeline
+   * Returns the complete chronological event stream, non-regressive progress snapshots,
+   * and tronçon geometry needed for the Level 6 spatio-temporal replay.
+   */
+  async getChantierTimeline(
+    token: string,
+    chantierId: number | string
+  ): Promise<ChantierTimelineResponse> {
+    return this.request<ChantierTimelineResponse>(`/chantiers/${chantierId}/timeline`, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  }
 }
+
 
 export const api = new ApiClient(API_URL);

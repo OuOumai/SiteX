@@ -26,6 +26,7 @@ import { PhoneInput } from '@/components/ui/phone-input';
 import { AddressAutocompleteInput } from '@/components/ui/address-autocomplete-input';
 import { SearchableSelect } from '@/components/ui/searchable-select';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { SiteXHeader } from '@/components/navigation/SiteXHeader';
 
 // ─── Option Constants ────────────────────────────────────────────────────────
 
@@ -874,25 +875,27 @@ export default function ProfileScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
+      {/* ── Global SiteX Header ── */}
+      <SiteXHeader
+        title="Profil"
+        rightContent={
+          <TouchableOpacity
+            style={styles.headerLogoutBtn}
+            onPress={handleLogout}
+            activeOpacity={0.7}
+            accessibilityLabel="Se déconnecter"
+          >
+            <Ionicons name="log-out-outline" size={20} color={Palette.alert} />
+          </TouchableOpacity>
+        }
+      />
+
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-        {/* ── Page header ── */}
+        {/* ── Subtitle info ── */}
         <View style={styles.pageHeader}>
-          <View style={styles.pageHeaderRow}>
-            <View style={{ flex: 1 }}>
-              <Text variant="h1" style={styles.pageTitle}>Profil</Text>
-              <Text variant="subtitle" style={styles.pageSubtitle}>
-                Gestion de votre compte et informations
-              </Text>
-            </View>
-            <TouchableOpacity
-              style={styles.headerLogoutBtn}
-              onPress={handleLogout}
-              activeOpacity={0.7}
-              accessibilityLabel="Se déconnecter"
-            >
-              <Ionicons name="log-out-outline" size={20} color={Palette.alert} />
-            </TouchableOpacity>
-          </View>
+          <Text variant="subtitle" style={styles.pageSubtitle}>
+            Gestion de votre compte et informations
+          </Text>
         </View>
 
         {/* ── Hero card: avatar + identity ── */}

@@ -7,6 +7,8 @@
 
 'use strict';
 
+const path = require('path');
+const fs = require('fs');
 const db = require('../db');
 
 /**
@@ -104,6 +106,7 @@ async function getAllProjects(req, res) {
         p.nom,
         p.description,
         p.type_projet,
+        p.cover_image_url,
         TO_CHAR(p.date_debut, 'YYYY-MM-DD') AS date_debut,
         TO_CHAR(p.date_fin, 'YYYY-MM-DD') AS date_fin,
         COALESCE(p.statut, 'En cours') AS statut
@@ -155,6 +158,7 @@ async function getProjectDetails(req, res) {
         nom,
         description,
         type_projet,
+        cover_image_url,
         TO_CHAR(date_debut, 'YYYY-MM-DD') AS date_debut,
         TO_CHAR(date_fin, 'YYYY-MM-DD') AS date_fin,
         COALESCE(statut, 'En cours') AS statut
@@ -737,6 +741,123 @@ async function bulkDeleteProjects(req, res) {
   }
 }
 
+/**
+ * POST /projects/:id/cover
+ * Updates a project's cover image.
+ * Accepts either:
+ *  - Multipart file in `req.file` (field 'cover' or 'image')
+ *  - JSON body with `imageBase64` or `image` (base64 data URI or raw base64)
+ */
+async function updateProjectCover(req, res) {
+  try {
+    const projectId = parseInt(req.params.id, 10);
+    if (!projectId) {
+      return res.status(400).json({ message: 'Identifiant du projet invalide.' });
+    }
+
+    // Verify project exists
+    const projCheck = await db.query(`SELECT id, nom, cover_image_url FROM public.projet WHERE id = $1`, [projectId]);
+    if (!projCheck.rows.length) {
+      return res.status(404).json({ message: 'Projet introuvable.' });
+    }
+    const currentCover = projCheck.rows[0].cover_image_url;
+
+    let filename;
+    const uploadDir = path.join(__dirname, '../../uploads/project_covers');
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+    }
+
+    if (req.file) {
+      filename = req.file.filename;
+    } else if (req.body && (req.body.imageBase64 || req.body.image)) {
+      const base64Str = String(req.body.imageBase64 || req.body.image).trim();
+      const matches = base64Str.match(/^data:image\/([a-zA-Z0-9+.-]+);base64,([\s\S]+)$/);
+      let ext = 'jpg';
+      let dataBuffer;
+      if (matches && matches.length === 3) {
+        const rawExt = matches[1].toLowerCase();
+        ext = rawExt === 'jpeg' ? 'jpg' : rawExt.includes('png') ? 'png' : rawExt.includes('webp') ? 'webp' : 'jpg';
+        dataBuffer = Buffer.from(matches[2].replace(/\s/g, ''), 'base64');
+      } else {
+        dataBuffer = Buffer.from(base64Str.replace(/\s/g, ''), 'base64');
+      }
+      filename = `project_${projectId}_${Date.now()}.${ext}`;
+      fs.writeFileSync(path.join(uploadDir, filename), dataBuffer);
+    } else {
+      return res.status(400).json({ message: 'Aucune image fournie.' });
+    }
+
+    // Clean up old custom cover file if it was in uploads/project_covers
+    if (currentCover && currentCover.startsWith('/uploads/project_covers/')) {
+      const oldFileName = path.basename(currentCover);
+      const oldFilePath = path.join(uploadDir, oldFileName);
+      if (fs.existsSync(oldFilePath)) {
+        try {
+          fs.unlinkSync(oldFilePath);
+        } catch (e) {
+          console.warn('Could not delete old project cover:', e.message);
+        }
+      }
+    }
+
+    const relativeUrl = `/uploads/project_covers/${filename}`;
+    await db.query(`UPDATE public.projet SET cover_image_url = $1 WHERE id = $2`, [relativeUrl, projectId]);
+
+    return res.status(200).json({
+      message: 'Image de couverture mise à jour avec succès.',
+      cover_image_url: relativeUrl,
+      project_id: projectId,
+    });
+  } catch (error) {
+    console.error('❌ UpdateProjectCover error:', error.message);
+    return res.status(500).json({ message: 'Erreur lors de la mise à jour de l’image du projet.' });
+  }
+}
+
+/**
+ * DELETE /projects/:id/cover
+ * Resets a project's cover image to default (sets cover_image_url = null).
+ */
+async function resetProjectCover(req, res) {
+  try {
+    const projectId = parseInt(req.params.id, 10);
+    if (!projectId) {
+      return res.status(400).json({ message: 'Identifiant du projet invalide.' });
+    }
+
+    const projCheck = await db.query(`SELECT id, cover_image_url FROM public.projet WHERE id = $1`, [projectId]);
+    if (!projCheck.rows.length) {
+      return res.status(404).json({ message: 'Projet introuvable.' });
+    }
+    const currentCover = projCheck.rows[0].cover_image_url;
+
+    if (currentCover && currentCover.startsWith('/uploads/project_covers/')) {
+      const uploadDir = path.join(__dirname, '../../uploads/project_covers');
+      const oldFileName = path.basename(currentCover);
+      const oldFilePath = path.join(uploadDir, oldFileName);
+      if (fs.existsSync(oldFilePath)) {
+        try {
+          fs.unlinkSync(oldFilePath);
+        } catch (e) {
+          console.warn('Could not delete old project cover:', e.message);
+        }
+      }
+    }
+
+    await db.query(`UPDATE public.projet SET cover_image_url = NULL WHERE id = $1`, [projectId]);
+
+    return res.status(200).json({
+      message: 'Image de couverture réinitialisée par défaut.',
+      cover_image_url: null,
+      project_id: projectId,
+    });
+  } catch (error) {
+    console.error('❌ ResetProjectCover error:', error.message);
+    return res.status(500).json({ message: 'Erreur lors de la réinitialisation de l’image du projet.' });
+  }
+}
+
 module.exports = {
   getAllProjects,
   getProjectDetails,
@@ -744,5 +865,7 @@ module.exports = {
   initializeProjectChantiers,
   deleteProject,
   bulkDeleteProjects,
+  updateProjectCover,
+  resetProjectCover,
 };
 

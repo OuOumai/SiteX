@@ -22,6 +22,7 @@ import {
   ResponsableDashboardData,
   AgentDashboardResponse,
 } from '@/services/api';
+import { ResponsableAnalyticalDashboard } from '@/components/dashboard/ResponsableAnalyticalDashboard';
 
 export default function HomeScreen() {
   const router = useRouter();
@@ -32,6 +33,7 @@ export default function HomeScreen() {
   const [isLoadingData, setIsLoadingData] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [dashboardError, setDashboardError] = useState<string | null>(null);
 
   const isPendingRole = user?.role_request?.statut === 'PENDING';
   const isAdmin = user?.role_nom === 'Administrateur' || user?.role_id === 1;
@@ -48,6 +50,7 @@ export default function HomeScreen() {
     if (isRefresh) {
       setIsRefreshing(true);
     }
+    setDashboardError(null);
 
     try {
       if (isAgentTerrain) {
@@ -59,6 +62,7 @@ export default function HomeScreen() {
       }
     } catch (err: any) {
       console.warn('Dashboard fetch notice:', err.message);
+      setDashboardError(err.message || 'Impossible de charger les données du tableau de bord');
     } finally {
       setIsLoadingData(false);
       setIsRefreshing(false);
@@ -75,7 +79,7 @@ export default function HomeScreen() {
   const prenom = user?.prenom?.trim() || 'Utilisateur';
 
   // Dynamic role badge styling and label
-  let badgeLabel = 'ESPACE SITEX';
+  let badgeLabel = 'ESPACE SiteX';
   let badgeBg = Palette.primary;
   let badgeIcon: any = 'briefcase';
 
@@ -122,6 +126,19 @@ export default function HomeScreen() {
   const projects = dashboardData?.projects || [];
   const observations = dashboardData?.observations || [];
   const reclamations = dashboardData?.reclamations || [];
+
+  if (isResponsable && !isPendingRole) {
+    return (
+      <ResponsableAnalyticalDashboard
+        data={dashboardData}
+        isLoading={isLoadingData}
+        isRefreshing={isRefreshing}
+        error={dashboardError}
+        onRefresh={() => fetchDashboard(true)}
+        user={user}
+      />
+    );
+  }
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
