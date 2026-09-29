@@ -185,6 +185,65 @@ async function runE2eTests() {
     assert(geojsonCrsDetection.detected_srid === 4326, 'GeoJSON detection must return EPSG:4326 for decimal degree coordinates');
     console.log('   ✅ GeoJSON detection and workflow intact (non-regression verified)');
 
+    // 5. Test Controller uploadReferenceAlignment and getReferenceAlignment with kml_metadata
+    console.log('5️⃣ Testing uploadReferenceAlignment and getReferenceAlignment metadata persistence flow...');
+    const chantierController = require('../src/controllers/chantier.controller');
+
+    let uploadStatus = null;
+    let uploadJson = null;
+    const mockUploadReq = {
+      params: { chantierId },
+      body: {
+        geometry: checked.geometry,
+        original_filename: 'test_qgis_flow.kml',
+        nom: 'Axe Test KML Metadata Flow',
+        source_srid: 4326,
+        source_crs_name: 'WGS 84',
+        kml_metadata: {
+          name: 'RP4022_Tangier_Metadata',
+          description: 'Project: SiteX Tangier Test\nInfrastructure: Road\nReference: RP4022',
+          folders: ['Tangier Roads'],
+          styles: { styleUrl: null, line: { color: 'ff0000ff', width: null } },
+          extendedData: { reference: 'RP4022', infrastructure: 'Road' },
+        },
+      },
+    };
+    const mockUploadRes = {
+      status(s) { uploadStatus = s; return this; },
+      json(d) { uploadJson = d; return this; },
+    };
+
+    await chantierController.uploadReferenceAlignment(mockUploadReq, mockUploadRes);
+    assert(uploadStatus === 201, `Upload status must be 201 (got ${uploadStatus}: ${JSON.stringify(uploadJson)})`);
+    assert(uploadJson.reference_alignment, 'Response must contain reference_alignment');
+    assert(uploadJson.reference_alignment.kml_metadata, 'Response reference_alignment must contain kml_metadata');
+    assert(uploadJson.reference_alignment.kml_metadata.description.includes('Project: SiteX Tangier Test'), 'Persisted description must match');
+    assert(uploadJson.reference_alignment.kml_metadata.extendedData.reference === 'RP4022', 'ExtendedData reference must match');
+    const createdAlignmentId = uploadJson.reference_alignment.id;
+
+    // Test getReferenceAlignment retrieval
+    let getStatus = null;
+    let getJson = null;
+    const mockGetReq = { params: { chantierId } };
+    const mockGetRes = {
+      status(s) { getStatus = s; return this; },
+      json(d) { getJson = d; return this; },
+    };
+
+    await chantierController.getReferenceAlignment(mockGetReq, mockGetRes);
+    assert(getStatus === 200, `Get status must be 200 (got ${getStatus})`);
+    assert(getJson.reference_alignment, 'Get response must contain reference_alignment');
+    assert(getJson.reference_alignment.kml_metadata !== null, 'Get response reference_alignment must include kml_metadata');
+    assert(getJson.reference_alignment.kml_metadata.description.includes('Project: SiteX Tangier Test'), 'Retrieved description must be intact');
+    assert(getJson.reference_alignment.kml_metadata.name === 'RP4022_Tangier_Metadata', 'Retrieved name must be intact');
+    console.log('   ✅ uploadReferenceAlignment successfully persisted kml_metadata');
+    console.log(`   ✅ getReferenceAlignment successfully returned kml_metadata with description: "${getJson.reference_alignment.kml_metadata.description.split('\n')[0]}"`);
+
+    // Clean up test alignment record
+    if (createdAlignmentId) {
+      await db.query('DELETE FROM public.reference_alignment WHERE id = $1', [createdAlignmentId]);
+    }
+
     console.log('\n🎉 ALL END-TO-END TESTS PASSED SUCCESSFULLY!');
   } catch (err) {
     console.error('\n❌ E2E Test Failure:', err);

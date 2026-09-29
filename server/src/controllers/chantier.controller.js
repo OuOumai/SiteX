@@ -163,7 +163,8 @@ async function getChantierDetails(req, res) {
         ROUND(ST_Length(COALESCE(original_geometry, geometry)::geography)::numeric, 2) AS original_length_meters,
         ROUND((ST_Length(COALESCE(original_geometry, geometry)::geography) / 1000.0)::numeric, 3) AS original_length_km,
         ST_AsGeoJSON(geometry)::json AS geometry,
-        ST_AsGeoJSON(COALESCE(original_geometry, geometry))::json AS original_geometry
+        ST_AsGeoJSON(COALESCE(original_geometry, geometry))::json AS original_geometry,
+        kml_metadata
       FROM public.reference_alignment
       WHERE chantier_id = $1
       ORDER BY id DESC
@@ -1209,6 +1210,20 @@ async function uploadReferenceAlignment(req, res) {
       });
     }
 
+    // Extract KML Level 2 metadata if provided by frontend or parsed from source KML
+    let kmlMetadataToSave = null;
+    if (req.body && req.body.kml_metadata !== undefined && req.body.kml_metadata !== null) {
+      try {
+        kmlMetadataToSave = typeof req.body.kml_metadata === 'string'
+          ? JSON.parse(req.body.kml_metadata)
+          : req.body.kml_metadata;
+      } catch {
+        kmlMetadataToSave = null;
+      }
+    } else if (isKmlFile) {
+      kmlMetadataToSave = geojsonData.metadata || geojsonData.properties?.kml_metadata || null;
+    }
+
     // 3. Insert validated canonical LineString (EPSG:4326) into public.reference_alignment with CRS audit metadata
     // Preserves BOTH the original imported geometry (unclipped) and the AOI-clipped geometry
     const insertQuery = `
@@ -1222,7 +1237,8 @@ async function uploadReferenceAlignment(req, res) {
         direction_reversed,
         source_srid,
         source_crs_name,
-        date_import
+        date_import,
+        kml_metadata
       )
       VALUES (
         $1, $2, $3, $4,
@@ -1231,7 +1247,8 @@ async function uploadReferenceAlignment(req, res) {
         false,
         $7,
         $8,
-        NOW()
+        NOW(),
+        $9
       )
       RETURNING 
         id,
@@ -1252,7 +1269,8 @@ async function uploadReferenceAlignment(req, res) {
         ST_X(ST_StartPoint(geometry)) AS start_lng,
         ST_Y(ST_StartPoint(geometry)) AS start_lat,
         ST_X(ST_EndPoint(geometry)) AS end_lng,
-        ST_Y(ST_EndPoint(geometry)) AS end_lat;
+        ST_Y(ST_EndPoint(geometry)) AS end_lat,
+        kml_metadata;
     `;
 
     const insertRes = await db.query(insertQuery, [
@@ -1264,6 +1282,7 @@ async function uploadReferenceAlignment(req, res) {
       JSON.stringify(checked.original_geometry),
       sourceSrid,
       sourceCrsName,
+      kmlMetadataToSave ? JSON.stringify(kmlMetadataToSave) : null,
     ]);
 
     const savedAlignment = insertRes.rows[0];
@@ -1271,8 +1290,8 @@ async function uploadReferenceAlignment(req, res) {
     return res.status(201).json({
       message: 'Alignement de référence validé, transformé et enregistré avec succès.',
       reference_alignment: savedAlignment,
-      source_format: isKmlFile ? 'KML' : 'GeoJSON',
-      kml_metadata: isKmlFile ? (geojsonData.metadata || geojsonData.properties?.kml_metadata || null) : null,
+      source_format: (isKmlFile || kmlMetadataToSave) ? 'KML' : 'GeoJSON',
+      kml_metadata: savedAlignment.kml_metadata || kmlMetadataToSave || null,
     });
   } catch (error) {
     console.error('❌ UploadReferenceAlignment error:', error.message);
@@ -1310,7 +1329,8 @@ async function getReferenceAlignment(req, res) {
         ST_X(ST_StartPoint(geometry)) AS start_lng,
         ST_Y(ST_StartPoint(geometry)) AS start_lat,
         ST_X(ST_EndPoint(geometry)) AS end_lng,
-        ST_Y(ST_EndPoint(geometry)) AS end_lat
+        ST_Y(ST_EndPoint(geometry)) AS end_lat,
+        kml_metadata
       FROM public.reference_alignment
       WHERE chantier_id = $1
       ORDER BY id DESC

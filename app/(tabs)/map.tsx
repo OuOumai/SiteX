@@ -41,6 +41,9 @@ function chooseDefaultChantier(chantiers: ResponsableChantierItem[]) {
   );
 }
 
+let lastLogged2dSig = '';
+let lastLogged3dSig = '';
+
 export default function MapScreen() {
   const params = useLocalSearchParams<{
     chantierId?: string;
@@ -80,8 +83,8 @@ export default function MapScreen() {
     if (requestedChantierId) {
       const requestedChantier = data.chantiers.find((item) => item.id === requestedChantierId);
       if (requestedChantier) {
-        setSelectedProjectId(requestedChantier.projet_id);
-        setSelectedChantierId(requestedChantier.id);
+        setSelectedProjectId((prev) => (prev === requestedChantier.projet_id ? prev : requestedChantier.projet_id));
+        setSelectedChantierId((prev) => (prev === requestedChantier.id ? prev : requestedChantier.id));
         return;
       }
     }
@@ -94,8 +97,9 @@ export default function MapScreen() {
           (chantier) => chantier.projet_id === requestedProject.id
         );
         const targetChantier = chooseDefaultChantier(projectChantiers);
-        setSelectedProjectId(requestedProject.id);
-        setSelectedChantierId(isAgent ? targetChantier?.id || null : null);
+        const nextChantierId = isAgent ? targetChantier?.id || null : null;
+        setSelectedProjectId((prev) => (prev === requestedProject.id ? prev : requestedProject.id));
+        setSelectedChantierId((prev) => (prev === nextChantierId ? prev : nextChantierId));
         return;
       }
     }
@@ -112,9 +116,11 @@ export default function MapScreen() {
       ? data.chantiers.filter((chantier) => chantier.projet_id === initialProject.id)
       : [];
     const initialChantier = chooseDefaultChantier(projectChantiers);
+    const nextProjId = initialProject?.id || null;
+    const nextChantierId = isAgent ? initialChantier?.id || null : null;
 
-    setSelectedProjectId(initialProject?.id || null);
-    setSelectedChantierId(isAgent ? initialChantier?.id || null : null);
+    setSelectedProjectId((prev) => (prev === nextProjId ? prev : nextProjId));
+    setSelectedChantierId((prev) => (prev === nextChantierId ? prev : nextChantierId));
   }, [params.chantierId, params.projectId, user?.role_id, user?.role_nom]);
 
   useEffect(() => {
@@ -219,13 +225,20 @@ export default function MapScreen() {
     }
   }, [dashboardData, applyRequestedSelection]);
 
+  const loadedChantierIdRef = useRef<number | null>(null);
+
   useEffect(() => {
     let active = true;
 
     async function loadSelectedChantierLayers() {
       if (!token || !selectedChantierId) {
+        loadedChantierIdRef.current = null;
         setActiveReference(null);
         setActiveTroncons([]);
+        return;
+      }
+
+      if (loadedChantierIdRef.current === selectedChantierId) {
         return;
       }
 
@@ -240,6 +253,7 @@ export default function MapScreen() {
 
       if (!active) return;
 
+      loadedChantierIdRef.current = selectedChantierId;
       setActiveReference(
         referenceResult.status === 'fulfilled'
           ? referenceResult.value.reference_alignment
@@ -304,13 +318,34 @@ export default function MapScreen() {
     () => allChantiers.filter((chantier) => chantier.projet_id === selectedProjectId),
     [allChantiers, selectedProjectId]
   );
+  const projectChantierIds = useMemo(
+    () => projectChantiers.map((c) => c.id).sort((a, b) => Number(a) - Number(b)).join(','),
+    [projectChantiers]
+  );
   const selectedChantier =
     allChantiers.find((chantier) => chantier.id === selectedChantierId) || null;
+
+  const loadedAlignmentsProjectIdRef = useRef<number | null>(null);
+  const loadedAlignmentsChantierIdsRef = useRef<string>('');
 
   useEffect(() => {
     let active = true;
     async function loadProjectAlignments() {
-      if (!token || !selectedProjectId) { setProjectAlignments([]); return; }
+      if (!token || !selectedProjectId) {
+        loadedAlignmentsProjectIdRef.current = null;
+        loadedAlignmentsChantierIdsRef.current = '';
+        setProjectAlignments([]);
+        return;
+      }
+
+      if (
+        loadedAlignmentsProjectIdRef.current === selectedProjectId &&
+        loadedAlignmentsChantierIdsRef.current === projectChantierIds &&
+        projectAlignments.length > 0
+      ) {
+        return;
+      }
+
       const results = await Promise.allSettled(projectChantiers.map(async (chantier) => {
         const response = await api.getReferenceAlignment(token, chantier.id);
         const alignment = response.reference_alignment;
@@ -327,11 +362,13 @@ export default function MapScreen() {
         } : null;
       }));
       if (!active) return;
+      loadedAlignmentsProjectIdRef.current = selectedProjectId;
+      loadedAlignmentsChantierIdsRef.current = projectChantierIds;
       setProjectAlignments(results.flatMap((result) => result.status === 'fulfilled' && result.value ? [result.value] : []));
     }
     loadProjectAlignments();
     return () => { active = false; };
-  }, [token, selectedProjectId, projectChantiers]);
+  }, [token, selectedProjectId, projectChantierIds, projectChantiers]);
 
   const handleSelectProject = useCallback(
     (project: ResponsableProjectItem) => {
@@ -438,9 +475,6 @@ export default function MapScreen() {
   }, [isAgent]);
 
   // ── Diagnostics: Section 2 [2D KML DEBUG] and Section 3 [3D KML DEBUG] ──
-  const prev2dLogRef = useRef<string>('');
-  const prev3dLogRef = useRef<string>('');
-
   const kmlElements2D = useMemo(() => {
     if (isAgent) {
       return activeReference?.geometry ? [{
@@ -494,10 +528,13 @@ export default function MapScreen() {
   }, [isAgent, projectAlignments, activeReference, selectedChantierId, selectedProjectId]);
 
   useEffect(() => {
+    if (typeof __DEV__ === 'undefined' || !__DEV__) return;
+
     if (mapMode === '2d') {
+      if (kmlElements2D.length === 0) return;
       const sig = JSON.stringify(kmlElements2D);
-      if (prev2dLogRef.current !== sig && kmlElements2D.length > 0) {
-        prev2dLogRef.current = sig;
+      if (lastLogged2dSig !== sig) {
+        lastLogged2dSig = sig;
         let msg = `[2D KML DEBUG]\ncount: ${kmlElements2D.length}\n`;
         kmlElements2D.forEach((k, idx) => {
           msg += `\nKML ${idx + 1}\nid: ${k.id}\nname: ${k.name}\nchantierId: ${k.chantierId}\nprojectId: ${k.projectId}\nsource: ${k.source}\ngeometry: ${k.geometry}\n`;
@@ -505,9 +542,10 @@ export default function MapScreen() {
         console.log(msg.trim());
       }
     } else {
+      if (kmlElements3D.length === 0) return;
       const sig = JSON.stringify(kmlElements3D) + `_${selectedChantierId}_${Boolean(activeReference?.geometry)}`;
-      if (prev3dLogRef.current !== sig && kmlElements3D.length > 0) {
-        prev3dLogRef.current = sig;
+      if (lastLogged3dSig !== sig) {
+        lastLogged3dSig = sig;
         let msg = `[3D KML DEBUG]\ncount: ${kmlElements3D.length}\n`;
         kmlElements3D.forEach((k, idx) => {
           msg += `\nKML ${idx + 1}\nid: ${k.id}\nname: ${k.name}\nchantierId: ${k.chantierId}\nprojectId: ${k.projectId}\ngeometry: ${k.geometry}\n`;

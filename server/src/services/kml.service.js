@@ -800,11 +800,30 @@ function traverseKmlTree(node, collector, currentFolderStack = []) {
  * @param {Array<string>} currentFolderStack 
  */
 function processPlacemark(pNode, collector, currentFolderStack) {
-  const pName = pNode.name ? String(pNode.name).trim() : null;
+  const pExtendedData = extractExtendedData(pNode.ExtendedData);
+  let pName = pNode.name ? String(pNode.name).trim() : null;
+  // QGIS fallback: if no direct <name>, check SimpleData kml_name
+  if (!pName && pExtendedData && pExtendedData.kml_name) {
+    pName = String(pExtendedData.kml_name).trim();
+  }
+
   const pDesc = pNode.description ? String(pNode.description).trim() : null;
   const pStyleUrl = pNode.styleUrl ? String(pNode.styleUrl).trim() : null;
-  const pExtendedData = extractExtendedData(pNode.ExtendedData);
   const pTime = extractTimeInfo(pNode);
+
+  // Parse inline <Style> if present directly in Placemark without an id
+  let inlineLineStyle = null;
+  const rawInlineStyle = pNode.Style;
+  if (rawInlineStyle && typeof rawInlineStyle === 'object') {
+    const s = Array.isArray(rawInlineStyle) ? rawInlineStyle[0] : rawInlineStyle;
+    if (s && s.LineStyle && typeof s.LineStyle === 'object') {
+      const widthVal = parseFloat(s.LineStyle.width);
+      inlineLineStyle = {
+        color: s.LineStyle.color ? String(s.LineStyle.color).trim() : null,
+        width: !isNaN(widthVal) ? widthVal : null,
+      };
+    }
+  }
 
   // Extract generator from atom:link if present
   let generator = null;
@@ -819,6 +838,7 @@ function processPlacemark(pNode, collector, currentFolderStack) {
     folders: [...currentFolderStack],
     styleUrl: pStyleUrl,
     extendedData: pExtendedData,
+    inlineLineStyle,
     time: pTime,
     generator,
   };
@@ -971,6 +991,9 @@ function parseKmlToGeoJson(kmlXmlString, options = {}) {
 
   // 8. Resolve Style information
   const styleInfo = resolveStyle(pMeta.styleUrl, stylesRegistry);
+  if (!styleInfo.line && pMeta.inlineLineStyle) {
+    styleInfo.line = pMeta.inlineLineStyle;
+  }
 
   const featureName = pMeta.name || documentName || options.defaultName || 'Alignement KML';
 

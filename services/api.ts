@@ -29,7 +29,13 @@ function isPrivateLanIp(host: string): boolean {
   );
 }
 
-function getApiUrl(): string {
+let cachedApiUrl: string | null = null;
+
+export function resetApiUrlCache(): void {
+  cachedApiUrl = null;
+}
+
+function resolveApiUrl(): string {
   // 1. WEB: Always use window.location hostname (or localhost) so web never breaks
   if (Platform.OS === 'web') {
     if (typeof window !== 'undefined' && window.location?.hostname) {
@@ -72,6 +78,14 @@ function getApiUrl(): string {
     android: `http://10.0.2.2:${BACKEND_PORT}`,
     default: `http://localhost:${BACKEND_PORT}`,
   }) as string;
+}
+
+function getApiUrl(): string {
+  if (cachedApiUrl) {
+    return cachedApiUrl;
+  }
+  cachedApiUrl = resolveApiUrl();
+  return cachedApiUrl;
 }
 
 export const API_URL = getApiUrl();
@@ -711,6 +725,7 @@ export interface ReferenceAlignment {
   length_km?: number;
   geometry: any;
   original_geometry?: any;
+  kml_metadata?: KmlMetadata | null;
 }
 
 export interface GeoJSONCandidateCorridor {
@@ -2027,7 +2042,16 @@ class ApiClient {
   async uploadReferenceAlignment(
     token: string,
     chantierId: number | string,
-    fileData: { fileUri?: string; fileName?: string; geojson?: any; geometry?: any; nom?: string; source_srid?: number; source_crs_name?: string }
+    fileData: {
+      fileUri?: string;
+      fileName?: string;
+      geojson?: any;
+      geometry?: any;
+      nom?: string;
+      source_srid?: number;
+      source_crs_name?: string;
+      kml_metadata?: KmlMetadata | null;
+    }
   ): Promise<{ message: string; reference_alignment: ReferenceAlignment }> {
     // 1. If direct GeoJSON object / string / geometry provided, send as JSON body
     if (fileData.geojson || fileData.geometry) {
@@ -2045,6 +2069,7 @@ class ApiClient {
             nom: fileData.nom,
             source_srid: fileData.source_srid,
             source_crs_name: fileData.source_crs_name,
+            kml_metadata: fileData.kml_metadata,
           }),
         }
       );
@@ -2076,6 +2101,9 @@ class ApiClient {
         }
         if (fileData.source_crs_name) {
           formData.append('source_crs_name', fileData.source_crs_name);
+        }
+        if (fileData.kml_metadata) {
+          formData.append('kml_metadata', JSON.stringify(fileData.kml_metadata));
         }
 
         const url = `${this.baseUrl}/chantiers/${chantierId}/reference-alignment`;

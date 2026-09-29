@@ -237,6 +237,16 @@ export default function GisSetupScreen() {
           setIsReversed(!!refRes.reference_alignment.direction_reversed);
           setSelectedFileName(refRes.reference_alignment.original_filename || 'Tracé existant');
 
+          // Restore KML contextual metadata and geometry if stored
+          if (refRes.reference_alignment.kml_metadata) {
+            setKmlMetadata(refRes.reference_alignment.kml_metadata);
+            const kmlGeom = refRes.reference_alignment.original_geometry || refRes.reference_alignment.geometry;
+            if (kmlGeom) {
+              setKmlSourceGeometry(kmlGeom);
+              setIsKmlLayerVisible(true);
+            }
+          }
+
           // Check if troncons already exist
           const tronconsRes = await api.getChantierTroncons(token, chantierId);
           if (tronconsRes.troncons && tronconsRes.troncons.length > 0) {
@@ -616,9 +626,13 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
         nom: `Axe Référence - ${chantier?.nom || 'Chantier'} (${selectedCorridor.nom})`,
         source_srid: selectedCrsSrid || crsDetection?.detected_srid || undefined,
         source_crs_name: crsDetection?.crs_name,
+        kml_metadata: kmlMetadata || crsDetection?.kml_metadata || null,
       });
 
       setReferenceAlignment(alignRes.reference_alignment);
+      if (alignRes.reference_alignment?.kml_metadata) {
+        setKmlMetadata(alignRes.reference_alignment.kml_metadata);
+      }
       setIsReversed(!!alignRes.reference_alignment.direction_reversed);
       setCurrentStep(4);
     } catch (err: any) {
@@ -938,6 +952,22 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
 
         {/* 2D / 3D GIS Mode Switcher */}
         <View style={styles.gisViewModeToggleRow}>
+          {Boolean(kmlMetadata) && (
+            <TouchableOpacity
+              style={styles.kmlHeaderActionBtn}
+              onPress={() => {
+                setSelectedKmlMetadata(kmlMetadata);
+                setShowKmlInfoModal(true);
+              }}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="information-circle-outline" size={14} color="#EA580C" />
+              <Text style={styles.kmlHeaderActionText} weight="bold">
+                Métadonnées KML
+              </Text>
+            </TouchableOpacity>
+          )}
+
           <TouchableOpacity
             style={[styles.gisViewModeBtn, gisViewMode === '2d' && styles.gisViewModeBtnActive]}
             onPress={() => setGisViewMode('2d')}
@@ -995,16 +1025,34 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
               </Text>
             </View>
 
-            <TouchableOpacity
-              style={styles.returnTo2dBtn}
-              onPress={() => setGisViewMode('2d')}
-              activeOpacity={0.8}
-            >
-              <Ionicons name="map" size={15} color="#FFFFFF" />
-              <Text style={styles.returnTo2dText} weight="semibold">
-                Retour Carte 2D
-              </Text>
-            </TouchableOpacity>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              {Boolean(kmlMetadata) && (
+                <TouchableOpacity
+                  style={styles.kml3dActionBtn}
+                  onPress={() => {
+                    setSelectedKmlMetadata(kmlMetadata);
+                    setShowKmlInfoModal(true);
+                  }}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons name="information-circle-outline" size={14} color="#EA580C" />
+                  <Text style={styles.kml3dActionText} weight="semibold">
+                    Métadonnées KML
+                  </Text>
+                </TouchableOpacity>
+              )}
+
+              <TouchableOpacity
+                style={styles.returnTo2dBtn}
+                onPress={() => setGisViewMode('2d')}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="map" size={15} color="#FFFFFF" />
+                <Text style={styles.returnTo2dText} weight="semibold">
+                  Retour Carte 2D
+                </Text>
+              </TouchableOpacity>
+            </View>
           </View>
 
           {/* 3D Map Component */}
@@ -2067,6 +2115,22 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
               <Text style={styles.stepDescription}>
                 Contrôlez l'orientation du tracé. Le point kilométrique PK 0+000 est positionné au point d'entrée du linéaire dans la zone d'étude.
               </Text>
+
+              {Boolean(kmlMetadata) && (
+                <TouchableOpacity
+                  style={styles.kmlStepActionBtn}
+                  onPress={() => {
+                    setSelectedKmlMetadata(kmlMetadata);
+                    setShowKmlInfoModal(true);
+                  }}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons name="information-circle-outline" size={14} color="#EA580C" />
+                  <Text style={styles.kmlStepActionText} weight="semibold">
+                    Métadonnées KML
+                  </Text>
+                </TouchableOpacity>
+              )}
             </View>
 
             <View style={styles.mapWrapper}>
@@ -2327,6 +2391,22 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
               <Text style={styles.stepDescription}>
                 {editableTroncons.length} tronçons calculés le long de la portion d'infrastructure située dans la zone d'étude.
               </Text>
+
+              {Boolean(kmlMetadata) && (
+                <TouchableOpacity
+                  style={styles.kmlStepActionBtn}
+                  onPress={() => {
+                    setSelectedKmlMetadata(kmlMetadata);
+                    setShowKmlInfoModal(true);
+                  }}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons name="information-circle-outline" size={14} color="#EA580C" />
+                  <Text style={styles.kmlStepActionText} weight="semibold">
+                    Métadonnées KML
+                  </Text>
+                </TouchableOpacity>
+              )}
             </View>
 
             <View style={styles.mapWrapper}>
@@ -4792,6 +4872,54 @@ const styles = StyleSheet.create({
     color: Palette.text,
     maxWidth: '60%',
     textAlign: 'right',
+  },
+  kmlHeaderActionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingVertical: 5,
+    paddingHorizontal: 9,
+    borderRadius: 8,
+    backgroundColor: '#FFF7ED',
+    borderWidth: 1,
+    borderColor: '#FDBA74',
+    marginRight: 6,
+  },
+  kmlHeaderActionText: {
+    fontSize: 11,
+    color: '#EA580C',
+  },
+  kml3dActionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: '#FFF7ED',
+    borderWidth: 1,
+    borderColor: '#FDBA74',
+    borderRadius: 8,
+    paddingVertical: 5,
+    paddingHorizontal: 9,
+  },
+  kml3dActionText: {
+    fontSize: 11,
+    color: '#EA580C',
+  },
+  kmlStepActionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    alignSelf: 'flex-start',
+    backgroundColor: '#FFF7ED',
+    borderWidth: 1,
+    borderColor: '#FDBA74',
+    borderRadius: 8,
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+    marginTop: 8,
+  },
+  kmlStepActionText: {
+    fontSize: 11.5,
+    color: '#EA580C',
   },
   kmlModalFooter: {
     flexDirection: 'row',

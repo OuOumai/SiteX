@@ -897,6 +897,109 @@ function runTests() {
     assert(res.metadata.altitudeRange.min === 0 && res.metadata.altitudeRange.max === 0, 'Altitude range is 0m');
   });
 
+  // --- Test AB (L2): QGIS-Style KML with Inline Style, SimpleData kml_name & Description ---
+  test('Test AB (L2) — QGIS-style KML with description, ExtendedData, Folder and LineString', () => {
+    const qgisKml = `<?xml version="1.0" encoding="utf-8" ?>
+    <kml xmlns="http://www.opengis.net/kml/2.2">
+    <Document id="root_doc">
+      <Folder>
+        <name>Dossier_QGIS_Test</name>
+        <Placemark id="placemark.1">
+          <description>Projet: SiteX Tanger Test
+Infrastructure: Route
+Référence: RP4022
+PK début: 0+000
+PK fin: 2+500</description>
+          <Style><LineStyle><color>ff0000ff</color></LineStyle></Style>
+          <ExtendedData>
+            <SchemaData schemaUrl="#test_schema">
+              <SimpleData name="kml_name">RP4022_Tangier_Metadata</SimpleData>
+              <SimpleData name="reference">RP4022</SimpleData>
+              <SimpleData name="infrastructure">Route</SimpleData>
+            </SchemaData>
+          </ExtendedData>
+          <LineString>
+            <coordinates>
+              -5.89181,35.73431 -5.88982,35.73423 -5.88790,35.73739
+            </coordinates>
+          </LineString>
+        </Placemark>
+      </Folder>
+    </Document>
+    </kml>`;
+
+    const res = kmlService.parseKmlToGeoJson(qgisKml);
+
+    // 1. Description parsed correctly
+    assert(res.metadata.description !== null, 'Description must be extracted');
+    assert(res.metadata.description.includes('Projet: SiteX Tanger Test'), 'Description must contain project line');
+    assert(res.metadata.description.includes('PK début: 0+000'), 'Description must contain PK debut');
+
+    // 2. Fallback name from SimpleData kml_name
+    assert(res.properties.name === 'RP4022_Tangier_Metadata', 'Fallback kml_name used when direct name absent');
+    assert(res.metadata.name === 'RP4022_Tangier_Metadata', 'Metadata name matches fallback kml_name');
+
+    // 3. Inline Style without id recognized
+    assert(res.metadata.styles.line !== null, 'Inline line style must be parsed');
+    assert(res.metadata.styles.line.color === 'ff0000ff', 'Line color must be ff0000ff (red in KML)');
+
+    // 4. ExtendedData parsed correctly
+    assert(res.metadata.extendedData.reference === 'RP4022', 'ExtendedData reference extracted');
+    assert(res.metadata.extendedData.infrastructure === 'Route', 'ExtendedData infrastructure extracted');
+
+    // 5. Folder preserved
+    assert(res.metadata.folders.includes('Dossier_QGIS_Test'), 'Folder hierarchy preserved');
+
+    // 6. Geometry valid
+    assert(res.geometry.type === 'LineString', 'Geometry is LineString');
+    assert(res.geometry.coordinates.length === 3, 'Contains 3 vertices');
+  });
+
+  // --- Test AC (L2): Inline Style Leaflet Color Resolution ---
+  test('Test AC (L2) — Inline Style resolution converts KML hex to Leaflet color properly', () => {
+    const qgisKml = `<?xml version="1.0" encoding="utf-8" ?>
+    <kml xmlns="http://www.opengis.net/kml/2.2">
+      <Placemark>
+        <name>Ligne Verte</name>
+        <Style><LineStyle><color>ff00ff00</color><width>5</width></LineStyle></Style>
+        <LineString>
+          <coordinates>-5.8918,35.7343 -5.8898,35.7342</coordinates>
+        </LineString>
+      </Placemark>
+    </kml>`;
+
+    const res = kmlService.parseKmlToGeoJson(qgisKml);
+    assert(res.metadata.styles.line.color === 'ff00ff00', 'Inline color extracted');
+    assert(res.metadata.styles.line.width === 5, 'Inline width extracted');
+
+    const leafletStyle = kmlService.resolveKmlLeafletStyle(res.metadata.styles);
+    assert(leafletStyle.color === '#00ff00', 'Leaflet color is green #00ff00');
+    assert(leafletStyle.opacity === 1.0, 'Leaflet opacity is 1.0');
+    assert(leafletStyle.weight === 5, 'Leaflet weight is 5');
+  });
+
+  // --- Test AD (L2): Standard name takes precedence over SimpleData kml_name ---
+  test('Test AD (L2) — Direct Placemark name takes precedence over SimpleData kml_name', () => {
+    const kml = `<?xml version="1.0" encoding="utf-8" ?>
+    <kml xmlns="http://www.opengis.net/kml/2.2">
+      <Placemark>
+        <name>Nom Direct Placemark</name>
+        <ExtendedData>
+          <SchemaData schemaUrl="#s">
+            <SimpleData name="kml_name">Nom Fallback Ignore</SimpleData>
+          </SchemaData>
+        </ExtendedData>
+        <LineString>
+          <coordinates>-5.8918,35.7343 -5.8898,35.7342</coordinates>
+        </LineString>
+      </Placemark>
+    </kml>`;
+
+    const res = kmlService.parseKmlToGeoJson(kml);
+    assert(res.properties.name === 'Nom Direct Placemark', 'Direct name preserved');
+    assert(res.metadata.name === 'Nom Direct Placemark', 'Metadata name matches direct name');
+  });
+
   console.log(`\nResults: ${passed} passed, ${failed} failed.`);
   if (failed > 0) process.exit(1);
 }

@@ -64,9 +64,10 @@ async function runMigration() {
       ALTER TABLE public.reference_alignment
       ADD COLUMN IF NOT EXISTS source_srid INTEGER DEFAULT 4326,
       ADD COLUMN IF NOT EXISTS source_crs_name VARCHAR(100) DEFAULT 'WGS 84',
-      ADD COLUMN IF NOT EXISTS original_geometry GEOMETRY(LineString, 4326);
+      ADD COLUMN IF NOT EXISTS original_geometry GEOMETRY(LineString, 4326),
+      ADD COLUMN IF NOT EXISTS kml_metadata JSONB;
     `);
-    console.log('  └─ Columns source_srid, source_crs_name, original_geometry in public.reference_alignment ready');
+    console.log('  └─ Columns source_srid, source_crs_name, original_geometry, kml_metadata in public.reference_alignment ready');
 
     // Backfill existing records for backward compatibility
     await client.query(`

@@ -19,7 +19,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Palette } from '@/constants/theme';
 import { useAuth } from '@/hooks/useAuth';
-import { api, ChantierDetails, ChantierTroncon, ChantierTimelineResponse } from '@/services/api';
+import { api, ChantierDetails, ChantierTroncon, ChantierTimelineResponse, KmlMetadata, ReferenceAlignment } from '@/services/api';
 import { InteractiveGisMap, GisTronconSegment } from '@/components/gis/InteractiveGisMap';
 import { InteractiveGis3DMap } from '@/components/gis/InteractiveGis3DMap';
 import { ChantierTimeline } from '@/components/gis/ChantierTimeline';
@@ -46,6 +46,46 @@ function formatDate(val?: string | null): string {
   return val;
 }
 
+function getSourceFormatInfo(refAlign?: ReferenceAlignment | null): {
+  format: 'KML' | 'GeoJSON' | string;
+  isKml: boolean;
+} {
+  if (!refAlign) {
+    return { format: 'Inconnu', isKml: false };
+  }
+  const filename = (refAlign.original_filename || '').trim();
+  const lowerName = filename.toLowerCase();
+  const isKml =
+    Boolean(refAlign.kml_metadata) ||
+    lowerName.endsWith('.kml') ||
+    refAlign.source?.toUpperCase() === 'KML';
+
+  if (isKml) {
+    return {
+      format: 'KML',
+      isKml: true,
+    };
+  }
+
+  return {
+    format: 'GeoJSON',
+    isKml: false,
+  };
+}
+
+function formatCrsDisplay(refAlign?: ReferenceAlignment | null): string {
+  if (!refAlign) return 'EPSG:4326 (WGS 84)';
+  const srid = refAlign.source_srid || 4326;
+  const name = refAlign.source_crs_name || 'WGS 84';
+  if (name.includes('EPSG:')) {
+    return name;
+  }
+  if (srid === 4326) {
+    return 'EPSG:4326 (WGS 84)';
+  }
+  return `EPSG:${srid} (${name})`;
+}
+
 export default function ChantierDetailResponsableScreen() {
   const { chantierId } = useLocalSearchParams<{ chantierId: string }>();
   const router = useRouter();
@@ -61,6 +101,7 @@ export default function ChantierDetailResponsableScreen() {
   const [newName, setNewName] = useState('');
   const [isManaging, setIsManaging] = useState(false);
   const [infoExpanded, setInfoExpanded] = useState(false);
+  const [metadataExpanded, setMetadataExpanded] = useState(false);
   const [tronconsExpanded, setTronconsExpanded] = useState(true);
   const [timelineExpanded, setTimelineExpanded] = useState(false);
 
@@ -115,6 +156,16 @@ export default function ChantierDetailResponsableScreen() {
 
     try {
       const res = await api.getChantierDetails(token, chantierId);
+      if (res.chantier?.reference_alignment && !res.chantier.reference_alignment.kml_metadata) {
+        try {
+          const refRes = await api.getReferenceAlignment(token, chantierId);
+          if (refRes?.reference_alignment?.kml_metadata) {
+            res.chantier.reference_alignment.kml_metadata = refRes.reference_alignment.kml_metadata;
+          }
+        } catch {
+          // ignore fallback error
+        }
+      }
       setChantier(res.chantier);
       setDMaxPosition(String(res.chantier.d_max_position_meters ?? 50));
       setNewName(res.chantier.nom || '');
@@ -373,6 +424,243 @@ export default function ChantierDetailResponsableScreen() {
             </View>
           )}
         </Card>
+
+        {/* Métadonnées (Collapsible) - Generic source & contextual metadata for all chantiers */}
+        {Boolean(chantier?.reference_alignment) && (() => {
+          const refAlign = chantier!.reference_alignment!;
+          const { format, isKml } = getSourceFormatInfo(refAlign);
+          const kmlMeta = refAlign.kml_metadata;
+          const displayName = (isKml && kmlMeta?.name) ? kmlMeta.name : (refAlign.nom || '—');
+
+          return (
+            <Card variant="elevated" style={styles.sectionCard}>
+              <TouchableOpacity
+                style={styles.collapsibleHeader}
+                activeOpacity={0.7}
+                onPress={() => setMetadataExpanded((prev) => !prev)}
+              >
+                <View style={styles.collapsibleTitleRow}>
+                  <Ionicons name="map-outline" size={18} color="#0F766E" />
+                  <Text style={styles.collapsibleTitle} weight="bold">
+                    Métadonnées
+                  </Text>
+                </View>
+                <Ionicons
+                  name={metadataExpanded ? 'chevron-up' : 'chevron-down'}
+                  size={20}
+                  color={Palette.textMuted}
+                />
+              </TouchableOpacity>
+
+              {metadataExpanded && (
+                <View style={styles.collapsibleContent}>
+                  {/* Generic Source Metadata */}
+                  <View style={styles.infoGrid}>
+                    <View style={styles.infoRow}>
+                      <Ionicons name="layers-outline" size={16} color={Palette.textMuted} />
+                      <Text style={styles.infoRowLabel}>Source / Format</Text>
+                      <View style={styles.formatBadge}>
+                        <Text style={styles.formatBadgeText} weight="bold">
+                          {format}
+                        </Text>
+                      </View>
+                    </View>
+
+                    <View style={styles.infoRow}>
+                      <Ionicons name="pricetag-outline" size={16} color={Palette.textMuted} />
+                      <Text style={styles.infoRowLabel}>Nom</Text>
+                      <Text style={styles.infoRowValue} weight="bold">
+                        {displayName}
+                      </Text>
+                    </View>
+
+                    {Boolean(refAlign.original_filename) && (
+                      <View style={styles.infoRow}>
+                        <Ionicons name="document-attach-outline" size={16} color={Palette.textMuted} />
+                        <Text style={styles.infoRowLabel}>Fichier source</Text>
+                        <Text style={styles.infoRowValue} weight="semibold" numberOfLines={1}>
+                          {refAlign.original_filename}
+                        </Text>
+                      </View>
+                    )}
+
+                    <View style={styles.infoRow}>
+                      <Ionicons name="globe-outline" size={16} color={Palette.textMuted} />
+                      <Text style={styles.infoRowLabel}>CRS</Text>
+                      <Text style={styles.infoRowValue}>
+                        {formatCrsDisplay(refAlign)}
+                      </Text>
+                    </View>
+
+                    {/* GeoJSON specific geometry attributes */}
+                    {!isKml && Boolean(refAlign.geometry?.type) && (
+                      <View style={styles.infoRow}>
+                        <Ionicons name="shapes-outline" size={16} color={Palette.textMuted} />
+                        <Text style={styles.infoRowLabel}>Géométrie</Text>
+                        <Text style={styles.infoRowValue}>
+                          {refAlign.geometry.type}
+                        </Text>
+                      </View>
+                    )}
+
+                    {!isKml && (refAlign.length_km !== undefined && refAlign.length_km !== null) && (
+                      <View style={styles.infoRow}>
+                        <Ionicons name="analytics-outline" size={16} color={Palette.textMuted} />
+                        <Text style={styles.infoRowLabel}>Longueur</Text>
+                        <Text style={styles.infoRowValue}>
+                          {refAlign.length_km} km{refAlign.length_meters ? ` (${refAlign.length_meters} m)` : ''}
+                        </Text>
+                      </View>
+                    )}
+
+                    {!isKml && Boolean(refAlign.date_import) && (
+                      <View style={styles.infoRow}>
+                        <Ionicons name="time-outline" size={16} color={Palette.textMuted} />
+                        <Text style={styles.infoRowLabel}>Importé le</Text>
+                        <Text style={styles.infoRowValue}>
+                          {refAlign.date_import}
+                        </Text>
+                      </View>
+                    )}
+
+                    {/* KML Folder(s) */}
+                    {isKml && Boolean(kmlMeta?.folders && kmlMeta.folders.length > 0) && (
+                      <View style={styles.infoRow}>
+                        <Ionicons name="folder-outline" size={16} color={Palette.textMuted} />
+                        <Text style={styles.infoRowLabel}>Dossier</Text>
+                        <Text style={styles.infoRowValue} weight="semibold">
+                          {kmlMeta!.folders!.join(' ❯ ')}
+                        </Text>
+                      </View>
+                    )}
+
+                    {/* KML Document name */}
+                    {isKml && Boolean(kmlMeta?.documentName) && (
+                      <View style={styles.infoRow}>
+                        <Ionicons name="document-text-outline" size={16} color={Palette.textMuted} />
+                        <Text style={styles.infoRowLabel}>Document</Text>
+                        <Text style={styles.infoRowValue}>
+                          {kmlMeta!.documentName}
+                        </Text>
+                      </View>
+                    )}
+                  </View>
+
+                  {/* KML multiline readable description */}
+                  {isKml && Boolean(kmlMeta?.description) && (
+                    <View style={styles.kmlDescriptionBlock}>
+                      <Text style={styles.kmlSubheading} weight="semibold">
+                        Description
+                      </Text>
+                      <View style={styles.kmlDescriptionBox}>
+                        <Text style={styles.kmlDescriptionText}>
+                          {kmlMeta!.description}
+                        </Text>
+                      </View>
+                    </View>
+                  )}
+
+                  {/* KML ExtendedData key/value pairs */}
+                  {isKml &&
+                    Boolean(
+                      kmlMeta?.extendedData &&
+                        Object.keys(kmlMeta.extendedData).length > 0
+                    ) && (
+                      <View style={styles.kmlExtDataBlock}>
+                        <Text style={styles.kmlSubheading} weight="semibold">
+                          Données étendues (ExtendedData)
+                        </Text>
+                        <View style={styles.kmlExtDataTable}>
+                          {Object.entries(kmlMeta!.extendedData || {}).map(
+                            ([key, val], idx, arr) => (
+                              <View
+                                key={key}
+                                style={[
+                                  styles.kmlExtDataRow,
+                                  idx === arr.length - 1 && styles.kmlExtDataRowLast,
+                                ]}
+                              >
+                                <Text style={styles.kmlExtDataKey} weight="semibold">
+                                  {key}
+                                </Text>
+                                <Text style={styles.kmlExtDataVal}>
+                                  {String(val)}
+                                </Text>
+                              </View>
+                            )
+                          )}
+                        </View>
+                      </View>
+                    )}
+
+                  {/* KML Style information when available */}
+                  {isKml &&
+                    (Boolean(kmlMeta?.styleUrl) ||
+                      Boolean(kmlMeta?.styles?.line)) && (
+                      <View style={styles.kmlStyleBlock}>
+                        <Text style={styles.kmlSubheading} weight="semibold">
+                          Style KML
+                        </Text>
+                        <View style={styles.infoGrid}>
+                          {Boolean(kmlMeta?.styleUrl) && (
+                            <View style={styles.infoRow}>
+                              <Ionicons name="color-palette-outline" size={16} color={Palette.textMuted} />
+                              <Text style={styles.infoRowLabel}>Style URL</Text>
+                              <Text style={[styles.infoRowValue, styles.monoText]}>
+                                {kmlMeta!.styleUrl}
+                              </Text>
+                            </View>
+                          )}
+
+                          {Boolean(kmlMeta?.styles?.line?.color) && (() => {
+                            const lineColor = kmlMeta?.styles?.line?.color || '';
+                            const hexColor =
+                              lineColor.length === 8
+                                ? lineColor.slice(6, 8) +
+                                  lineColor.slice(4, 6) +
+                                  lineColor.slice(2, 4)
+                                : 'EA580C';
+                            return (
+                              <View style={styles.infoRow}>
+                                <Ionicons name="color-filter-outline" size={16} color={Palette.textMuted} />
+                                <Text style={styles.infoRowLabel}>Couleur</Text>
+                                <View style={styles.kmlColorRow}>
+                                  <View style={[styles.kmlColorDot, { backgroundColor: '#' + hexColor }]} />
+                                  <Text style={styles.infoRowValue}>{lineColor}</Text>
+                                </View>
+                              </View>
+                            );
+                          })()}
+
+                          {kmlMeta?.styles?.line?.width !== undefined &&
+                            kmlMeta?.styles?.line?.width !== null && (
+                              <View style={styles.infoRow}>
+                                <Ionicons name="resize-outline" size={16} color={Palette.textMuted} />
+                                <Text style={styles.infoRowLabel}>Épaisseur</Text>
+                                <Text style={styles.infoRowValue}>
+                                  {kmlMeta.styles.line.width} px
+                                </Text>
+                              </View>
+                            )}
+                        </View>
+                      </View>
+                    )}
+
+                  {/* KML Generator Info if available */}
+                  {isKml && Boolean(kmlMeta?.generator) && (
+                    <View style={styles.infoRow}>
+                      <Ionicons name="construct-outline" size={16} color={Palette.textMuted} />
+                      <Text style={styles.infoRowLabel}>Générateur</Text>
+                      <Text style={styles.infoRowValue}>
+                        {kmlMeta!.generator}
+                      </Text>
+                    </View>
+                  )}
+                </View>
+              )}
+            </Card>
+          );
+        })()}
 
         {/* Tronçons & Agents de Terrain (Collapsible) */}
         <Card variant="elevated" style={styles.sectionCard}>
@@ -1470,5 +1758,93 @@ const styles = StyleSheet.create({
     color: Palette.textMuted,
     textAlign: 'center',
     marginTop: 4,
+  },
+  // KML Metadata styles
+  kmlDescriptionBlock: {
+    marginTop: 14,
+  },
+  kmlSubheading: {
+    fontSize: 12,
+    color: '#0F766E',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginBottom: 8,
+  },
+  kmlDescriptionBox: {
+    backgroundColor: '#F8FAFC',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    padding: 12,
+  },
+  kmlDescriptionText: {
+    fontSize: 13,
+    lineHeight: 20,
+    color: '#334155',
+  },
+  kmlExtDataBlock: {
+    marginTop: 14,
+  },
+  kmlExtDataTable: {
+    backgroundColor: '#F8FAFC',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    overflow: 'hidden',
+  },
+  kmlExtDataRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E2E8F0',
+  },
+  kmlExtDataRowLast: {
+    borderBottomWidth: 0,
+  },
+  kmlExtDataKey: {
+    fontSize: 12,
+    color: '#64748B',
+    flex: 1,
+  },
+  kmlExtDataVal: {
+    fontSize: 12,
+    color: Palette.text,
+    flex: 1.2,
+    textAlign: 'right',
+  },
+  kmlStyleBlock: {
+    marginTop: 14,
+  },
+  kmlColorRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  kmlColorDot: {
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+  },
+  monoText: {
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    fontSize: 12,
+  },
+  formatBadge: {
+    backgroundColor: '#F0FDFA',
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderWidth: 1,
+    borderColor: '#99F6E4',
+    alignSelf: 'flex-start',
+  },
+  formatBadgeText: {
+    fontSize: 11,
+    color: '#0F766E',
   },
 });
