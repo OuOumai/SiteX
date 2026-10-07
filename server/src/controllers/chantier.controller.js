@@ -843,20 +843,15 @@ async function analyzeGeoJSONSource(req, res) {
       });
     }
 
-    // 3. Process via PostGIS to transform from source CRS to WGS84, test ST_LineMerge and perform AOI spatial intersection
-    const allLinesCoordinates = [];
-    lineFeatures.forEach((feat) => {
-      if (feat.geometry.type === 'LineString') {
-        allLinesCoordinates.push(feat.geometry.coordinates);
-      } else if (feat.geometry.type === 'MultiLineString') {
-        allLinesCoordinates.push(...feat.geometry.coordinates);
-      }
-    });
-
-    const multiGeomPayload = {
-      type: 'MultiLineString',
-      coordinates: allLinesCoordinates,
-    };
+    // 3. Process each line feature individually via PostGIS to transform from source CRS to WGS84,
+    // evaluate individual geometries, calculate metrics, and perform AOI spatial intersection
+    const preparedFeatures = lineFeatures.map((feat, idx) => ({
+      id: feat.id !== undefined && feat.id !== null ? String(feat.id) : String(idx + 1),
+      nom: feat.properties?.name || feat.properties?.kml_name || (lineFeatures.length === 1 ? originalFilename.replace(/\.[^/.]+$/, '') : `Tracé ${idx + 1}`),
+      properties: feat.properties || {},
+      metadata: feat.metadata || feat.properties?.kml_metadata || null,
+      geometry: feat.geometry,
+    }));
 
     let aoiJsonParam = null;
     if (passedAoi) {
@@ -876,95 +871,112 @@ async function analyzeGeoJSONSource(req, res) {
     }
 
     const analysisQuery = `
-      WITH raw_input AS (
-        SELECT ST_SetSRID(ST_GeomFromGeoJSON($1), $4) AS src_geom
+      WITH input_features AS (
+        SELECT 
+          (elem->>'id')::text AS feat_id,
+          (elem->>'nom')::text AS feat_name,
+          elem->'properties' AS feat_props,
+          elem->'metadata' AS feat_metadata,
+          ST_SetSRID(ST_GeomFromGeoJSON(elem->>'geometry'), $4) AS src_geom,
+          row_number() OVER() AS original_idx
+        FROM jsonb_array_elements($1::jsonb) AS elem
       ),
       parsed AS (
-        SELECT CASE 
-          WHEN $4 = 4326 THEN src_geom
-          ELSE ST_Transform(src_geom, 4326)
-        END AS raw_geom
-        FROM raw_input
-      ),
-      merged AS (
-        SELECT 
-          raw_geom,
-          ST_LineMerge(raw_geom) AS merged_geom,
-          ST_Length(raw_geom::geography) AS total_len_m
-        FROM parsed
-      ),
-      corridors AS (
-        SELECT 
-          (ST_Dump(merged_geom)).path[1] AS corridor_idx,
-          (ST_Dump(merged_geom)).geom AS corridor_geom
-        FROM merged
+        SELECT
+          feat_id,
+          feat_name,
+          feat_props,
+          feat_metadata,
+          original_idx,
+          CASE 
+            WHEN $4 = 4326 THEN src_geom
+            ELSE ST_Transform(src_geom, 4326)
+          END AS geom
+        FROM input_features
       ),
       aoi_source AS (
         SELECT CASE 
           WHEN $2::text IS NOT NULL AND $2::text != '' THEN ST_SetSRID(ST_GeomFromGeoJSON($2), 4326)
           ELSE (SELECT localisation FROM public.chantier WHERE id = $3)
         END AS aoi_geom
+      ),
+      evaluated AS (
+        SELECT
+          p.feat_id,
+          p.feat_name,
+          p.feat_props,
+          p.feat_metadata,
+          p.original_idx,
+          p.geom,
+          ST_Length(p.geom::geography) AS len_m,
+          a.aoi_geom IS NOT NULL AS has_aoi,
+          CASE 
+            WHEN a.aoi_geom IS NOT NULL THEN ST_Intersects(p.geom, a.aoi_geom)
+            ELSE false 
+          END AS intersects_aoi,
+          CASE 
+            WHEN a.aoi_geom IS NOT NULL AND ST_Intersects(p.geom, a.aoi_geom) THEN 
+              ST_Length(ST_Intersection(p.geom, a.aoi_geom)::geography)
+            ELSE 0 
+          END AS len_in_aoi_m,
+          CASE 
+            WHEN a.aoi_geom IS NOT NULL AND NOT ST_Intersects(p.geom, a.aoi_geom) THEN 
+              ST_Distance(p.geom::geography, a.aoi_geom::geography)
+            ELSE 0 
+          END AS dist_to_aoi_m
+        FROM parsed p
+        CROSS JOIN aoi_source a
       )
       SELECT 
-        (SELECT ST_GeometryType(merged_geom) FROM merged) AS merged_type,
-        (SELECT ROUND(total_len_m::numeric / 1000.0, 3) FROM merged) AS total_network_km,
-        (SELECT ROUND(total_len_m::numeric, 2) FROM merged) AS total_network_meters,
+        (SELECT COUNT(*) FROM evaluated) AS total_features_count,
+        (SELECT COUNT(*) FROM evaluated WHERE intersects_aoi = true) AS intersecting_count,
+        (SELECT ROUND(SUM(len_m)::numeric / 1000.0, 3) FROM evaluated) AS total_network_km,
+        (SELECT ROUND(SUM(len_m)::numeric, 2) FROM evaluated) AS total_network_meters,
         (SELECT ST_AsGeoJSON(aoi_geom)::json FROM aoi_source) AS aoi_geometry,
         (SELECT ROUND(ST_Area(aoi_geom::geography)::numeric, 2) FROM aoi_source) AS aoi_surface_m2,
         (SELECT ROUND((ST_Area(aoi_geom::geography) / 10000.0)::numeric, 2) FROM aoi_source) AS aoi_surface_hectares,
-        json_agg(
-          json_build_object(
-            'id', c.corridor_idx,
-            'nom', 'Corridor ' || c.corridor_idx,
-            'length_km', ROUND((ST_Length(c.corridor_geom::geography) / 1000.0)::numeric, 3),
-            'length_meters', ROUND(ST_Length(c.corridor_geom::geography)::numeric, 2),
-            'points_count', ST_NPoints(c.corridor_geom),
-            'start_point', json_build_array(ST_X(ST_StartPoint(c.corridor_geom)), ST_Y(ST_StartPoint(c.corridor_geom))),
-            'end_point', json_build_array(ST_X(ST_EndPoint(c.corridor_geom)), ST_Y(ST_EndPoint(c.corridor_geom))),
-            'intersects_aoi', CASE 
-              WHEN a.aoi_geom IS NOT NULL THEN ST_Intersects(c.corridor_geom, a.aoi_geom)
-              ELSE false 
-            END,
-            'length_in_aoi_meters', CASE 
-              WHEN a.aoi_geom IS NOT NULL AND ST_Intersects(c.corridor_geom, a.aoi_geom) THEN 
-                ROUND(ST_Length(ST_Intersection(c.corridor_geom, a.aoi_geom)::geography)::numeric, 2)
-              ELSE 0 
-            END,
-            'length_in_aoi_km', CASE 
-              WHEN a.aoi_geom IS NOT NULL AND ST_Intersects(c.corridor_geom, a.aoi_geom) THEN 
-                ROUND((ST_Length(ST_Intersection(c.corridor_geom, a.aoi_geom)::geography) / 1000.0)::numeric, 3)
-              ELSE 0 
-            END,
-            'coverage_aoi_percent', CASE 
-              WHEN a.aoi_geom IS NOT NULL AND ST_Intersects(c.corridor_geom, a.aoi_geom) AND ST_Length(c.corridor_geom::geography) > 0 THEN 
-                ROUND(((ST_Length(ST_Intersection(c.corridor_geom, a.aoi_geom)::geography) / ST_Length(c.corridor_geom::geography)) * 100.0)::numeric, 1)
-              ELSE 0 
-            END,
-            'distance_to_aoi_meters', CASE 
-              WHEN a.aoi_geom IS NOT NULL AND NOT ST_Intersects(c.corridor_geom, a.aoi_geom) THEN 
-                ROUND(ST_Distance(c.corridor_geom::geography, a.aoi_geom::geography)::numeric, 2)
-              ELSE 0 
-            END,
-            'geometry', ST_AsGeoJSON(c.corridor_geom)::json
-          ) 
-          ORDER BY 
-            CASE WHEN a.aoi_geom IS NOT NULL AND ST_Intersects(c.corridor_geom, a.aoi_geom) THEN 1 ELSE 0 END DESC,
-            CASE WHEN a.aoi_geom IS NOT NULL THEN ST_Length(ST_Intersection(c.corridor_geom, a.aoi_geom)::geography) ELSE 0 END DESC,
-            ST_Length(c.corridor_geom::geography) DESC
+        COALESCE(
+          json_agg(
+            json_build_object(
+              'id', e.feat_id,
+              'nom', e.feat_name,
+              'properties', e.feat_props,
+              'metadata', e.feat_metadata,
+              'original_idx', e.original_idx,
+              'length_km', ROUND((e.len_m / 1000.0)::numeric, 3),
+              'length_meters', ROUND(e.len_m::numeric, 2),
+              'points_count', ST_NPoints(e.geom),
+              'start_point', json_build_array(ST_X(ST_StartPoint(e.geom)), ST_Y(ST_StartPoint(e.geom))),
+              'end_point', json_build_array(ST_X(ST_EndPoint(e.geom)), ST_Y(ST_EndPoint(e.geom))),
+              'intersects_aoi', e.intersects_aoi,
+              'length_in_aoi_meters', ROUND(e.len_in_aoi_m::numeric, 2),
+              'length_in_aoi_km', ROUND((e.len_in_aoi_m / 1000.0)::numeric, 3),
+              'coverage_aoi_percent', CASE 
+                WHEN e.len_m > 0 AND e.len_in_aoi_m > 0 THEN 
+                  ROUND(((e.len_in_aoi_m / e.len_m) * 100.0)::numeric, 1)
+                ELSE 0 
+              END,
+              'distance_to_aoi_meters', ROUND(e.dist_to_aoi_m::numeric, 2),
+              'geometry', ST_AsGeoJSON(e.geom)::json
+            )
+            ORDER BY 
+              e.len_in_aoi_m DESC,
+              e.len_m DESC
+          ) FILTER (WHERE NOT e.has_aoi OR e.intersects_aoi = true),
+          '[]'::json
         ) AS candidate_corridors
-      FROM corridors c
-      CROSS JOIN aoi_source a;
+      FROM evaluated e;
     `;
 
     const analysisRes = await db.query(analysisQuery, [
-      JSON.stringify(multiGeomPayload),
+      JSON.stringify(preparedFeatures),
       aoiJsonParam,
       chantierId,
       sourceSrid,
     ]);
     const analysis = analysisRes.rows[0];
 
-    const isSingleContinuous = analysis.merged_type === 'ST_LineString';
+    const isSingleContinuous = lineFeatures.length === 1;
     let rawCorridors = analysis.candidate_corridors || [];
     const hasAoi = !!analysis.aoi_geometry;
 
@@ -1006,9 +1018,12 @@ async function analyzeGeoJSONSource(req, res) {
     });
 
     return res.status(200).json({
-      message: 'Source GeoJSON analysée avec succès.',
+      message: candidateCorridors.length > 0
+        ? 'Source spatiale analysée avec succès.'
+        : 'Aucun tracé linéaire n\'intersecte la zone d\'étude sélectionnée.',
       original_filename: originalFilename,
       total_features: lineFeatures.length,
+      intersecting_features_count: parseInt(analysis.intersecting_count, 10) || 0,
       is_single_continuous: isSingleContinuous,
       total_network_km: parseFloat(analysis.total_network_km) || 0,
       total_network_meters: parseFloat(analysis.total_network_meters) || 0,
@@ -1100,8 +1115,24 @@ async function uploadReferenceAlignment(req, res) {
     let targetGeom = geojsonData;
     if (geojsonData.type === 'Feature' && geojsonData.geometry) {
       targetGeom = geojsonData.geometry;
-    } else if (geojsonData.type === 'FeatureCollection' && Array.isArray(geojsonData.features) && geojsonData.features.length === 1) {
-      targetGeom = geojsonData.features[0].geometry;
+    } else if (geojsonData.type === 'FeatureCollection' && Array.isArray(geojsonData.features)) {
+      if (geojsonData.features.length === 1) {
+        targetGeom = geojsonData.features[0].geometry;
+      } else if (req.body.corridor_id || req.body.feature_id) {
+        const targetId = String(req.body.corridor_id || req.body.feature_id);
+        const found = geojsonData.features.find((f, idx) => String(f.id) === targetId || String(idx + 1) === targetId);
+        if (found) {
+          targetGeom = found.geometry;
+        } else {
+          return res.status(400).json({
+            message: `Tracé ID ${targetId} introuvable dans le fichier multi-entités (${geojsonData.features.length} tracés disponibles).`,
+          });
+        }
+      } else {
+        return res.status(400).json({
+          message: `Ce fichier contient plusieurs tracés linéaires (${geojsonData.features.length} éléments). Veuillez d'abord analyser le fichier et sélectionner un alignement de référence candidat.`,
+        });
+      }
     }
 
     // Determine Source CRS (explicit or auto-detected)
@@ -2860,7 +2891,12 @@ async function requestExplanation(req, res) {
  */
 async function getChantierTimeline(req, res) {
   try {
-    const id = req.params.chantierId || req.params.id;
+    const rawId = req.params.chantierId || req.params.id;
+    const id = parseInt(rawId, 10);
+
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(400).json({ message: 'Identifiant du chantier invalide.' });
+    }
 
     // 1. Fetch Chantier metadata
     const chantierRes = await db.query(
@@ -2965,7 +3001,12 @@ async function getChantierTimeline(req, res) {
     for (let i = 0; i < rawObs.length; i++) {
       const o = rawObs[i];
       const tId = o.troncon_id;
-      const obsPhotos = Array.isArray(o.photos) ? o.photos : [];
+      let obsPhotos = [];
+      if (Array.isArray(o.photos)) {
+        obsPhotos = o.photos;
+      } else if (typeof o.photos === 'string') {
+        try { obsPhotos = JSON.parse(o.photos); } catch { obsPhotos = []; }
+      }
       cumulativePhotosCount += obsPhotos.length;
 
       // Update per-tronçon progress (authoritative is strictly non-regressing)
@@ -2986,11 +3027,14 @@ async function getChantierTimeline(req, res) {
       const lat = o.projected_lat != null ? Number(o.projected_lat) : (o.agent_lat != null ? Number(o.agent_lat) : null);
       const lng = o.projected_lng != null ? Number(o.projected_lng) : (o.agent_lng != null ? Number(o.agent_lng) : null);
 
+      const dateIso = o.date_iso || (o.date_heure ? new Date(o.date_heure).toISOString() : new Date().toISOString());
+      const dateDay = o.date_day || dateIso.slice(0, 10);
+
       const eventItem = {
         id: `obs-${o.id}`,
         type: 'observation',
-        date: o.date_iso,
-        dateDay: o.date_day,
+        date: dateIso,
+        dateDay: dateDay,
         observationId: o.id,
         tronconId: o.troncon_id,
         tronconNom: o.troncon_nom,
@@ -3007,8 +3051,8 @@ async function getChantierTimeline(req, res) {
       events.push(eventItem);
 
       progressHistory.push({
-        date: o.date_day,
-        dateTime: o.date_iso,
+        date: dateDay,
+        dateTime: dateIso,
         rawChantierProgress,
         authoritativeChantierProgress: runningMaxAuthoritativeChantier,
         tronconsProgress: { ...tronconProgressMap },
@@ -3020,10 +3064,10 @@ async function getChantierTimeline(req, res) {
     // Temporal bounds calculation
     const allDates = [
       ...(chantier.date_debut ? [chantier.date_debut] : []),
-      ...rawObs.map((o) => o.date_day),
+      ...rawObs.map((o) => o.date_day || (o.date_heure ? new Date(o.date_heure).toISOString().slice(0, 10) : null)).filter(Boolean),
     ];
-    const minDate = allDates.length > 0 ? allDates[0] : null;
-    const maxDate = allDates.length > 0 ? allDates[allDates.length - 1] : null;
+    const minDate = allDates.length > 0 ? allDates[0] : (chantier.date_debut || null);
+    const maxDate = allDates.length > 0 ? allDates[allDates.length - 1] : (chantier.date_debut || null);
 
     return res.status(200).json({
       chantierId: chantier.id,

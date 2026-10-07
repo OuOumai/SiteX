@@ -15,6 +15,7 @@ export interface InteractiveGisMapRef {
   toggleSatellite?: () => void;
   toggleKml?: () => void;
   toggleKmlImages?: () => void;
+  setAoiCoordinates?: (coordinates: [number, number][]) => void;
 }
 
 export interface GisFeatureGeometry {
@@ -82,6 +83,8 @@ export interface InteractiveGisMapProps {
   corridors?: GisCandidateCorridor[] | null;
   selectedCorridorId?: number | null;
   aoiGeometry?: GisFeatureGeometry | null;
+  refinePreviousAoiGeometry?: GisFeatureGeometry | null;
+  isRefineMode?: boolean;
   existingAois?: Array<{
     id?: number | string;
     chantierId?: number | string;
@@ -179,6 +182,8 @@ export function InteractiveGisMap({
   corridors,
   selectedCorridorId,
   aoiGeometry,
+  refinePreviousAoiGeometry = null,
+  isRefineMode = false,
   existingAois = null,
   enableAoiDrawing = false,
   onAoiChange,
@@ -243,6 +248,24 @@ export function InteractiveGisMap({
     toggleSatellite: () => executeAction('toggleSatellite'),
     toggleKml: () => executeAction('toggleKml'),
     toggleKmlImages: () => executeAction('toggleKmlImages'),
+    setAoiCoordinates: (coords: [number, number][]) => {
+      if (Platform.OS === 'web') {
+        try {
+          (iframeRef.current?.contentWindow as any)?.setAoiCoordinates?.(coords);
+        } catch (e) {}
+      } else {
+        try {
+          webViewRef.current?.injectJavaScript(`
+            (function() {
+              if (typeof window.setAoiCoordinates === 'function') {
+                window.setAoiCoordinates(${JSON.stringify(coords)});
+              }
+            })();
+            true;
+          `);
+        } catch (e) {}
+      }
+    },
   }));
 
     // Listen to messages from Leaflet (Web)
@@ -305,6 +328,19 @@ export function InteractiveGisMap({
       } catch {}
     };
 
+  // Stabilize AOI reference during active drawing/refining to prevent WebView reloads on every vertex
+  const initialDrawingAoiRef = useRef<GisFeatureGeometry | null>(null);
+  const prevDrawingFlagRef = useRef<boolean>(false);
+
+  if (enableAoiDrawing && !prevDrawingFlagRef.current) {
+    initialDrawingAoiRef.current = aoiGeometry || null;
+  } else if (!enableAoiDrawing) {
+    initialDrawingAoiRef.current = null;
+  }
+  prevDrawingFlagRef.current = !!enableAoiDrawing;
+
+  const effectiveAoi = enableAoiDrawing ? initialDrawingAoiRef.current : (aoiGeometry || null);
+
   // Generate self-contained Leaflet HTML with inlined assets and robust corridor selection
   const leafletHtml = useMemo(() => {
     // ── Level 6B: Apply temporal filtering before building config ──────────
@@ -337,6 +373,7 @@ export function InteractiveGisMap({
       rawChantierAlignments: chantierAlignments && chantierAlignments.length > 0 ? chantierAlignments : [],
       selectedChantierId: selectedChantierId ?? null,
       rawGeoJson: rawGeoJson || null,
+      kmlGeometry: kmlGeometry || null,
       rawKmlGeom: kmlGeometry || null,
       rawKmlMeta: kmlMetadata || null,
       showKmlLayer: showKmlLayerTemporal,
@@ -347,7 +384,9 @@ export function InteractiveGisMap({
       rawTroncons: temporalTroncons,
       rawCorridors: corridors && corridors.length > 0 ? corridors : [],
       selectedCorridorId: selectedCorridorId !== undefined && selectedCorridorId !== null ? selectedCorridorId : null,
-      rawAoi: aoiGeometry || null,
+      rawAoi: effectiveAoi,
+      rawRefinePreviousAoi: refinePreviousAoiGeometry || null,
+      isRefineMode: !!isRefineMode,
       rawExistingAois: existingAois && existingAois.length > 0 ? existingAois : [],
       enableDrawing: !!enableAoiDrawing,
       customMarkers: temporalMarkers,
@@ -674,14 +713,37 @@ export function InteractiveGisMap({
       background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Cpath fill='%23176B5B' d='M12.41 187.52l182.22 95.88a107.09 107.09 0 00122.74 0l182.22-95.88a24 24 0 000-42.51L317.37 49.13a107.09 107.09 0 00-122.74 0L12.41 145.01a24 24 0 000 42.51z'/%3E%3Cpath fill='%23176B5B' d='M256 360a107 107 0 01-61.37-19.12L12.41 245a24 24 0 00-12.41 21.26v3.74a24 24 0 0012.41 21.25L194.63 387.1a107.09 107.09 0 00122.74 0l182.22-95.88A24 24 0 00512 270v-3.74a24 24 0 00-12.41-21.26l-182.22 95.88A107 107 0 01256 360z'/%3E%3Cpath fill='%23176B5B' d='M256 464a107 107 0 01-61.37-19.12L12.41 349a24 24 0 00-12.41 21.26v3.74a24 24 0 0012.41 21.25L194.63 491.1a107.09 107.09 0 00122.74 0l182.22-95.88A24 24 0 00512 374v-3.74a24 24 0 00-12.41-21.26l-182.22 95.88A107 107 0 01256 464z'/%3E%3C/svg%3E");
     }
 
-    /* AOI vertex marker icon */
+    /* AOI vertex marker icon - optimized for touch interaction */
+    .aoi-vertex-marker {
+      cursor: grab;
+      touch-action: none;
+    }
     .aoi-vertex-icon {
       background: #F59E0B;
-      border: 2px solid #FFFFFF;
+      border: 2.5px solid #FFFFFF;
       border-radius: 50%;
-      width: 12px;
-      height: 12px;
-      box-shadow: 0 2px 5px rgba(0,0,0,0.5);
+      width: 18px;
+      height: 18px;
+      box-shadow: 0 3px 8px rgba(0,0,0,0.45);
+      transition: transform 0.15s ease;
+    }
+    .aoi-vertex-marker:active .aoi-vertex-icon {
+      background: #D97706;
+      transform: scale(1.3);
+    }
+    /* Refinement vertex marker icon - RED dots */
+    .aoi-refine-vertex-icon {
+      background: #EF4444 !important;
+      border: 2.5px solid #FFFFFF !important;
+      border-radius: 50% !important;
+      width: 18px !important;
+      height: 18px !important;
+      box-shadow: 0 2px 8px rgba(220, 38, 38, 0.7) !important;
+      transition: transform 0.15s ease;
+    }
+    .aoi-vertex-marker:active .aoi-refine-vertex-icon {
+      background: #DC2626 !important;
+      transform: scale(1.3);
     }
 
     @keyframes markerPulse {
@@ -827,6 +889,8 @@ export function InteractiveGisMap({
       var rawCorridors = config.rawCorridors || [];
       var selectedCorridorId = config.selectedCorridorId;
       var rawAoi = config.rawAoi;
+      var rawRefinePreviousAoi = config.rawRefinePreviousAoi || null;
+      var isRefineMode = !!config.isRefineMode;
       var enableDrawing = !!config.enableDrawing;
       var selectedId = config.selectedId;
       var colors = config.colors || ["#0EA5E9", "#10B981", "#F59E0B"];
@@ -1149,6 +1213,23 @@ export function InteractiveGisMap({
                 }
               }
             });
+          }
+
+          // In refinement mode, focus snugly on the previous AOI to be refined
+          if (rawRefinePreviousAoi) {
+            try {
+              var pLayer = L.geoJSON(rawRefinePreviousAoi);
+              var pb = pLayer.getBounds();
+              if (pb && pb.isValid && pb.isValid()) {
+                map.fitBounds(pb, {
+                  paddingTopLeft: [40, 50],
+                  paddingBottomRight: [40, fitPaddingBottom || 35],
+                  maxZoom: 16,
+                  animate: !!isUserTriggered
+                });
+                return;
+              }
+            } catch(e) {}
           }
 
           // Fit bounds with comfortable top padding for search bar and bottom padding for monitoring sheet
@@ -1500,16 +1581,38 @@ export function InteractiveGisMap({
               fillOpacity: 0.22,
               weight: 2.5,
               dashArray: "6, 6"
-            }
+            },
+            interactive: !enableDrawing
           });
-          aoiLayer.bindPopup('<div class="custom-popup"><div class="popup-title" style="color:#F59E0B;">📍 Zone d&apos;Étude du Chantier (AOI)</div><div class="popup-detail">Emprise spatiale enregistrée pour le filtrage des corridors.</div></div>');
+          // Only show popup in view mode, never in drawing/refinement mode to prevent interaction blocking
+          if (!enableDrawing) {
+            aoiLayer.bindPopup('<div class="custom-popup"><div class="popup-title" style="color:#F59E0B;">📍 Zone d&apos;Étude du Chantier (AOI)</div><div class="popup-detail">Emprise spatiale enregistrée pour le filtrage des corridors.</div></div>');
+          }
           aoiLayer.addTo(aoiLayerGroup);
           aoiLayer.addTo(featureGroup);
         } catch(e) {}
       }
 
-      if (rawAoi) {
+      if (rawAoi && !enableDrawing) {
         renderAoiPolygon(rawAoi);
+      }
+
+      // Render Previous Reference AOI in Orange during refinement mode
+      if (rawRefinePreviousAoi) {
+        try {
+          var prevAoiLayer = L.geoJSON(rawRefinePreviousAoi, {
+            style: {
+              color: "#F59E0B",
+              fillColor: "#F59E0B",
+              fillOpacity: 0.14,
+              weight: 2.5,
+              dashArray: "5, 5"
+            },
+            interactive: false
+          });
+          prevAoiLayer.addTo(aoiLayerGroup);
+          prevAoiLayer.addTo(featureGroup);
+        } catch(e) {}
       }
 
       // Render Existing Sibling Chantier AOIs (Visual reference for other chantiers)
@@ -1925,6 +2028,10 @@ export function InteractiveGisMap({
       window.gisMapAction = function() {};
 
       if (enableDrawing) {
+        var drawColor = isRefineMode ? "#EF4444" : "#F59E0B";
+        var drawFill = isRefineMode ? "#EF4444" : "#F59E0B";
+        var vertexClass = isRefineMode ? "aoi-refine-vertex-icon" : "aoi-vertex-icon";
+
         function updateDrawingUI() {
           var count = drawnPoints.length;
 
@@ -1934,17 +2041,19 @@ export function InteractiveGisMap({
           if (count >= 2) {
             var latlngs = drawnPoints.map(function(pt) { return [pt[1], pt[0]]; });
             drawingPolyline = L.polyline(latlngs, {
-              color: "#F59E0B",
+              color: drawColor,
               weight: 3,
-              dashArray: "5, 5"
+              dashArray: isRefineMode ? "4, 4" : "5, 5",
+              interactive: false
             }).addTo(map);
 
             if (count >= 3) {
               drawingPolygon = L.polygon(latlngs, {
-                color: "#F59E0B",
-                fillColor: "#F59E0B",
-                fillOpacity: 0.25,
-                weight: 2
+                color: drawColor,
+                fillColor: drawFill,
+                fillOpacity: 0.22,
+                weight: 2.5,
+                interactive: false
               }).addTo(map);
             }
           }
@@ -1964,33 +2073,95 @@ export function InteractiveGisMap({
           }
         }
 
-        map.on("click", function(e) {
-          var lng = Number(e.latlng.lng.toFixed(6));
-          var lat = Number(e.latlng.lat.toFixed(6));
-          drawnPoints.push([lng, lat]);
-
+        function createVertexMarker(lng, lat) {
           var marker = L.marker([lat, lng], {
             icon: L.divIcon({
               className: "aoi-vertex-marker",
-              html: '<div class="aoi-vertex-icon"></div>',
-              iconSize: [12, 12],
-              iconAnchor: [6, 6]
+              html: '<div class="' + vertexClass + '"></div>',
+              iconSize: [20, 20],
+              iconAnchor: [10, 10]
             }),
             draggable: true
           }).addTo(map);
 
-          var ptIdx = drawnPoints.length - 1;
           marker.on("drag", function(dragEvt) {
-            var newPos = dragEvt.target.getLatLng();
-            drawnPoints[ptIdx] = [Number(newPos.lng.toFixed(6)), Number(newPos.lat.toFixed(6))];
-            updateDrawingUI();
-            notifyParentAOI();
+            var idx = drawnMarkers.indexOf(dragEvt.target);
+            if (idx !== -1) {
+              var newPos = dragEvt.target.getLatLng();
+              drawnPoints[idx] = [Number(newPos.lng.toFixed(6)), Number(newPos.lat.toFixed(6))];
+              updateDrawingUI();
+              notifyParentAOI();
+            }
           });
 
+          return marker;
+        }
+
+        // Initialize drawnPoints from existing rawAoi if present (only when not in refinement mode)
+        if (!isRefineMode && rawAoi) {
+          try {
+            var initialRing = null;
+            if (rawAoi.type === 'Polygon' && Array.isArray(rawAoi.coordinates) && rawAoi.coordinates[0]) {
+              initialRing = rawAoi.coordinates[0];
+            } else if (rawAoi.type === 'Feature' && rawAoi.geometry && rawAoi.geometry.type === 'Polygon' && Array.isArray(rawAoi.geometry.coordinates)) {
+              initialRing = rawAoi.geometry.coordinates[0];
+            }
+
+            if (initialRing && initialRing.length >= 3) {
+              for (var k = 0; k < initialRing.length; k++) {
+                var p = initialRing[k];
+                // Skip duplicate closing point if identical to first
+                if (k === initialRing.length - 1 && initialRing.length >= 4) {
+                  var p0 = initialRing[0];
+                  if (Math.abs(p[0] - p0[0]) < 0.000001 && Math.abs(p[1] - p0[1]) < 0.000001) {
+                    continue;
+                  }
+                }
+                var pLng = Number(Number(p[0]).toFixed(6));
+                var pLat = Number(Number(p[1]).toFixed(6));
+                drawnPoints.push([pLng, pLat]);
+                var m = createVertexMarker(pLng, pLat);
+                drawnMarkers.push(m);
+              }
+              updateDrawingUI();
+            }
+          } catch(err) {
+            console.warn("Error loading existing AOI vertices for drawing:", err);
+          }
+        }
+
+        map.on("click", function(e) {
+          var lng = Number(e.latlng.lng.toFixed(6));
+          var lat = Number(e.latlng.lat.toFixed(6));
+          drawnPoints.push([lng, lat]);
+          var marker = createVertexMarker(lng, lat);
           drawnMarkers.push(marker);
           updateDrawingUI();
           notifyParentAOI();
         });
+
+        window.setAoiCoordinates = function(coords) {
+          if (!Array.isArray(coords)) return;
+          drawnPoints = [];
+          drawnMarkers.forEach(function(m) { map.removeLayer(m); });
+          drawnMarkers = [];
+          for (var i = 0; i < coords.length; i++) {
+            var pt = coords[i];
+            if (i === coords.length - 1 && coords.length >= 4 && coords[0][0] === pt[0] && coords[0][1] === pt[1]) continue;
+            var cLng = Number(Number(pt[0]).toFixed(6));
+            var cLat = Number(Number(pt[1]).toFixed(6));
+            drawnPoints.push([cLng, cLat]);
+            var mk = createVertexMarker(cLng, cLat);
+            drawnMarkers.push(mk);
+          }
+          updateDrawingUI();
+          notifyParentAOI();
+          if (drawingPolygon && drawingPolygon.getBounds) {
+            try {
+              map.fitBounds(drawingPolygon.getBounds(), { padding: [35, 35], maxZoom: 16 });
+            } catch(e) {}
+          }
+        };
 
         window.gisMapAction = function(action) {
           if (action === 'undo') {
@@ -2222,7 +2393,9 @@ export function InteractiveGisMap({
     troncons,
     corridors,
     selectedCorridorId,
-    aoiGeometry,
+    effectiveAoi,
+    refinePreviousAoiGeometry,
+    isRefineMode,
     enableAoiDrawing,
     selectedTronconId,
     selectedMarkerId,

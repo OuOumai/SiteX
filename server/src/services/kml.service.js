@@ -802,9 +802,10 @@ function traverseKmlTree(node, collector, currentFolderStack = []) {
 function processPlacemark(pNode, collector, currentFolderStack) {
   const pExtendedData = extractExtendedData(pNode.ExtendedData);
   let pName = pNode.name ? String(pNode.name).trim() : null;
-  // QGIS fallback: if no direct <name>, check SimpleData kml_name
-  if (!pName && pExtendedData && pExtendedData.kml_name) {
-    pName = String(pExtendedData.kml_name).trim();
+  // Fallbacks: if no direct <name>, check SimpleData / ExtendedData fields
+  if (!pName && pExtendedData) {
+    pName = pExtendedData.kml_name || pExtendedData.name || pExtendedData.full_id || pExtendedData.osm_id || pExtendedData.ref || null;
+    if (pName) pName = String(pName).trim();
   }
 
   const pDesc = pNode.description ? String(pNode.description).trim() : null;
@@ -882,12 +883,12 @@ function scanGeometries(node, collector, placemarkMeta) {
       } else if (val && typeof val === 'object') {
         collector.lineStrings.push({ node: val, meta: placemarkMeta });
       }
+    } else if (key === 'MultiGeometry') {
+      scanGeometries(val, collector, placemarkMeta);
     } else if (key === 'Point') {
       collector.unsupportedGeometries.push('Point');
     } else if (key === 'Polygon') {
       collector.unsupportedGeometries.push('Polygon');
-    } else if (key === 'MultiGeometry') {
-      collector.unsupportedGeometries.push('MultiGeometry');
     } else if (key === 'Model') {
       collector.unsupportedGeometries.push('Model');
     }
@@ -960,15 +961,7 @@ function parseKmlToGeoJson(kmlXmlString, options = {}) {
     });
   }
 
-  // 5. Validation: Multiple LineStrings are rejected at Level 1 & 2 (no silent merge)
-  if (collector.lineStrings.length > 1) {
-    throw new Error(
-      `Ce fichier KML contient plusieurs tracés linéaires (${collector.lineStrings.length} LineStrings détectées). ` +
-      'Le Niveau 1 et le Niveau 2 requièrent un fichier contenant un seul tracé linéaire continu.'
-    );
-  }
-
-  // 6. Validation: No LineString found
+  // 5. Validation: No LineString found
   if (collector.lineStrings.length === 0) {
     if (collector.unsupportedGeometries.length > 0) {
       const types = [...new Set(collector.unsupportedGeometries)].join(', ');
@@ -980,58 +973,136 @@ function parseKmlToGeoJson(kmlXmlString, options = {}) {
     throw new Error('Le fichier KML ne contient aucun tracé linéaire (LineString) valide.');
   }
 
-  // 7. Extract single LineString coordinates (Level 1 geometry invariants)
-  const target = collector.lineStrings[0];
-  const lineNode = target.node;
-  const rawCoords = typeof lineNode === 'string' ? lineNode : (lineNode.coordinates || '');
+  // 6. Single LineString Workflow (Level 1 & Level 2 backward-compatible invariant)
+  if (collector.lineStrings.length === 1) {
+    const target = collector.lineStrings[0];
+    const lineNode = target.node;
+    const rawCoords = typeof lineNode === 'string' ? lineNode : (lineNode.coordinates || '');
 
-  const parsedSpatial = parseKmlCoordinatesWithAltitude(rawCoords);
-  const coordinates = parsedSpatial.coordinates2D;
-  const pMeta = target.meta || {};
+    const parsedSpatial = parseKmlCoordinatesWithAltitude(rawCoords);
+    const coordinates = parsedSpatial.coordinates2D;
+    const pMeta = target.meta || {};
 
-  // 8. Resolve Style information
-  const styleInfo = resolveStyle(pMeta.styleUrl, stylesRegistry);
-  if (!styleInfo.line && pMeta.inlineLineStyle) {
-    styleInfo.line = pMeta.inlineLineStyle;
-  }
+    const styleInfo = resolveStyle(pMeta.styleUrl, stylesRegistry);
+    if (!styleInfo.line && pMeta.inlineLineStyle) {
+      styleInfo.line = pMeta.inlineLineStyle;
+    }
 
-  const featureName = pMeta.name || documentName || options.defaultName || 'Alignement KML';
+    const featureName = pMeta.name || documentName || options.defaultName || 'Alignement KML';
 
-  // 9. Build Level 2, Level 4 & Level 5 KML Intelligence Metadata Object
-  const kmlMetadata = {
-    name: featureName,
-    description: pMeta.description || null,
-    folders: pMeta.folders || [],
-    styleUrl: pMeta.styleUrl || null,
-    styles: styleInfo,
-    extendedData: pMeta.extendedData || {},
-    time: pMeta.time || null,
-    documentName: documentName,
-    generator: pMeta.generator || null,
-    groundOverlays: collector.groundOverlays || [],
-    photoOverlays: collector.photoOverlays || [],
-    altitudeCoordinates: parsedSpatial.hasAltitude ? parsedSpatial.coordinates3D : null,
-    hasAltitude: parsedSpatial.hasAltitude,
-    altitudeRange: parsedSpatial.altitudeRange,
-  };
-
-  // 10. Return normalized GeoJSON Feature with Level 2 metadata
-  return {
-    type: 'Feature',
-    properties: {
+    const kmlMetadata = {
       name: featureName,
+      description: pMeta.description || null,
+      folders: pMeta.folders || [],
+      styleUrl: pMeta.styleUrl || null,
+      styles: styleInfo,
+      extendedData: pMeta.extendedData || {},
+      time: pMeta.time || null,
+      documentName: documentName,
+      generator: pMeta.generator || null,
+      groundOverlays: collector.groundOverlays || [],
+      photoOverlays: collector.photoOverlays || [],
+      altitudeCoordinates: parsedSpatial.hasAltitude ? parsedSpatial.coordinates3D : null,
+      hasAltitude: parsedSpatial.hasAltitude,
+      altitudeRange: parsedSpatial.altitudeRange,
+      isMultiFeature: false,
+      featureCount: 1,
+    };
+
+    return {
+      type: 'Feature',
+      properties: {
+        name: featureName,
+        sourceFormat: 'KML',
+        sourceCrs: 'EPSG:4326',
+        points_count: coordinates.length,
+        kml_metadata: kmlMetadata,
+      },
+      geometry: {
+        type: 'LineString',
+        coordinates: coordinates,
+      },
       sourceFormat: 'KML',
       sourceCrs: 'EPSG:4326',
-      points_count: coordinates.length,
-      kml_metadata: kmlMetadata,
-    },
-    geometry: {
-      type: 'LineString',
-      coordinates: coordinates,
+      metadata: kmlMetadata,
+    };
+  }
+
+  // 7. Multi-LineString Workflow (Multi-feature spatial mode: preserve all LineStrings separately without merge)
+  const features = collector.lineStrings.map((target, idx) => {
+    const lineNode = target.node;
+    const rawCoords = typeof lineNode === 'string' ? lineNode : (lineNode.coordinates || '');
+    const parsedSpatial = parseKmlCoordinatesWithAltitude(rawCoords);
+    const coordinates = parsedSpatial.coordinates2D;
+    const pMeta = target.meta || {};
+
+    const styleInfo = resolveStyle(pMeta.styleUrl, stylesRegistry);
+    if (!styleInfo.line && pMeta.inlineLineStyle) {
+      styleInfo.line = pMeta.inlineLineStyle;
+    }
+
+    const featureName = pMeta.name || `Tracé ${idx + 1}`;
+    const featureMetadata = {
+      id: idx + 1,
+      name: featureName,
+      description: pMeta.description || null,
+      folders: pMeta.folders || [],
+      styleUrl: pMeta.styleUrl || null,
+      styles: styleInfo,
+      extendedData: pMeta.extendedData || {},
+      time: pMeta.time || null,
+      documentName: documentName,
+      generator: pMeta.generator || null,
+      altitudeCoordinates: parsedSpatial.hasAltitude ? parsedSpatial.coordinates3D : null,
+      hasAltitude: parsedSpatial.hasAltitude,
+      altitudeRange: parsedSpatial.altitudeRange,
+    };
+
+    return {
+      type: 'Feature',
+      id: idx + 1,
+      properties: {
+        id: idx + 1,
+        feature_id: idx + 1,
+        name: featureName,
+        sourceFormat: 'KML',
+        sourceCrs: 'EPSG:4326',
+        points_count: coordinates.length,
+        kml_metadata: featureMetadata,
+        leaflet_style: resolveKmlLeafletStyle(styleInfo),
+      },
+      geometry: {
+        type: 'LineString',
+        coordinates: coordinates,
+      },
+      sourceFormat: 'KML',
+      sourceCrs: 'EPSG:4326',
+      metadata: featureMetadata,
+    };
+  });
+
+  const docMetadata = {
+    name: documentName || options.defaultName || 'Réseau KML',
+    documentName: documentName,
+    featureCount: features.length,
+    groundOverlays: collector.groundOverlays || [],
+    photoOverlays: collector.photoOverlays || [],
+    isMultiFeature: true,
+  };
+
+  return {
+    type: 'FeatureCollection',
+    features: features,
+    properties: {
+      name: documentName || options.defaultName || 'Réseau KML',
+      sourceFormat: 'KML',
+      sourceCrs: 'EPSG:4326',
+      feature_count: features.length,
+      kml_metadata: docMetadata,
     },
     sourceFormat: 'KML',
     sourceCrs: 'EPSG:4326',
-    metadata: kmlMetadata,
+    metadata: docMetadata,
   };
 }
 

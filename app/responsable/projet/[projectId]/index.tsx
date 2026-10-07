@@ -178,6 +178,7 @@ export default function ProjectDetailResponsableScreen() {
           </View>
         </Card>
 
+
         {/* Project-level Map Visualizer Button */}
         <TouchableOpacity
           style={styles.mapButton}
@@ -355,6 +356,7 @@ export default function ProjectDetailResponsableScreen() {
                           size="sm"
                           onPress={() => router.push(`/responsable/chantier/${ch.id}` as any)}
                         />
+
                         <Button
                           title="🗺️ Carte"
                           variant="secondary"
@@ -418,6 +420,8 @@ export default function ProjectDetailResponsableScreen() {
         }
         onCoverUpdated={() => fetchDetails(true)}
       />
+
+
     </SafeAreaView>
   );
 }
@@ -705,5 +709,114 @@ const styles = StyleSheet.create({
   changeCoverBtnText: {
     color: '#FFFFFF',
     fontSize: 12,
+  },
+  // Accès Rapides Styles
+  quickAccessTitle: {
+    fontSize: 14,
+    color: Palette.text,
+    marginBottom: 10,
+  },
+  quickAccessRow: {
+    flexDirection: 'row',
+    gap: 12,
+    marginBottom: 18,
+  },
+  quickAccessCard: {
+    flex: 1,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  quickAccessIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 8,
+  },
+  quickAccessLabel: {
+    fontSize: 13,
+    color: Palette.text,
+  },
+  quickAccessSub: {
+    fontSize: 10,
+    color: Palette.textMuted,
+    marginTop: 2,
+    lineHeight: 14,
+  },
+  quickAccessLink: {
+    fontSize: 11,
+    color: Palette.primary,
+    marginTop: 6,
+  },
+  // Picker Modal Styles
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  modalContent: {
+    width: '100%',
+    maxHeight: '80%',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 10,
+    elevation: 8,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  modalTitle: {
+    fontSize: 16,
+    color: Palette.text,
+  },
+  modalCloseBtn: {
+    padding: 4,
+    borderRadius: 16,
+    backgroundColor: '#F1F5F9',
+  },
+  modalSubtitle: {
+    fontSize: 12,
+    color: Palette.textMuted,
+    marginTop: 6,
+  },
+  pickerItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F1F5F9',
+    gap: 10,
+  },
+  pickerItemNom: {
+    fontSize: 14,
+    color: Palette.text,
+  },
+  pickerItemSub: {
+    fontSize: 11,
+    color: Palette.textMuted,
+    marginTop: 2,
+  },
+  pickerItemBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    backgroundColor: '#EFF6FF',
+  },
+  pickerItemBadgeText: {
+    fontSize: 12,
+    color: '#2563EB',
   },
 });

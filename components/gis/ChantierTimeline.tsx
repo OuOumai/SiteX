@@ -313,7 +313,7 @@ export function ChantierTimeline({ chantierId, token, onTemporalChange, onTimeli
   const chartW = Math.min(Dimensions.get('window').width - 64, 560);
 
   const load = useCallback(async () => {
-    if (!token || !chantierId) return;
+    if (!token || !chantierId || chantierId === 'undefined' || isNaN(Number(chantierId))) return;
     setLoading(true);
     setError(null);
     try {

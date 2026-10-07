@@ -132,6 +132,11 @@ export default function GisSetupScreen() {
   const [aoiCoordinates, setAoiCoordinates] = useState<[number, number][]>([]);
   const [aoiPointCount, setAoiPointCount] = useState<number>(0);
   const [manualCoordsText, setManualCoordsText] = useState<string>('');
+  const [coordEntryType, setCoordEntryType] = useState<'bbox' | 'vertices'>('bbox');
+  const [bboxMinLon, setBboxMinLon] = useState<string>('');
+  const [bboxMinLat, setBboxMinLat] = useState<string>('');
+  const [bboxMaxLon, setBboxMaxLon] = useState<string>('');
+  const [bboxMaxLat, setBboxMaxLat] = useState<string>('');
   const [isSavingAoi, setIsSavingAoi] = useState(false);
   const [savedAoiGeometry, setSavedAoiGeometry] = useState<any>(null);
   const [savedAoiSurface, setSavedAoiSurface] = useState<number | null>(null);
@@ -139,6 +144,20 @@ export default function GisSetupScreen() {
   const [conflictData, setConflictData] = useState<AoiConflictItem[]>([]);
   const [showConflictModal, setShowConflictModal] = useState<boolean>(false);
   const mapRef = useRef<InteractiveGisMapRef>(null);
+
+  // Step 2 & 3: AOI Refinement State
+  const [isAoiRefineMode, setIsAoiRefineMode] = useState<boolean>(false);
+  const [aoiBackup, setAoiBackup] = useState<{
+    coordinates: [number, number][];
+    pointCount: number;
+    manualCoordsText: string;
+    bboxMinLon: string;
+    bboxMinLat: string;
+    bboxMaxLon: string;
+    bboxMaxLat: string;
+    analysisResult: GeoJSONAnalysisResponse | null;
+    selectedCorridor: GeoJSONCandidateCorridor | null;
+  } | null>(null);
 
   const drawingVerticesCount = useMemo(() => {
     if (aoiPointCount > 0) return aoiPointCount;
@@ -314,39 +333,52 @@ export default function GisSetupScreen() {
     }
   };
 
+function extractBboxFromGeoJson(geojson: any): [number, number, number, number] | null {
+  if (!geojson) return null;
+  try {
+    let minLon = Infinity, maxLon = -Infinity, minLat = Infinity, maxLat = -Infinity;
+    let found = false;
+
+    const processCoords = (coordinates: any) => {
+      if (!Array.isArray(coordinates)) return;
+      if (coordinates.length >= 2 && typeof coordinates[0] === 'number' && typeof coordinates[1] === 'number') {
+        const [lon, lat] = coordinates;
+        if (!isNaN(lon) && !isNaN(lat) && Math.abs(lon) <= 180 && Math.abs(lat) <= 90) {
+          minLon = Math.min(minLon, lon);
+          maxLon = Math.max(maxLon, lon);
+          minLat = Math.min(minLat, lat);
+          maxLat = Math.max(maxLat, lat);
+          found = true;
+        }
+      } else {
+        for (const c of coordinates) processCoords(c);
+      }
+    };
+
+    if (geojson.type === 'FeatureCollection' && Array.isArray(geojson.features)) {
+      for (const feat of geojson.features) {
+        if (feat.geometry?.coordinates) processCoords(feat.geometry.coordinates);
+      }
+    } else if (geojson.type === 'Feature' && geojson.geometry?.coordinates) {
+      processCoords(geojson.geometry.coordinates);
+    } else if (geojson.coordinates) {
+      processCoords(geojson.coordinates);
+    }
+
+    if (found && isFinite(minLon) && isFinite(maxLon) && isFinite(minLat) && isFinite(maxLat)) {
+      return [minLon, minLat, maxLon, maxLat];
+    }
+  } catch (e) {}
+  return null;
+}
+
 function extractCenterFromGeoJson(geojson: any): [number, number] | null {
   if (!geojson) return null;
   try {
-    let coords: [number, number][] = [];
-    if (geojson.type === 'FeatureCollection' && Array.isArray(geojson.features)) {
-      for (const feat of geojson.features) {
-        if (feat.geometry?.type === 'LineString' && Array.isArray(feat.geometry.coordinates)) {
-          coords = feat.geometry.coordinates;
-          break;
-        } else if (feat.geometry?.type === 'MultiLineString' && Array.isArray(feat.geometry.coordinates)) {
-          coords = feat.geometry.coordinates[0];
-          break;
-        } else if (feat.geometry?.type === 'Point' && Array.isArray(feat.geometry.coordinates)) {
-          coords = [feat.geometry.coordinates];
-          break;
-        }
-      }
-    } else if (geojson.type === 'Feature' && geojson.geometry) {
-      if (geojson.geometry.type === 'LineString') coords = geojson.geometry.coordinates;
-      else if (geojson.geometry.type === 'MultiLineString') coords = geojson.geometry.coordinates[0];
-    } else if (geojson.type === 'LineString') {
-      coords = geojson.coordinates;
-    } else if (geojson.type === 'MultiLineString') {
-      coords = geojson.coordinates[0];
-    }
-
-    if (coords && coords.length > 0) {
-      const mid = coords[Math.floor(coords.length / 2)];
-      if (Array.isArray(mid) && typeof mid[0] === 'number' && typeof mid[1] === 'number') {
-        if (Math.abs(mid[0]) <= 180 && Math.abs(mid[1]) <= 90) {
-          return [mid[1], mid[0]];
-        }
-      }
+    const bbox = extractBboxFromGeoJson(geojson);
+    if (bbox) {
+      const [minLon, minLat, maxLon, maxLat] = bbox;
+      return [(minLat + maxLat) / 2, (minLon + maxLon) / 2];
     }
   } catch (e) {}
   return null;
@@ -546,6 +578,83 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
     }
   };
 
+  const handleApplyBboxAoi = () => {
+    const minLon = parseFloat(bboxMinLon.trim().replace(',', '.'));
+    const minLat = parseFloat(bboxMinLat.trim().replace(',', '.'));
+    const maxLon = parseFloat(bboxMaxLon.trim().replace(',', '.'));
+    const maxLat = parseFloat(bboxMaxLat.trim().replace(',', '.'));
+
+    if (isNaN(minLon) || isNaN(minLat) || isNaN(maxLon) || isNaN(maxLat)) {
+      Alert.alert('Coordonnées invalides', 'Veuillez saisir des nombres décimaux valides pour les 4 coordonnées (WGS 84 / EPSG:4326).');
+      return;
+    }
+
+    const realMinLon = Math.min(minLon, maxLon);
+    const realMaxLon = Math.max(minLon, maxLon);
+    const realMinLat = Math.min(minLat, maxLat);
+    const realMaxLat = Math.max(minLat, maxLat);
+
+    if (realMinLon === realMaxLon || realMinLat === realMaxLat) {
+      Alert.alert('Coordonnées invalides', 'La longitude et la latitude doivent délimiter une surface non nulle.');
+      return;
+    }
+
+    // 5-point closed rectangular polygon in GeoJSON [lon, lat] format: SW -> SE -> NE -> NW -> SW
+    const rectCoords: [number, number][] = [
+      [realMinLon, realMinLat],
+      [realMaxLon, realMinLat],
+      [realMaxLon, realMaxLat],
+      [realMinLon, realMaxLat],
+      [realMinLon, realMinLat],
+    ];
+
+    setAoiCoordinates(rectCoords);
+    setAoiPointCount(4);
+    setManualCoordsText(rectCoords.map((c) => `${c[0]}, ${c[1]}`).join('\n'));
+    mapRef.current?.setAoiCoordinates?.(rectCoords);
+
+    // Automatically center and zoom map to the created AOI
+    const centerLat = (realMinLat + realMaxLat) / 2;
+    const centerLon = (realMinLon + realMaxLon) / 2;
+    setMapCenter([centerLat, centerLon]);
+
+    const maxSpan = Math.max(realMaxLon - realMinLon, realMaxLat - realMinLat);
+    let zoom = 14;
+    if (maxSpan > 1.0) zoom = 9;
+    else if (maxSpan > 0.5) zoom = 10;
+    else if (maxSpan > 0.2) zoom = 11;
+    else if (maxSpan > 0.08) zoom = 12;
+    else if (maxSpan > 0.03) zoom = 13;
+    else if (maxSpan > 0.01) zoom = 14;
+    else zoom = 15;
+    setMapZoom(zoom);
+  };
+
+  const handleAutoFillBboxFromSource = () => {
+    if (!geojsonData) {
+      Alert.alert('Aucune donnée', 'Veuillez d\'abord importer un fichier KML ou GeoJSON à l\'étape 1.');
+      return;
+    }
+    const bbox = extractBboxFromGeoJson(geojsonData);
+    if (!bbox) {
+      Alert.alert('Emprise introuvable', 'Impossible de calculer l\'emprise du fichier importé.');
+      return;
+    }
+    const [minLon, minLat, maxLon, maxLat] = bbox;
+    const padLon = Math.max(0.002, (maxLon - minLon) * 0.08);
+    const padLat = Math.max(0.002, (maxLat - minLat) * 0.08);
+
+    const paddedMinLon = Number((minLon - padLon).toFixed(6));
+    const paddedMinLat = Number((minLat - padLat).toFixed(6));
+    const paddedMaxLon = Number((maxLon + padLon).toFixed(6));
+    const paddedMaxLat = Number((maxLat + padLat).toFixed(6));
+
+    setBboxMinLon(String(paddedMinLon));
+    setBboxMinLat(String(paddedMinLat));
+    setBboxMaxLon(String(paddedMaxLon));
+    setBboxMaxLat(String(paddedMaxLat));
+  };
+
   // STEP 2 -> 3: Save AOI in PostGIS & Launch Spatial Cross-Analysis (min. 4 vertices)
   const handleSaveAoiAndAnalyze = async () => {
     if (!token || !chantierId) return;
@@ -605,6 +714,137 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
         return;
       }
       Alert.alert('Erreur d\'analyse spatiale', err.message || 'Échec de l\'analyse spatiale PostGIS.');
+    } finally {
+      setIsSavingAoi(false);
+      setIsAnalyzing(false);
+    }
+  };
+
+  // ── AOI Refinement Workflow ──────────────────────────────────────────────
+  const handleStartAoiRefinement = () => {
+    // 1. Take a snapshot of current AOI state & candidates for Cancel (Annuler)
+    setAoiBackup({
+      coordinates: aoiCoordinates ? [...aoiCoordinates] : [],
+      pointCount: aoiPointCount,
+      manualCoordsText,
+      bboxMinLon,
+      bboxMinLat,
+      bboxMaxLon,
+      bboxMaxLat,
+      analysisResult,
+      selectedCorridor,
+    });
+
+    // 2. Clear draft coordinates so user places fresh red refinement points on top of the orange zone
+    setAoiCoordinates([]);
+    setAoiPointCount(0);
+    setManualCoordsText('');
+
+    // 3. Ensure bounding box fields are filled from existing coordinates for coordinate mode
+    if (aoiCoordinates && aoiCoordinates.length >= 4) {
+      const lons = aoiCoordinates.map((c) => c[0]);
+      const lats = aoiCoordinates.map((c) => c[1]);
+      const minLon = Math.min(...lons);
+      const minLat = Math.min(...lats);
+      const maxLon = Math.max(...lons);
+      const maxLat = Math.max(...lats);
+      setBboxMinLon(minLon.toFixed(5));
+      setBboxMinLat(minLat.toFixed(5));
+      setBboxMaxLon(maxLon.toFixed(5));
+      setBboxMaxLat(maxLat.toFixed(5));
+    }
+
+    // 4. Enter Refine Mode & transition to Step 2 in draw mode with red dots
+    setIsAoiRefineMode(true);
+    setAoiMode('draw');
+    setCurrentStep(2);
+  };
+
+  const handleCancelAoiRefinement = () => {
+    if (aoiBackup) {
+      setAoiCoordinates(aoiBackup.coordinates);
+      setAoiPointCount(aoiBackup.pointCount);
+      setManualCoordsText(aoiBackup.manualCoordsText);
+      setBboxMinLon(aoiBackup.bboxMinLon);
+      setBboxMinLat(aoiBackup.bboxMinLat);
+      setBboxMaxLon(aoiBackup.bboxMaxLon);
+      setBboxMaxLat(aoiBackup.bboxMaxLat);
+      setAnalysisResult(aoiBackup.analysisResult);
+      setSelectedCorridor(aoiBackup.selectedCorridor);
+    }
+    setIsAoiRefineMode(false);
+    setAoiBackup(null);
+    setCurrentStep(3);
+  };
+
+  const handleValidateAoiRefinement = async () => {
+    if (!token || !chantierId) return;
+
+    if (aoiCoordinates.length < 4) {
+      Alert.alert(
+        'Zone d\'étude incomplète',
+        'Veuillez définir un polygone d\'au moins 4 sommets pour délimiter l\'emprise.'
+      );
+      return;
+    }
+
+    setIsSavingAoi(true);
+    try {
+      // Pre-check conflict against sibling chantiers
+      try {
+        const conflictCheck = await api.checkChantierAoiConflict(token, chantierId, aoiCoordinates);
+        if (conflictCheck.conflict && conflictCheck.conflicts && conflictCheck.conflicts.length > 0) {
+          setConflictData(conflictCheck.conflicts);
+          setShowConflictModal(true);
+          setIsSavingAoi(false);
+          return;
+        }
+      } catch (checkErr: any) {
+        if (checkErr?.status === 409 || checkErr?.data?.conflict) {
+          setConflictData(checkErr.data?.conflicts || []);
+          setShowConflictModal(true);
+          setIsSavingAoi(false);
+          return;
+        }
+      }
+
+      // 1. Save modified AOI geometry to Chantier (PostGIS)
+      const aoiRes = await api.saveChantierAoi(token, chantierId, aoiCoordinates);
+      setSavedAoiGeometry(aoiRes.chantier.localisation);
+      setSavedAoiSurface(aoiRes.chantier.surface || null);
+
+      // 2. Recompute spatial intersection against ALL original LineStrings from KML/GeoJSON
+      setIsAnalyzing(true);
+      const analysis = await api.analyzeGeoJSONSource(token, chantierId, {
+        geojson: geojsonData,
+        fileName: selectedFileName || 'source.geojson',
+        aoi: aoiCoordinates,
+        source_srid: selectedCrsSrid || crsDetection?.detected_srid || undefined,
+      });
+
+      setAnalysisResult(analysis);
+
+      // 3. Keep previously selected corridor if still intersecting, otherwise pick best candidate
+      if (analysis.candidate_corridors && analysis.candidate_corridors.length > 0) {
+        const stillPresent = selectedCorridor
+          ? analysis.candidate_corridors.find((c: any) => String(c.id) === String(selectedCorridor.id))
+          : null;
+        setSelectedCorridor(stillPresent || analysis.candidate_corridors[0]);
+      } else {
+        setSelectedCorridor(null);
+      }
+
+      // 4. Exit refine mode and return to alignment-selection screen
+      setIsAoiRefineMode(false);
+      setAoiBackup(null);
+      setCurrentStep(3);
+    } catch (err: any) {
+      if (err?.status === 409 || err?.data?.conflict) {
+        setConflictData(err.data?.conflicts || []);
+        setShowConflictModal(true);
+        return;
+      }
+      Alert.alert('Erreur de validation', err.message || 'Échec du re-calcul spatial de l\'AOI.');
     } finally {
       setIsSavingAoi(false);
       setIsAnalyzing(false);
@@ -902,7 +1142,7 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
     }
   };
 
-  const currentAoiGeom = savedAoiGeometry || (aoiCoordinates.length >= 4 ? { type: 'Polygon', coordinates: [aoiCoordinates] } : null);
+  const currentAoiGeom = (aoiCoordinates.length >= 4 ? { type: 'Polygon', coordinates: [aoiCoordinates] } : null) || savedAoiGeometry;
 
   if (isLoadingChantier) {
     return (
@@ -926,70 +1166,44 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
         />
       )}
 
-      {/* Header */}
-      <View style={styles.header}>
-        <TouchableOpacity
-          style={styles.backBtn}
-          onPress={() => {
-            const pId = projectId || (chantier?.projet_id ? String(chantier.projet_id) : undefined);
-            if (pId) {
-              router.replace(`/responsable/projet/${pId}` as any);
-            } else {
-              router.back();
-            }
-          }}
-        >
-          <Ionicons name="arrow-back" size={22} color={Palette.text} />
-        </TouchableOpacity>
-        <View style={{ flex: 1 }}>
-          <Text variant="h1" style={styles.headerTitle}>
-            {isMultiFlow ? `Cadrage SIG • Chantier ${currentNum}/${totalNum}` : 'Configuration GIS'}
-          </Text>
-          <Text variant="subtitle" style={styles.headerSubtitle}>
-            {chantier ? `${chantier.nom} (${chantier.projet_nom || 'Projet'})` : 'Chantier'}
-          </Text>
-        </View>
-
-        {/* 2D / 3D GIS Mode Switcher */}
-        <View style={styles.gisViewModeToggleRow}>
-          {Boolean(kmlMetadata) && (
-            <TouchableOpacity
-              style={styles.kmlHeaderActionBtn}
-              onPress={() => {
-                setSelectedKmlMetadata(kmlMetadata);
-                setShowKmlInfoModal(true);
-              }}
-              activeOpacity={0.8}
-            >
-              <Ionicons name="information-circle-outline" size={14} color="#EA580C" />
-              <Text style={styles.kmlHeaderActionText} weight="bold">
-                Métadonnées KML
-              </Text>
-            </TouchableOpacity>
-          )}
-
+      {/* Header — Blue Zone (Adapted for phone) */}
+      <View style={styles.phoneHeaderBar}>
+        <View style={styles.phoneHeaderLeftGroup}>
           <TouchableOpacity
-            style={[styles.gisViewModeBtn, gisViewMode === '2d' && styles.gisViewModeBtnActive]}
-            onPress={() => setGisViewMode('2d')}
-            activeOpacity={0.8}
+            style={styles.phoneBackBtn}
+            onPress={() => {
+              const pId = projectId || (chantier?.projet_id ? String(chantier.projet_id) : undefined);
+              if (pId) {
+                router.replace(`/responsable/projet/${pId}` as any);
+              } else {
+                router.back();
+              }
+            }}
+            activeOpacity={0.7}
           >
-            <Ionicons name="map-outline" size={13} color={gisViewMode === '2d' ? '#FFFFFF' : Palette.textMuted} />
-            <Text style={[styles.gisViewModeText, gisViewMode === '2d' && styles.gisViewModeTextActive]} weight="bold">
-              2D
-            </Text>
+            <Ionicons name="arrow-back" size={20} color="#1E40AF" />
           </TouchableOpacity>
 
+          <View style={styles.phoneHeaderBadge}>
+            <Ionicons name="business-outline" size={15} color="#93C5FD" />
+            <Text style={styles.phoneHeaderBadgeText} weight="bold">
+              {isMultiFlow ? `CHANTIER ${currentNum} SUR ${totalNum}` : 'CADRAGE SPATIAL'}
+            </Text>
+          </View>
+        </View>
+
+        {Boolean(kmlMetadata) && (
           <TouchableOpacity
-            style={[styles.gisViewModeBtn, gisViewMode === '3d' && styles.gisViewModeBtnActive]}
-            onPress={() => setGisViewMode('3d')}
+            style={styles.phoneKmlInfoBtn}
+            onPress={() => {
+              setSelectedKmlMetadata(kmlMetadata);
+              setShowKmlInfoModal(true);
+            }}
             activeOpacity={0.8}
           >
-            <Ionicons name="cube-outline" size={13} color={gisViewMode === '3d' ? '#FFFFFF' : '#10B981'} />
-            <Text style={[styles.gisViewModeText, gisViewMode === '3d' && styles.gisViewModeTextActive]} weight="bold">
-              3D
-            </Text>
+            <Ionicons name="information-circle" size={20} color="#EA580C" />
           </TouchableOpacity>
-        </View>
+        )}
       </View>
 
       {gisViewMode === '3d' ? (
@@ -1084,21 +1298,7 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
         </View>
       ) : (
         <>
-          {/* Multi-Chantier Progress Banner */}
-      {isMultiFlow && (
-        <View style={styles.multiFlowHeaderBanner}>
-          <View style={styles.multiFlowHeaderBadge}>
-            <Text style={styles.multiFlowHeaderBadgeText} weight="bold">
-              CHANTIER {currentNum} SUR {totalNum}
-            </Text>
-          </View>
-          <Text style={styles.multiFlowHeaderText} weight="semibold">
-            Cadrage spatial et découpage des tronçons du Chantier {currentNum}
-          </Text>
-        </View>
-      )}
-
-      {/* Stepper Header */}
+          {/* Stepper Header */}
       <View style={styles.stepperContainer}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.stepperScroll}>
           {stepsList.map((st) => {
@@ -1449,6 +1649,28 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
               </View>
             )}
 
+            {geojsonData && geojsonData.type === 'FeatureCollection' && Array.isArray(geojsonData.features) && geojsonData.features.length > 1 && (
+              <View style={styles.multiFeatureDetectedBanner}>
+                <View style={styles.multiFeatureDetectedIconWrap}>
+                  <Ionicons name="git-network-outline" size={20} color="#0284C7" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <Text style={styles.multiFeatureDetectedTag}>MODE MULTI-ENTITÉS</Text>
+                    <Text style={styles.multiFeatureCountTag}>
+                      {geojsonData.features.length} LineStrings
+                    </Text>
+                  </View>
+                  <Text style={styles.multiFeatureDetectedTitle} weight="bold">
+                    Tracé multi-linéaire chargé avec succès
+                  </Text>
+                  <Text style={styles.multiFeatureDetectedDesc}>
+                    Les {geojsonData.features.length} tracés sont préservés individuellement avec leurs métadonnées. À l'étape suivante, vous pourrez définir une zone d'étude (AOI) pour filtrer et isoler l'alignement de référence souhaité.
+                  </Text>
+                </View>
+              </View>
+            )}
+
             {geojsonData && (
               <Button
                 title="Passer à la Zone d'Étude (AOI) →"
@@ -1464,15 +1686,36 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
         {/* ── STEP 2: Define Area of Interest (AOI) ── */}
         {currentStep === 2 && (
           <Card variant="elevated" style={styles.stepCard}>
+            {/* Mode Modification Banner */}
+            {isAoiRefineMode && (
+              <View style={styles.refineModeNoticeBar}>
+                <View style={styles.refineModeNoticeIconWrap}>
+                  <Ionicons name="create" size={18} color="#D97706" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.refineModeNoticeTitle} weight="bold">
+                    Mode modification de l'AOI (Points rouges)
+                  </Text>
+                  <Text style={styles.refineModeNoticeSubtitle}>
+                    L'ancienne zone reste en orange. Touchez la carte pour placer des points rouges et affiner l'emprise, puis validez pour recalculer les intersections.
+                  </Text>
+                </View>
+              </View>
+            )}
+
             <View style={styles.stepHeader}>
-              <View style={styles.stepBadgeNum}>
-                <Text style={styles.stepBadgeNumText}>ÉTAPE 2 / 7</Text>
+              <View style={[styles.stepBadgeNum, isAoiRefineMode && styles.stepBadgeNumRefine]}>
+                <Text style={[styles.stepBadgeNumText, isAoiRefineMode && styles.stepBadgeNumTextRefine]}>
+                  {isAoiRefineMode ? 'AFFINEMENT DE L’AOI' : 'ÉTAPE 2 / 7'}
+                </Text>
               </View>
               <Text variant="h2" style={styles.stepTitle}>
-                Zone d'Étude du Chantier (AOI)
+                {isAoiRefineMode ? 'Mode modification de l\'AOI' : 'Zone d\'Étude du Chantier (AOI)'}
               </Text>
               <Text style={styles.stepDescription}>
-                Délimitez la portion spatiale de l’infrastructure qui appartient à ce chantier (min. 4 points).
+                {isAoiRefineMode
+                  ? 'Faites glisser les sommets pour restreindre ou agrandir l\'emprise du chantier.'
+                  : 'Délimitez la portion spatiale de l’infrastructure qui appartient à ce chantier (min. 4 points).'}
               </Text>
             </View>
 
@@ -1579,7 +1822,13 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
                   }}
                   searchLocation={selectedLocation}
                   enableAoiDrawing={aoiMode === 'draw'}
-                  aoiGeometry={currentAoiGeom}
+                  aoiGeometry={isAoiRefineMode ? null : (savedAoiGeometry || null)}
+                  refinePreviousAoiGeometry={
+                    isAoiRefineMode && aoiBackup?.coordinates && aoiBackup.coordinates.length >= 4
+                      ? { type: 'Polygon', coordinates: [aoiBackup.coordinates] }
+                      : (isAoiRefineMode && savedAoiGeometry ? savedAoiGeometry : null)
+                  }
+                  isRefineMode={isAoiRefineMode}
                   existingAois={siblingAois}
                   center={mapCenter}
                   zoom={mapZoom}
@@ -1611,14 +1860,16 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
                     </View>
                     <View style={{ flex: 1 }}>
                       <Text style={styles.drawingModeTitle} weight="bold">
-                        Mode dessin actif
+                        {isAoiRefineMode ? 'Points rouges d\'affinement actifs' : 'Mode dessin actif'}
                       </Text>
                       <Text style={styles.drawingModeSubtitle}>
-                        {drawingVerticesCount === 0
-                          ? 'Minimum 4 sommets • Touchez la carte pour commencer'
-                          : drawingVerticesCount < 4
-                          ? `${drawingVerticesCount} sommet${drawingVerticesCount > 1 ? 's' : ''} placé${drawingVerticesCount > 1 ? 's' : ''} (min. 4 requis)`
-                          : `${drawingVerticesCount} sommets placés • Prêt à finaliser`}
+                        {isAoiRefineMode
+                          ? `${drawingVerticesCount} point${drawingVerticesCount > 1 ? 's' : ''} rouge${drawingVerticesCount > 1 ? 's' : ''} • Touchez la zone pour tracer l'emprise précise`
+                          : (drawingVerticesCount === 0
+                            ? 'Minimum 4 sommets • Touchez la carte pour commencer'
+                            : drawingVerticesCount < 4
+                            ? `${drawingVerticesCount} sommet${drawingVerticesCount > 1 ? 's' : ''} placé${drawingVerticesCount > 1 ? 's' : ''} (min. 4 requis)`
+                            : `${drawingVerticesCount} sommets placés • Prêt à finaliser`)}
                       </Text>
                     </View>
                     <View
@@ -1726,18 +1977,150 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
               )}
 
               {aoiMode === 'coords' && (
-                <View style={{ marginVertical: 10 }}>
-                  <Text style={styles.coordsInputLabel} weight="bold">
-                    Saisissez les sommets (Longitude, Latitude par ligne — min. 4 sommets) :
-                  </Text>
-                  <TextInput
-                    style={styles.coordsTextInput}
-                    multiline
-                    numberOfLines={4}
-                    value={manualCoordsText}
-                    onChangeText={handleParseManualCoords}
-                    placeholder="-6.88, 33.95&#10;-6.55, 34.30&#10;-6.50, 34.28&#10;-6.85, 33.92&#10;-6.88, 33.95"
-                  />
+                <View style={styles.coordsEntryContainer}>
+                  {/* Sub-mode selector: Bounding Box (Min/Max) vs Custom Vertices */}
+                  <View style={styles.coordSubTabsRow}>
+                    <TouchableOpacity
+                      style={[styles.coordSubTabBtn, coordEntryType === 'bbox' && styles.coordSubTabBtnActive]}
+                      onPress={() => setCoordEntryType('bbox')}
+                      activeOpacity={0.75}
+                    >
+                      <Ionicons
+                        name="scan-outline"
+                        size={14}
+                        color={coordEntryType === 'bbox' ? Palette.primary : Palette.textMuted}
+                      />
+                      <Text
+                        style={[styles.coordSubTabText, coordEntryType === 'bbox' && styles.coordSubTabTextActive]}
+                        weight="semibold"
+                      >
+                        Rectangle Min / Max (Recommandé)
+                      </Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={[styles.coordSubTabBtn, coordEntryType === 'vertices' && styles.coordSubTabBtnActive]}
+                      onPress={() => setCoordEntryType('vertices')}
+                      activeOpacity={0.75}
+                    >
+                      <Ionicons
+                        name="list-outline"
+                        size={14}
+                        color={coordEntryType === 'vertices' ? Palette.primary : Palette.textMuted}
+                      />
+                      <Text
+                        style={[styles.coordSubTabText, coordEntryType === 'vertices' && styles.coordSubTabTextActive]}
+                        weight="semibold"
+                      >
+                        Liste de Sommets
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  {coordEntryType === 'bbox' ? (
+                    <View style={styles.bboxContainer}>
+                      <Text style={styles.coordsInputLabel} weight="bold">
+                        Coordonnées de l'emprise rectangulaire (WGS 84 / EPSG:4326) :
+                      </Text>
+                      <Text style={styles.coordsInputHelp}>
+                        Saisissez les bornes géographiques minimales et maximales pour cadrer la zone d'étude.
+                      </Text>
+
+                      <View style={styles.bboxGrid}>
+                        {/* Minimum Longitude */}
+                        <View style={styles.bboxInputCol}>
+                          <Text style={styles.bboxFieldLabel}>Longitude Min</Text>
+                          <TextInput
+                            style={styles.bboxTextInput}
+                            value={bboxMinLon}
+                            onChangeText={setBboxMinLon}
+                            placeholder="-5.7950"
+                            placeholderTextColor="#94A3B8"
+                            keyboardType="numeric"
+                          />
+                        </View>
+
+                        {/* Minimum Latitude */}
+                        <View style={styles.bboxInputCol}>
+                          <Text style={styles.bboxFieldLabel}>Latitude Min</Text>
+                          <TextInput
+                            style={styles.bboxTextInput}
+                            value={bboxMinLat}
+                            onChangeText={setBboxMinLat}
+                            placeholder="35.7450"
+                            placeholderTextColor="#94A3B8"
+                            keyboardType="numeric"
+                          />
+                        </View>
+
+                        {/* Maximum Longitude */}
+                        <View style={styles.bboxInputCol}>
+                          <Text style={styles.bboxFieldLabel}>Longitude Max</Text>
+                          <TextInput
+                            style={styles.bboxTextInput}
+                            value={bboxMaxLon}
+                            onChangeText={setBboxMaxLon}
+                            placeholder="-5.7800"
+                            placeholderTextColor="#94A3B8"
+                            keyboardType="numeric"
+                          />
+                        </View>
+
+                        {/* Maximum Latitude */}
+                        <View style={styles.bboxInputCol}>
+                          <Text style={styles.bboxFieldLabel}>Latitude Max</Text>
+                          <TextInput
+                            style={styles.bboxTextInput}
+                            value={bboxMaxLat}
+                            onChangeText={setBboxMaxLat}
+                            placeholder="35.7750"
+                            placeholderTextColor="#94A3B8"
+                            keyboardType="numeric"
+                          />
+                        </View>
+                      </View>
+
+                      <View style={styles.bboxActionsRow}>
+                        <TouchableOpacity
+                          style={styles.bboxApplyBtn}
+                          onPress={handleApplyBboxAoi}
+                          activeOpacity={0.8}
+                        >
+                          <Ionicons name="checkmark-done" size={16} color="#FFFFFF" />
+                          <Text style={styles.bboxApplyBtnText} weight="bold">
+                            Appliquer le rectangle AOI
+                          </Text>
+                        </TouchableOpacity>
+
+                        {Boolean(geojsonData) && (
+                          <TouchableOpacity
+                            style={styles.bboxAutofillBtn}
+                            onPress={handleAutoFillBboxFromSource}
+                            activeOpacity={0.75}
+                          >
+                            <Ionicons name="flash-outline" size={15} color="#0284C7" />
+                            <Text style={styles.bboxAutofillBtnText} weight="semibold">
+                              Ajuster à l'emprise du tracé
+                            </Text>
+                          </TouchableOpacity>
+                        )}
+                      </View>
+                    </View>
+                  ) : (
+                    <View style={{ marginVertical: 8 }}>
+                      <Text style={styles.coordsInputLabel} weight="bold">
+                        Saisissez les sommets (Longitude, Latitude par ligne — min. 4 sommets) :
+                      </Text>
+                      <TextInput
+                        style={styles.coordsTextInput}
+                        multiline
+                        numberOfLines={4}
+                        value={manualCoordsText}
+                        onChangeText={handleParseManualCoords}
+                        placeholder="-6.88, 33.95&#10;-6.55, 34.30&#10;-6.50, 34.28&#10;-6.85, 33.92&#10;-6.88, 33.95"
+                      />
+                    </View>
+                  )}
                 </View>
               )}
 
@@ -1764,17 +2147,54 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
               </View>
             </View>
 
-            {/* 3 — Valider la zone */}
-            <View style={{ marginTop: 16 }}>
-              <Button
-                title="Analyser →"
-                variant="primary"
-                size="lg"
-                loading={isSavingAoi || isAnalyzing}
-                disabled={aoiCoordinates.length < 4}
-                onPress={handleSaveAoiAndAnalyze}
-              />
-            </View>
+            {/* 3 — Valider la zone / Actions */}
+            {isAoiRefineMode ? (
+              <View style={styles.refineActionButtonsRow}>
+                <TouchableOpacity
+                  style={styles.refineCancelBtn}
+                  onPress={handleCancelAoiRefinement}
+                  disabled={isSavingAoi || isAnalyzing}
+                  activeOpacity={0.7}
+                >
+                  <Ionicons name="close-circle-outline" size={18} color="#475569" />
+                  <Text style={styles.refineCancelBtnText} weight="bold">
+                    Annuler
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[
+                    styles.refineValidateBtn,
+                    aoiCoordinates.length < 4 && styles.refineValidateBtnDisabled,
+                  ]}
+                  onPress={handleValidateAoiRefinement}
+                  disabled={aoiCoordinates.length < 4 || isSavingAoi || isAnalyzing}
+                  activeOpacity={0.8}
+                >
+                  {isSavingAoi || isAnalyzing ? (
+                    <ActivityIndicator size="small" color="#FFFFFF" />
+                  ) : (
+                    <>
+                      <Ionicons name="checkmark-done" size={18} color="#FFFFFF" />
+                      <Text style={styles.refineValidateBtnText} weight="bold">
+                        Valider l'affinement
+                      </Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <View style={{ marginTop: 16 }}>
+                <Button
+                  title="Analyser →"
+                  variant="primary"
+                  size="lg"
+                  loading={isSavingAoi || isAnalyzing}
+                  disabled={aoiCoordinates.length < 4}
+                  onPress={handleSaveAoiAndAnalyze}
+                />
+              </View>
+            )}
           </Card>
         )}
 
@@ -1802,6 +2222,87 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
                 </Text>
               </View>
             </View>
+
+            {/* Zero-Candidate Warning & Refine Banner */}
+            {candidateCorridors.length === 0 && (
+              <View style={styles.zeroCandidateBanner}>
+                <View style={styles.zeroCandidateHeader}>
+                  <Ionicons name="alert-circle" size={24} color="#DC2626" />
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.zeroCandidateTitle} weight="bold">
+                      Aucun tracé linéaire n'intersecte la zone d'étude
+                    </Text>
+                    <Text style={styles.zeroCandidateSubtitle}>
+                      Sur les {analysisResult.total_features} tracés détectés dans le fichier, aucun ne traverse l'emprise définie. Votre fichier spatial reste valide.
+                    </Text>
+                  </View>
+                </View>
+                <TouchableOpacity
+                  style={styles.modifyAoiBtn}
+                  onPress={handleStartAoiRefinement}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons name="create-outline" size={16} color="#DC2626" />
+                  <Text style={styles.modifyAoiBtnText} weight="bold">
+                    ✏️ Modifier / Redessiner la Zone d'Étude (AOI)
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {/* Single-Candidate Confirmation Banner */}
+            {candidateCorridors.length === 1 && selectedCorridor && (
+              <View style={styles.singleCandidateBanner}>
+                <View style={styles.singleCandidateHeader}>
+                  <Ionicons name="checkmark-circle" size={22} color="#16A34A" />
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.singleCandidateTitle} weight="bold">
+                      1 seul tracé linéaire intersecte l'emprise !
+                    </Text>
+                    <Text style={styles.singleCandidateDesc}>
+                      « {selectedCorridor.nom} » ({selectedCorridor.length_in_aoi_km} km dans l'AOI) est isolé comme axe unique de référence (sur {analysisResult.total_features} tracés au total).
+                    </Text>
+                  </View>
+                </View>
+                <TouchableOpacity
+                  style={styles.refineAoiGhostBtn}
+                  onPress={handleStartAoiRefinement}
+                  activeOpacity={0.7}
+                >
+                  <Ionicons name="locate-outline" size={14} color="#64748B" />
+                  <Text style={styles.refineAoiGhostText}>🔍 Affiner davantage l'AOI</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {/* Multi-Candidate Selection & Refinement Banner */}
+            {candidateCorridors.length > 1 && (
+              <View style={styles.multiCandidateBanner}>
+                <View style={styles.multiCandidateHeaderRow}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 }}>
+                    <Ionicons name="git-branch-outline" size={20} color="#D97706" />
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.multiCandidateTitle} weight="bold">
+                        {candidateCorridors.length} tracés linéaires intersectent l'emprise (sur {analysisResult.total_features})
+                      </Text>
+                      <Text style={styles.multiCandidateSubtitle}>
+                        Sélectionnez l'axe souhaité ci-dessous, ou affinez l'AOI pour isoler un tronçon précis.
+                      </Text>
+                    </View>
+                  </View>
+                  <TouchableOpacity
+                    style={styles.refineAoiBtn}
+                    onPress={handleStartAoiRefinement}
+                    activeOpacity={0.75}
+                  >
+                    <Ionicons name="locate-outline" size={15} color="#D97706" />
+                    <Text style={styles.refineAoiBtnText} weight="semibold">
+                      🔍 Affiner l'AOI
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            )}
 
             {/* Map with AOI and Candidate Corridors */}
             <View style={styles.mapWrapper}>
@@ -2090,15 +2591,25 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
               </View>
             )}
 
-            <Button
-              title={`Sélectionner ce Linéaire (${selectedCorridor ? selectedCorridor.nom : ''}) →`}
-              variant="primary"
-              size="lg"
-              loading={isUploading}
-              disabled={!selectedCorridor}
-              onPress={handleConfirmReferenceAlignment}
-              style={{ marginTop: 18 }}
-            />
+            {candidateCorridors.length > 0 ? (
+              <Button
+                title={`Valider cet Alignement (${selectedCorridor ? selectedCorridor.nom : ''}) →`}
+                variant="primary"
+                size="lg"
+                loading={isUploading}
+                disabled={!selectedCorridor}
+                onPress={handleConfirmReferenceAlignment}
+                style={{ marginTop: 18 }}
+              />
+            ) : (
+              <Button
+                title="✏️ Modifier la Zone d'Étude (AOI) pour sélectionner un tracé"
+                variant="outline"
+                size="lg"
+                onPress={handleStartAoiRefinement}
+                style={{ marginTop: 18 }}
+              />
+            )}
           </Card>
         )}
 
@@ -5098,5 +5609,434 @@ const styles = StyleSheet.create({
   returnTo2dText: {
     color: '#FFFFFF',
     fontSize: 12,
+  },
+  // Step 1: Multi-Feature Detection Banner
+  multiFeatureDetectedBanner: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+    backgroundColor: 'rgba(2, 132, 199, 0.08)',
+    borderColor: 'rgba(2, 132, 199, 0.3)',
+    borderWidth: 1.5,
+    borderRadius: 12,
+    padding: 14,
+    marginTop: 14,
+  },
+  multiFeatureDetectedIconWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(2, 132, 199, 0.15)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 2,
+  },
+  multiFeatureDetectedTag: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#0284C7',
+    letterSpacing: 0.5,
+  },
+  multiFeatureCountTag: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#0369A1',
+    backgroundColor: 'rgba(2, 132, 199, 0.18)',
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: 4,
+  },
+  multiFeatureDetectedTitle: {
+    fontSize: 14,
+    color: '#0C4A6E',
+    marginTop: 2,
+  },
+  multiFeatureDetectedDesc: {
+    fontSize: 12,
+    color: '#0369A1',
+    lineHeight: 17,
+    marginTop: 4,
+  },
+  // Step 2: Coordinate Entry (BBox & Vertices)
+  coordsEntryContainer: {
+    marginVertical: 12,
+    backgroundColor: '#F8FAFC',
+    borderRadius: 12,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  coordSubTabsRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 12,
+  },
+  coordSubTabBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 8,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+  },
+  coordSubTabBtnActive: {
+    backgroundColor: 'rgba(23, 107, 91, 0.08)',
+    borderColor: Palette.primary,
+  },
+  coordSubTabText: {
+    fontSize: 12,
+    color: Palette.textMuted,
+  },
+  coordSubTabTextActive: {
+    color: Palette.primary,
+  },
+  bboxContainer: {
+    marginTop: 4,
+  },
+  coordsInputHelp: {
+    fontSize: 11,
+    color: Palette.textMuted,
+    marginBottom: 10,
+    lineHeight: 16,
+  },
+  bboxGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+    marginBottom: 12,
+  },
+  bboxInputCol: {
+    flex: 1,
+    minWidth: '45%',
+  },
+  bboxFieldLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#475569',
+    marginBottom: 4,
+  },
+  bboxTextInput: {
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    fontSize: 13,
+    color: '#0F172A',
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+  },
+  bboxActionsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+    alignItems: 'center',
+  },
+  bboxApplyBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: Palette.primary,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    borderRadius: 8,
+  },
+  bboxApplyBtnText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+  },
+  bboxAutofillBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: 'rgba(2, 132, 199, 0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(2, 132, 199, 0.4)',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  bboxAutofillBtnText: {
+    color: '#0284C7',
+    fontSize: 12,
+  },
+  // Step 3: Candidate Result Banners
+  zeroCandidateBanner: {
+    backgroundColor: '#FEF2F2',
+    borderWidth: 1.5,
+    borderColor: '#F87171',
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 14,
+  },
+  zeroCandidateHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+  },
+  zeroCandidateTitle: {
+    fontSize: 14,
+    color: '#991B1B',
+  },
+  zeroCandidateSubtitle: {
+    fontSize: 12,
+    color: '#B91C1C',
+    marginTop: 3,
+    lineHeight: 17,
+  },
+  modifyAoiBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1.5,
+    borderColor: '#DC2626',
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    marginTop: 10,
+    alignSelf: 'flex-start',
+  },
+  modifyAoiBtnText: {
+    color: '#DC2626',
+    fontSize: 12,
+  },
+  singleCandidateBanner: {
+    backgroundColor: '#F0FDF4',
+    borderWidth: 1.5,
+    borderColor: '#86EFAC',
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 14,
+  },
+  singleCandidateHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+  },
+  singleCandidateTitle: {
+    fontSize: 14,
+    color: '#166534',
+  },
+  singleCandidateDesc: {
+    fontSize: 12,
+    color: '#15803D',
+    marginTop: 2,
+    lineHeight: 17,
+  },
+  refineAoiGhostBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+    marginTop: 8,
+    alignSelf: 'flex-start',
+  },
+  refineAoiGhostText: {
+    fontSize: 11,
+    color: '#475569',
+    fontWeight: '600',
+  },
+  multiCandidateBanner: {
+    backgroundColor: '#FFFBEB',
+    borderWidth: 1.5,
+    borderColor: '#FCD34D',
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 14,
+  },
+  multiCandidateHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+    flexWrap: 'wrap',
+  },
+  multiCandidateTitle: {
+    fontSize: 13,
+    color: '#92400E',
+  },
+  multiCandidateSubtitle: {
+    fontSize: 11,
+    color: '#B45309',
+    marginTop: 2,
+    lineHeight: 16,
+  },
+  refineAoiBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1.5,
+    borderColor: '#D97706',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+  },
+  refineAoiBtnText: {
+    color: '#D97706',
+    fontSize: 12,
+  },
+  // AOI Refinement Mode Styles
+  refineModeNoticeBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FEF3C7',
+    borderWidth: 1.5,
+    borderColor: '#F59E0B',
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 14,
+    gap: 10,
+  },
+  refineModeNoticeIconWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#FDE68A',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  refineModeNoticeTitle: {
+    fontSize: 13.5,
+    color: '#92400E',
+  },
+  refineModeNoticeSubtitle: {
+    fontSize: 11.5,
+    color: '#B45309',
+    marginTop: 2,
+    lineHeight: 16,
+  },
+  stepBadgeNumRefine: {
+    backgroundColor: '#FEF3C7',
+    borderColor: '#F59E0B',
+  },
+  stepBadgeNumTextRefine: {
+    color: '#B45309',
+  },
+  refineActionButtonsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginTop: 18,
+  },
+  refineCancelBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 14,
+    borderRadius: 12,
+    backgroundColor: '#F1F5F9',
+    borderWidth: 1.5,
+    borderColor: '#CBD5E1',
+  },
+  refineCancelBtnText: {
+    color: '#475569',
+    fontSize: 14,
+  },
+  refineValidateBtn: {
+    flex: 1.4,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 14,
+    borderRadius: 12,
+    backgroundColor: '#D97706',
+    shadowColor: '#D97706',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  refineValidateBtnDisabled: {
+    backgroundColor: '#94A3B8',
+    shadowOpacity: 0,
+    elevation: 0,
+  },
+  refineValidateBtnText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+  },
+  // Phone-Adapted Blue Zone Header
+  phoneHeaderBar: {
+    marginHorizontal: 16,
+    marginTop: Platform.OS === 'ios' ? 6 : 10,
+    marginBottom: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 16,
+    backgroundColor: '#EFF6FF',
+    borderWidth: 1.5,
+    borderColor: '#BFDBFE',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    shadowColor: '#1E40AF',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 5,
+    elevation: 2,
+  },
+  phoneHeaderLeftGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  phoneBackBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1.5,
+    borderColor: '#BFDBFE',
+    shadowColor: '#1E40AF',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.08,
+    shadowRadius: 3,
+    elevation: 1,
+  },
+  phoneHeaderBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    backgroundColor: '#1E40AF',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 20,
+    shadowColor: '#1E40AF',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  phoneHeaderBadgeText: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#FFFFFF',
+    letterSpacing: 0.7,
+  },
+  phoneKmlInfoBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#FFF7ED',
+    borderWidth: 1.2,
+    borderColor: '#FDBA74',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 });

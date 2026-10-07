@@ -80,32 +80,57 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [isLoading, setIsLoading] = useState<boolean>(true);
 
   useEffect(() => {
+    let isMounted = true;
+
+    // Safety timeout: ensure startup screen is guaranteed to resolve even if device storage hangs
+    const safetyTimer = setTimeout(() => {
+      if (isMounted) setIsLoading(false);
+    }, 2500);
+
     async function loadStoredAuth() {
       try {
         const storedToken = await getStoredItem(TOKEN_KEY);
         const storedUserJson = await getStoredItem(USER_KEY);
 
+        if (!isMounted) return;
+
         if (storedToken && storedUserJson) {
           setToken(storedToken);
           setUser(JSON.parse(storedUserJson));
 
-          // Silently refresh latest profile from server
-          try {
-            const freshUser = await api.getCurrentUser(storedToken);
-            setUser(freshUser);
-            await setStoredItem(USER_KEY, JSON.stringify(freshUser));
-          } catch (e) {
-            // Ignore offline/network refresh failure
-          }
+          // Release the initial startup screen immediately so the UI opens without delay
+          clearTimeout(safetyTimer);
+          setIsLoading(false);
+
+          // Silently refresh latest profile from server in background
+          api.getCurrentUser(storedToken)
+            .then(async (freshUser) => {
+              if (isMounted) {
+                setUser(freshUser);
+                await setStoredItem(USER_KEY, JSON.stringify(freshUser));
+              }
+            })
+            .catch((e) => {
+              if (__DEV__) console.log('[Auth] Background profile refresh deferred:', e?.message);
+            });
+          return;
         }
       } catch (err) {
         console.error('Failed to load auth state from secure storage:', err);
       } finally {
-        setIsLoading(false);
+        if (isMounted) {
+          clearTimeout(safetyTimer);
+          setIsLoading(false);
+        }
       }
     }
 
     loadStoredAuth();
+
+    return () => {
+      isMounted = false;
+      clearTimeout(safetyTimer);
+    };
   }, []);
 
   const login = useCallback(async (payload: LoginPayload) => {

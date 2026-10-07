@@ -1,4 +1,4 @@
-import { Platform } from 'react-native';
+import { Platform, NativeModules } from 'react-native';
 import Constants from 'expo-constants';
 import * as FileSystem from 'expo-file-system/legacy';
 
@@ -16,7 +16,7 @@ import * as FileSystem from 'expo-file-system/legacy';
  * YOUR MACHINE'S WI-FI IP: 192.168.2.153
  * Update DEV_LAN_IP below if your router assigns a different IP.
  */
-const DEV_LAN_IP = '192.168.2.153';
+const DEV_LAN_IP = '192.168.3.118';
 const BACKEND_PORT = 5000;
 
 /** Returns true only for reachable RFC-1918 private LAN addresses (excluding VirtualBox host-only network) */
@@ -30,6 +30,7 @@ function isPrivateLanIp(host: string): boolean {
 }
 
 let cachedApiUrl: string | null = null;
+let hasLoggedApiUrl = false;
 
 export function resetApiUrlCache(): void {
   cachedApiUrl = null;
@@ -45,32 +46,38 @@ function resolveApiUrl(): string {
     return `http://localhost:${BACKEND_PORT}`;
   }
 
-  // 2. MOBILE: Extract host IP directly from the Metro connection that the phone used to scan the QR code
+  // 2. MOBILE: Extract host IP directly from bundle URL or Metro connection
+  // Try NativeModules.SourceCode.scriptURL first — 100% reliable as it is the exact URL downloaded
+  if (NativeModules?.SourceCode?.scriptURL) {
+    const match = (NativeModules.SourceCode.scriptURL as string).match(/:\/\/([^:/]+)/);
+    if (match && match[1] && isPrivateLanIp(match[1])) {
+      return `http://${match[1]}:${BACKEND_PORT}`;
+    }
+  }
+
   const hostUri =
     Constants.expoConfig?.hostUri ||
     (Constants as any).manifest2?.launchAsset?.url ||
-    (Constants as any).manifest?.debuggerHost;
+    (Constants as any).manifest?.debuggerHost ||
+    (Constants as any).experienceUrl ||
+    (Constants as any).linkingUri;
 
   if (hostUri) {
-    const host = hostUri.split(':')[0];
+    const rawHost = hostUri.replace(/^https?:\/\//, '').replace(/^exp:\/\//, '');
+    const host = rawHost.split(':')[0].split('/')[0];
     if (host && isPrivateLanIp(host)) {
-      const url = `http://${host}:${BACKEND_PORT}`;
-      if (__DEV__) console.log('[API] Auto-detected Metro LAN IP:', url);
-      return url;
+      return `http://${host}:${BACKEND_PORT}`;
     }
   }
 
   // 3. Explicit env override (if specified)
   if (process.env.EXPO_PUBLIC_API_URL) {
-    if (__DEV__) console.log('[API] Using EXPO_PUBLIC_API_URL:', process.env.EXPO_PUBLIC_API_URL);
     return process.env.EXPO_PUBLIC_API_URL;
   }
 
   // 4. Development physical device fallback
   if (__DEV__) {
-    const url = `http://${DEV_LAN_IP}:${BACKEND_PORT}`;
-    if (__DEV__) console.log('[API] Using DEV_LAN_IP fallback:', url);
-    return url;
+    return `http://${DEV_LAN_IP}:${BACKEND_PORT}`;
   }
 
   // 5. Emulator default
@@ -85,6 +92,10 @@ function getApiUrl(): string {
     return cachedApiUrl;
   }
   cachedApiUrl = resolveApiUrl();
+  if (__DEV__ && !hasLoggedApiUrl) {
+    hasLoggedApiUrl = true;
+    console.log('[API] Auto-detected Metro LAN IP:', cachedApiUrl);
+  }
   return cachedApiUrl;
 }
 
@@ -1306,11 +1317,17 @@ class ApiClient {
       ...(options.headers as Record<string, string>),
     };
 
+    const timeoutMs = (options as any).timeoutMs ?? 10000;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
     try {
       const response = await fetch(url, {
         ...options,
         headers,
+        signal: controller.signal,
       });
+      clearTimeout(timeoutId);
 
       // Read as text first — response.json() crashes with a cryptic error when
       // a tunnel proxy (localtunnel, ngrok) returns an HTML interstitial page
@@ -1349,6 +1366,12 @@ class ApiClient {
 
       return data as T;
     } catch (err: any) {
+      clearTimeout(timeoutId);
+      if (err.name === 'AbortError' || err.message?.includes('aborted')) {
+        throw new Error(
+          `Délai d'attente dépassé (${Math.round(timeoutMs / 1000)}s) pour contacter le serveur (${this.baseUrl}). Vérifiez que le serveur Node.js est accessible.`
+        );
+      }
       if (
         err.message === 'Network request failed' ||
         err.message?.includes('fetch failed') ||

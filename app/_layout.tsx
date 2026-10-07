@@ -22,13 +22,17 @@ function RootNavigationGuard() {
   const router = useRouter();
 
   useEffect(() => {
-    if (isLoading) return;
+    if (isLoading || !(segments as string[])?.length) return;
 
     const inAuthGroup = segments[0] === '(auth)';
     const inAdminGroup = segments[0] === 'admin';
     const inResponsableGroup = segments[0] === 'responsable';
     const isAdmin = user?.role_nom === 'Administrateur' || user?.role_id === 1;
     const isResponsable = user?.role_nom === 'Responsable' || user?.role_id === 2;
+
+    if (__DEV__) {
+      console.log(`[RootNav] Ready | user: ${user?.email || 'anon'} | role: ${user?.role_nom || 'none'} | seg: ${segments.join('/')}`);
+    }
 
     if (!token && !inAuthGroup) {
       // Redirect unauthenticated user to login screen

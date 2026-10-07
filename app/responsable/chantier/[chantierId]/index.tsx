@@ -360,6 +360,292 @@ export default function ChantierDetailResponsableScreen() {
           )}
         </Card>
 
+        {/* Avancement Global */}
+        <Card variant="elevated" style={styles.avancementCard}>
+          <View style={styles.avancementHeader}>
+            <Text style={styles.sectionLabel} weight="bold">Avancement Global</Text>
+            <Text style={styles.avancementPercent} weight="bold">
+              {chantier?.avancement || 0}%
+            </Text>
+          </View>
+          {chantier?.avancement_date && (
+            <Text style={styles.avancementDate}>
+              Dernière mise à jour : {chantier.avancement_date}
+            </Text>
+          )}
+          <View style={styles.progressBarBg}>
+            <View
+              style={[
+                styles.progressBarFill,
+                { width: `${Math.min(chantier?.avancement || 0, 100)}%` },
+              ]}
+            />
+          </View>
+          <View style={styles.metricsRow}>
+            <View style={styles.metricCell}>
+              <Text style={styles.metricSub}>Longueur Chantier</Text>
+              <Text style={styles.metricValue} weight="bold">
+                {chantier?.reference_alignment?.length_km || 0} km
+              </Text>
+            </View>
+            <View style={styles.metricCell}>
+              <Text style={styles.metricSub}>Tronçons</Text>
+              <Text style={styles.metricValue} weight="bold">
+                {troncons.length}
+              </Text>
+            </View>
+          </View>
+        </Card>
+
+        {/* Accès Rapides */}
+        <Text style={styles.quickAccessTitle} weight="bold">Accès rapides</Text>
+        <View style={styles.quickAccessRow}>
+          <TouchableOpacity
+            style={styles.quickAccessCard}
+            activeOpacity={0.7}
+            onPress={() => router.push(`/chantier/avancement/${chantierId}` as any)}
+          >
+            <View style={[styles.quickAccessIcon, { backgroundColor: '#F0FDF4' }]}>
+              <Ionicons name="trending-up" size={22} color="#16A34A" />
+            </View>
+            <Text style={styles.quickAccessLabel} weight="bold">Avancement</Text>
+            <Text style={styles.quickAccessSub}>{"Voir les statistiques et l'historique détaillé"}</Text>
+            <Text style={styles.quickAccessLink} weight="semibold">Consulter →</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.quickAccessCard}
+            activeOpacity={0.7}
+            onPress={() => router.push(`/chantier/images/${chantierId}` as any)}
+          >
+            <View style={[styles.quickAccessIcon, { backgroundColor: '#EFF6FF' }]}>
+              <Ionicons name="images-outline" size={22} color="#2563EB" />
+            </View>
+            <Text style={styles.quickAccessLabel} weight="bold">Images</Text>
+            <Text style={styles.quickAccessSub}>Voir les photos et observations terrain</Text>
+            <Text style={styles.quickAccessLink} weight="semibold">Consulter →</Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* ─── Level 6: Chronologie & Replay spatio-temporel ─── */}
+        {token && Boolean(chantierId) && (
+          <Card variant="elevated" style={styles.sectionCard}>
+            <TouchableOpacity
+              style={styles.collapsibleHeader}
+              activeOpacity={0.7}
+              onPress={() => setTimelineExpanded(prev => !prev)}
+            >
+              <View style={styles.collapsibleTitleRow}>
+                <Ionicons name="time-outline" size={18} color="#8B5CF6" />
+                <Text style={styles.collapsibleTitle} weight="bold">
+                  Chronologie & Replay
+                </Text>
+                <View style={{
+                  backgroundColor: 'rgba(139,92,246,0.12)',
+                  borderRadius: 5,
+                  paddingHorizontal: 6,
+                  paddingVertical: 2,
+                  marginLeft: 6,
+                }}>
+                  <Text style={{ color: '#8B5CF6', fontSize: 10, fontWeight: '700' }}>NOUVEAU</Text>
+                </View>
+              </View>
+              <Ionicons
+                name={timelineExpanded ? 'chevron-up' : 'chevron-down'}
+                size={20}
+                color={Palette.textMuted}
+              />
+            </TouchableOpacity>
+
+            {timelineExpanded && (
+              <View style={{ marginTop: 8 }}>
+                <ChantierTimeline
+                  chantierId={chantierId as string}
+                  token={token}
+                  onTemporalChange={handleTemporalChange}
+                  onTimelineLoad={setTimelineData}
+                />
+              </View>
+            )}
+          </Card>
+        )}
+
+        {/* Action Buttons */}
+        <View style={styles.actionButtonsRow}>
+          <Button
+            title={isGisReady ? '⚙️ Reconfigurer GIS / Découpage' : '⚙️ Configurer Tracé & Tronçons'}
+            variant={isGisReady ? 'secondary' : 'primary'}
+            size="md"
+            onPress={() => router.push(`/responsable/chantier/${chantierId}/gis` as any)}
+            style={{ marginBottom: 8 }}
+          />
+          <TouchableOpacity
+            style={styles.mapButton}
+            activeOpacity={0.85}
+            onPress={() =>
+              router.push({
+                pathname: '/(tabs)/map',
+                params: {
+                  chantierId: String(chantierId),
+                  projectId: chantier?.projet_id ? String(chantier.projet_id) : undefined,
+                },
+              } as any)
+            }
+          >
+            <Ionicons name="map-outline" size={20} color="#FFFFFF" />
+            <Text style={styles.mapButtonText} weight="bold">
+              Voir sur la carte
+            </Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* Map Preview — GIS Monitoring Panel (Level 6B) */}
+        {mapSegments.length > 0 && (
+          <Card variant="elevated" style={styles.mapCard}>
+            {/* Card Header with 2D/3D toggle */}
+            <View style={styles.mapCardHeaderRow}>
+              <View style={styles.mapCardHeaderLeft}>
+                <Ionicons name="map" size={18} color={Palette.primary} />
+                <Text style={styles.mapCardTitle} weight="bold">
+                  Vue Cartographique des Tronçons
+                </Text>
+              </View>
+              {/* 2D / 3D toggle */}
+              <View style={styles.gisModeToggle}>
+                <TouchableOpacity
+                  style={[
+                    styles.gisModeBtn,
+                    gisMonitorMode === '2d' && styles.gisModeBtnActive,
+                  ]}
+                  onPress={() => setGisMonitorMode('2d')}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons
+                    name="map-outline"
+                    size={12}
+                    color={gisMonitorMode === '2d' ? '#FFFFFF' : Palette.textMuted}
+                  />
+                  <Text
+                    style={[
+                      styles.gisModeBtnText,
+                      gisMonitorMode === '2d' && styles.gisModeBtnTextActive,
+                    ]}
+                    weight="bold"
+                  >
+                    2D
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[
+                    styles.gisModeBtn,
+                    gisMonitorMode === '3d' && styles.gisModeBtn3DActive,
+                  ]}
+                  onPress={() => setGisMonitorMode('3d')}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons
+                    name="cube-outline"
+                    size={12}
+                    color={gisMonitorMode === '3d' ? '#FFFFFF' : '#10B981'}
+                  />
+                  <Text
+                    style={[
+                      styles.gisModeBtnText,
+                      gisMonitorMode === '3d' && styles.gisModeBtnTextActive,
+                    ]}
+                    weight="bold"
+                  >
+                    3D
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            {/* Temporal mode indicator row */}
+            {derivedTemporal.mode === 'historical' && (
+              <View style={styles.temporalBanner}>
+                <View style={styles.temporalBannerLeft}>
+                  <Ionicons name="time" size={13} color="#A78BFA" />
+                  <Text style={styles.temporalBannerLabel} weight="semibold">
+                    HISTORIQUE
+                  </Text>
+                  {derivedTemporal.selectedDateLabel && (
+                    <Text style={styles.temporalBannerDate}>
+                      {formatTemporalDateShort(derivedTemporal.selectedDateLabel)}
+                    </Text>
+                  )}
+                  {derivedTemporal.chantierProgress >= 0 && (
+                    <View style={styles.temporalProgressBadge}>
+                      <Text style={styles.temporalProgressText} weight="bold">
+                        {Math.round(derivedTemporal.chantierProgress)}%
+                      </Text>
+                    </View>
+                  )}
+                </View>
+                <TouchableOpacity
+                  style={styles.temporalResetBtn}
+                  onPress={resetToCurrentView}
+                  activeOpacity={0.75}
+                >
+                  <Ionicons name="refresh" size={11} color="#10B981" />
+                  <Text style={styles.temporalResetText} weight="semibold">
+                    Présent
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {/* 2D Map */}
+            {gisMonitorMode === '2d' && (
+              <InteractiveGisMap
+                height={240}
+                aoiGeometry={chantier?.localisation}
+                referenceGeometry={chantier?.reference_alignment?.geometry}
+                troncons={mapSegments}
+                temporalState={derivedTemporal}
+              />
+            )}
+
+            {/* 3D Map */}
+            {gisMonitorMode === '3d' && (
+              <InteractiveGis3DMap
+                height={280}
+                aoiGeometry={chantier?.localisation}
+                referenceGeometry={chantier?.reference_alignment?.geometry}
+                troncons={mapSegments}
+                temporalState={derivedTemporal}
+              />
+            )}
+
+            {/* Map Legend */}
+            <View style={styles.legendContainer}>
+              <Text style={styles.legendTitle}>{"Légende d'état :"}</Text>
+              <View style={styles.legendItemsRow}>
+                <View style={styles.legendItem}>
+                  <View style={[styles.legendDot, { backgroundColor: '#16A34A' }]} />
+                  <Text style={styles.legendText}>Terminé</Text>
+                </View>
+                <View style={styles.legendItem}>
+                  <View style={[styles.legendDot, { backgroundColor: '#F4A261' }]} />
+                  <Text style={styles.legendText}>En cours</Text>
+                </View>
+                <View style={styles.legendItem}>
+                  <View style={[styles.legendDot, { backgroundColor: '#DC2626' }]} />
+                  <Text style={styles.legendText}>Retard / Alerte</Text>
+                </View>
+                <View style={styles.legendItem}>
+                  <View style={[styles.legendDot, { backgroundColor: '#94A3B8' }]} />
+                  <Text style={styles.legendText}>Non commencé</Text>
+                </View>
+                <View style={styles.legendItem}>
+                  <Text style={{ fontSize: 11, color: '#0284C7', fontWeight: 'bold' }}>➜</Text>
+                  <Text style={styles.legendText}>Sens du tracé</Text>
+                </View>
+              </View>
+            </View>
+          </Card>
+        )}
+
         {/* Informations Générales (Collapsible, DEFAULT: COLLAPSED) */}
         <Card variant="elevated" style={styles.sectionCard}>
           <TouchableOpacity
@@ -801,292 +1087,6 @@ export default function ChantierDetailResponsableScreen() {
             </Text>
           </View>
         </Card>
-
-        {/* Avancement Global */}
-        <Card variant="elevated" style={styles.avancementCard}>
-          <View style={styles.avancementHeader}>
-            <Text style={styles.sectionLabel} weight="bold">Avancement Global</Text>
-            <Text style={styles.avancementPercent} weight="bold">
-              {chantier?.avancement || 0}%
-            </Text>
-          </View>
-          {chantier?.avancement_date && (
-            <Text style={styles.avancementDate}>
-              Dernière mise à jour : {chantier.avancement_date}
-            </Text>
-          )}
-          <View style={styles.progressBarBg}>
-            <View
-              style={[
-                styles.progressBarFill,
-                { width: `${Math.min(chantier?.avancement || 0, 100)}%` },
-              ]}
-            />
-          </View>
-          <View style={styles.metricsRow}>
-            <View style={styles.metricCell}>
-              <Text style={styles.metricSub}>Longueur Chantier</Text>
-              <Text style={styles.metricValue} weight="bold">
-                {chantier?.reference_alignment?.length_km || 0} km
-              </Text>
-            </View>
-            <View style={styles.metricCell}>
-              <Text style={styles.metricSub}>Tronçons</Text>
-              <Text style={styles.metricValue} weight="bold">
-                {troncons.length}
-              </Text>
-            </View>
-          </View>
-        </Card>
-
-        {/* Accès Rapides */}
-        <Text style={styles.quickAccessTitle} weight="bold">Accès rapides</Text>
-        <View style={styles.quickAccessRow}>
-          <TouchableOpacity
-            style={styles.quickAccessCard}
-            activeOpacity={0.7}
-            onPress={() => router.push(`/chantier/avancement/${chantierId}` as any)}
-          >
-            <View style={[styles.quickAccessIcon, { backgroundColor: '#F0FDF4' }]}>
-              <Ionicons name="trending-up" size={22} color="#16A34A" />
-            </View>
-            <Text style={styles.quickAccessLabel} weight="bold">Avancement</Text>
-            <Text style={styles.quickAccessSub}>{"Voir les statistiques et l'historique de progression"}</Text>
-            <Text style={styles.quickAccessLink} weight="semibold">Consulter →</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.quickAccessCard}
-            activeOpacity={0.7}
-            onPress={() => router.push(`/chantier/images/${chantierId}` as any)}
-          >
-            <View style={[styles.quickAccessIcon, { backgroundColor: '#EFF6FF' }]}>
-              <Ionicons name="images-outline" size={22} color="#2563EB" />
-            </View>
-            <Text style={styles.quickAccessLabel} weight="bold">Images</Text>
-            <Text style={styles.quickAccessSub}>Voir les photos et observations terrain</Text>
-            <Text style={styles.quickAccessLink} weight="semibold">Consulter →</Text>
-          </TouchableOpacity>
-        </View>
-
-        {/* ─── Level 6: Chronologie & Replay spatio-temporel ─── */}
-        {isGisReady && token && (
-          <Card variant="elevated" style={styles.sectionCard}>
-            <TouchableOpacity
-              style={styles.collapsibleHeader}
-              activeOpacity={0.7}
-              onPress={() => setTimelineExpanded(prev => !prev)}
-            >
-              <View style={styles.collapsibleTitleRow}>
-                <Ionicons name="time-outline" size={18} color="#8B5CF6" />
-                <Text style={styles.collapsibleTitle} weight="bold">
-                  Chronologie & Replay
-                </Text>
-                <View style={{
-                  backgroundColor: 'rgba(139,92,246,0.12)',
-                  borderRadius: 5,
-                  paddingHorizontal: 6,
-                  paddingVertical: 2,
-                  marginLeft: 6,
-                }}>
-                  <Text style={{ color: '#8B5CF6', fontSize: 10, fontWeight: '700' }}>NOUVEAU</Text>
-                </View>
-              </View>
-              <Ionicons
-                name={timelineExpanded ? 'chevron-up' : 'chevron-down'}
-                size={20}
-                color={Palette.textMuted}
-              />
-            </TouchableOpacity>
-
-            {timelineExpanded && (
-              <View style={{ marginTop: 8 }}>
-                <ChantierTimeline
-                  chantierId={chantierId as string}
-                  token={token}
-                  onTemporalChange={handleTemporalChange}
-                  onTimelineLoad={setTimelineData}
-                />
-              </View>
-            )}
-          </Card>
-        )}
-
-        {/* Action Buttons */}
-        <View style={styles.actionButtonsRow}>
-          <Button
-            title={isGisReady ? '⚙️ Reconfigurer GIS / Découpage' : '⚙️ Configurer Tracé & Tronçons'}
-            variant={isGisReady ? 'secondary' : 'primary'}
-            size="md"
-            onPress={() => router.push(`/responsable/chantier/${chantierId}/gis` as any)}
-            style={{ marginBottom: 8 }}
-          />
-          <TouchableOpacity
-            style={styles.mapButton}
-            activeOpacity={0.85}
-            onPress={() =>
-              router.push({
-                pathname: '/(tabs)/map',
-                params: {
-                  chantierId: String(chantierId),
-                  projectId: chantier?.projet_id ? String(chantier.projet_id) : undefined,
-                },
-              } as any)
-            }
-          >
-            <Ionicons name="map-outline" size={20} color="#FFFFFF" />
-            <Text style={styles.mapButtonText} weight="bold">
-              Voir sur la carte
-            </Text>
-          </TouchableOpacity>
-        </View>
-
-        {/* Map Preview — GIS Monitoring Panel (Level 6B) */}
-        {mapSegments.length > 0 && (
-          <Card variant="elevated" style={styles.mapCard}>
-            {/* Card Header with 2D/3D toggle */}
-            <View style={styles.mapCardHeaderRow}>
-              <View style={styles.mapCardHeaderLeft}>
-                <Ionicons name="map" size={18} color={Palette.primary} />
-                <Text style={styles.mapCardTitle} weight="bold">
-                  Visualisation GIS
-                </Text>
-              </View>
-              {/* 2D / 3D toggle */}
-              <View style={styles.gisModeToggle}>
-                <TouchableOpacity
-                  style={[
-                    styles.gisModeBtn,
-                    gisMonitorMode === '2d' && styles.gisModeBtnActive,
-                  ]}
-                  onPress={() => setGisMonitorMode('2d')}
-                  activeOpacity={0.8}
-                >
-                  <Ionicons
-                    name="map-outline"
-                    size={12}
-                    color={gisMonitorMode === '2d' ? '#FFFFFF' : Palette.textMuted}
-                  />
-                  <Text
-                    style={[
-                      styles.gisModeBtnText,
-                      gisMonitorMode === '2d' && styles.gisModeBtnTextActive,
-                    ]}
-                    weight="bold"
-                  >
-                    2D
-                  </Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[
-                    styles.gisModeBtn,
-                    gisMonitorMode === '3d' && styles.gisModeBtn3DActive,
-                  ]}
-                  onPress={() => setGisMonitorMode('3d')}
-                  activeOpacity={0.8}
-                >
-                  <Ionicons
-                    name="cube-outline"
-                    size={12}
-                    color={gisMonitorMode === '3d' ? '#FFFFFF' : '#10B981'}
-                  />
-                  <Text
-                    style={[
-                      styles.gisModeBtnText,
-                      gisMonitorMode === '3d' && styles.gisModeBtnTextActive,
-                    ]}
-                    weight="bold"
-                  >
-                    3D
-                  </Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-
-            {/* Temporal mode indicator row */}
-            {derivedTemporal.mode === 'historical' && (
-              <View style={styles.temporalBanner}>
-                <View style={styles.temporalBannerLeft}>
-                  <Ionicons name="time" size={13} color="#A78BFA" />
-                  <Text style={styles.temporalBannerLabel} weight="semibold">
-                    HISTORIQUE
-                  </Text>
-                  {derivedTemporal.selectedDateLabel && (
-                    <Text style={styles.temporalBannerDate}>
-                      {formatTemporalDateShort(derivedTemporal.selectedDateLabel)}
-                    </Text>
-                  )}
-                  {derivedTemporal.chantierProgress >= 0 && (
-                    <View style={styles.temporalProgressBadge}>
-                      <Text style={styles.temporalProgressText} weight="bold">
-                        {Math.round(derivedTemporal.chantierProgress)}%
-                      </Text>
-                    </View>
-                  )}
-                </View>
-                <TouchableOpacity
-                  style={styles.temporalResetBtn}
-                  onPress={resetToCurrentView}
-                  activeOpacity={0.75}
-                >
-                  <Ionicons name="refresh" size={11} color="#10B981" />
-                  <Text style={styles.temporalResetText} weight="semibold">
-                    Présent
-                  </Text>
-                </TouchableOpacity>
-              </View>
-            )}
-
-            {/* 2D Map */}
-            {gisMonitorMode === '2d' && (
-              <InteractiveGisMap
-                height={240}
-                aoiGeometry={chantier?.localisation}
-                referenceGeometry={chantier?.reference_alignment?.geometry}
-                troncons={mapSegments}
-                temporalState={derivedTemporal}
-              />
-            )}
-
-            {/* 3D Map */}
-            {gisMonitorMode === '3d' && (
-              <InteractiveGis3DMap
-                height={280}
-                aoiGeometry={chantier?.localisation}
-                referenceGeometry={chantier?.reference_alignment?.geometry}
-                troncons={mapSegments}
-                temporalState={derivedTemporal}
-              />
-            )}
-
-            {/* Map Legend */}
-            <View style={styles.legendContainer}>
-              <Text style={styles.legendTitle}>{"Légende d'état :"}</Text>
-              <View style={styles.legendItemsRow}>
-                <View style={styles.legendItem}>
-                  <View style={[styles.legendDot, { backgroundColor: '#16A34A' }]} />
-                  <Text style={styles.legendText}>Terminé</Text>
-                </View>
-                <View style={styles.legendItem}>
-                  <View style={[styles.legendDot, { backgroundColor: '#F4A261' }]} />
-                  <Text style={styles.legendText}>En cours</Text>
-                </View>
-                <View style={styles.legendItem}>
-                  <View style={[styles.legendDot, { backgroundColor: '#DC2626' }]} />
-                  <Text style={styles.legendText}>Retard / Alerte</Text>
-                </View>
-                <View style={styles.legendItem}>
-                  <View style={[styles.legendDot, { backgroundColor: '#94A3B8' }]} />
-                  <Text style={styles.legendText}>Non commencé</Text>
-                </View>
-                <View style={styles.legendItem}>
-                  <Text style={{ fontSize: 11, color: '#0284C7', fontWeight: 'bold' }}>➜</Text>
-                  <Text style={styles.legendText}>Sens du tracé</Text>
-                </View>
-              </View>
-            </View>
-          </Card>
-        )}
 
         {/* Tronçons List */}
         <View style={styles.sectionHeaderRow}>

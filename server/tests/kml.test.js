@@ -157,11 +157,13 @@ function runTests() {
     assert(res.properties.name === 'Tracé Test Tabulation', 'Must get name');
   });
 
-  // --- Test 6: Multiple LineStrings rejected with clear message ---
-  test('Test 6 (L1) — Multiple LineStrings are rejected without silent merge', () => {
+
+  // --- Test 6: Multi-LineString KML preserves all features separately without merging ---
+  test('Test 6 (L1) — Multi-LineString KML preserved as separate features (no silent merge)', () => {
     const kmlMultiple = `<?xml version="1.0" encoding="UTF-8"?>
     <kml xmlns="http://www.opengis.net/kml/2.2">
       <Document>
+        <name>Multi LineStrings Network</name>
         <Placemark>
           <name>Section 1</name>
           <LineString><coordinates>-5.89,35.73 -5.88,35.74</coordinates></LineString>
@@ -173,14 +175,14 @@ function runTests() {
       </Document>
     </kml>`;
 
-    let threw = false;
-    try {
-      kmlService.parseKmlToGeoJson(kmlMultiple);
-    } catch (e) {
-      threw = true;
-      assert(e.message.includes('plusieurs tracés linéaires'), `Message must state multiple LineStrings: ${e.message}`);
-    }
-    assert(threw, 'Must throw when multiple LineStrings exist');
+    const result = kmlService.parseKmlToGeoJson(kmlMultiple);
+    assert(result.type === 'FeatureCollection', 'Must return FeatureCollection for multi-LineString KML');
+    assert(Array.isArray(result.features), 'features must be an array');
+    assert(result.features.length === 2, `Must contain 2 features, got ${result.features.length}`);
+    assert(result.features[0].properties.name === 'Section 1', 'Section 1 name preserved');
+    assert(result.features[1].properties.name === 'Section 2', 'Section 2 name preserved');
+    assert(result.features[0].geometry.type === 'LineString', 'Feature 0 is LineString');
+    assert(result.features[1].geometry.type === 'LineString', 'Feature 1 is LineString');
   });
 
   // --- Test 7: Point-only KML rejected ---
@@ -998,6 +1000,45 @@ PK fin: 2+500</description>
     const res = kmlService.parseKmlToGeoJson(kml);
     assert(res.properties.name === 'Nom Direct Placemark', 'Direct name preserved');
     assert(res.metadata.name === 'Nom Direct Placemark', 'Metadata name matches direct name');
+  });
+
+  // --- Test AE: Real Tangier railway Multi-LineString KML loads without rejection ---
+  test('Test AE — Real Tangier railway Multi-LineString KML (RailWayTangier_Second.kml)', () => {
+    const kmlPath = path.join(__dirname, '../../RailWayTangier_Second.kml');
+    if (!fs.existsSync(kmlPath)) {
+      console.log('   ⚠️ Skipping Test AE: RailWayTangier_Second.kml not found');
+      return;
+    }
+    const content = fs.readFileSync(kmlPath, 'utf8');
+    const res = kmlService.parseKmlToGeoJson(content);
+    assert(res.type === 'FeatureCollection', 'Must return FeatureCollection');
+    assert(Array.isArray(res.features), 'features must be array');
+    assert(res.features.length >= 100, `Must detect >= 100 LineStrings, got ${res.features.length}`);
+    assert(res.properties.feature_count === res.features.length, 'feature_count matches');
+    assert(res.features[0].geometry.type === 'LineString', 'Feature geometry is LineString');
+    assert(res.features[0].properties.name, 'Feature 0 has name');
+  });
+
+  // --- Test AF: 2-4 LineStrings KML preserves individual features and metadata ---
+  test('Test AF — 3 LineStrings KML preserves individual identities without merge', () => {
+    const kml = `<?xml version="1.0" encoding="UTF-8"?>
+    <kml xmlns="http://www.opengis.net/kml/2.2">
+      <Document>
+        <name>Tracé 3 sections</name>
+        <Placemark><name>Voie A</name><LineString><coordinates>-5.89,35.73 -5.88,35.74</coordinates></LineString></Placemark>
+        <Placemark><name>Voie B</name><LineString><coordinates>-5.88,35.74 -5.87,35.75</coordinates></LineString></Placemark>
+        <Placemark><name>Voie C</name><LineString><coordinates>-5.87,35.75 -5.86,35.76</coordinates></LineString></Placemark>
+      </Document>
+    </kml>`;
+    const res = kmlService.parseKmlToGeoJson(kml);
+    assert(res.type === 'FeatureCollection', 'Type must be FeatureCollection');
+    assert(res.features.length === 3, 'Must contain 3 features');
+    assert(res.features[0].properties.name === 'Voie A', 'Voie A name preserved');
+    assert(res.features[1].properties.name === 'Voie B', 'Voie B name preserved');
+    assert(res.features[2].properties.name === 'Voie C', 'Voie C name preserved');
+    assert(res.features[0].id === 1, 'Feature 0 id is 1');
+    assert(res.features[1].id === 2, 'Feature 1 id is 2');
+    assert(res.features[2].id === 3, 'Feature 2 id is 3');
   });
 
   console.log(`\nResults: ${passed} passed, ${failed} failed.`);
