@@ -1934,7 +1934,15 @@ class ApiClient {
   async detectCrs(
     token: string,
     chantierId: number | string,
-    payload: { fileUri?: string; fileName?: string; geojson?: any; kmlText?: string; aoi?: any; source_srid?: number }
+    payload: {
+      fileUri?: string;
+      fileName?: string;
+      geojson?: any;
+      kmlText?: string;
+      aoi?: any;
+      source_srid?: number;
+      assets?: Array<{ name: string; data?: string; url?: string }>;
+    }
   ): Promise<CrsDetectionResponse> {
     if (payload.geojson || payload.kmlText) {
       return this.request<CrsDetectionResponse>(`/chantiers/${chantierId}/crs/detect`, {
@@ -1948,6 +1956,7 @@ class ApiClient {
           original_filename: payload.fileName || (payload.kmlText ? 'source.kml' : 'source.geojson'),
           aoi: payload.aoi,
           source_srid: payload.source_srid,
+          assets: payload.assets,
         }),
       });
     }
@@ -1975,6 +1984,9 @@ class ApiClient {
       if (payload.source_srid) {
         formData.append('source_srid', String(payload.source_srid));
       }
+      if (payload.assets && payload.assets.length > 0) {
+        formData.append('assets', JSON.stringify(payload.assets));
+      }
 
       const url = `${this.baseUrl}/chantiers/${chantierId}/crs/detect`;
       const response = await fetch(url, {
@@ -1999,7 +2011,14 @@ class ApiClient {
   async analyzeGeoJSONSource(
     token: string,
     chantierId: number | string,
-    fileData: { fileUri?: string; fileName?: string; geojson?: any; aoi?: any; source_srid?: number }
+    fileData: {
+      fileUri?: string;
+      fileName?: string;
+      geojson?: any;
+      aoi?: any;
+      source_srid?: number;
+      assets?: Array<{ name: string; data?: string; url?: string }>;
+    }
   ): Promise<GeoJSONAnalysisResponse> {
     if (fileData.geojson) {
       return this.request<GeoJSONAnalysisResponse>(
@@ -2014,6 +2033,7 @@ class ApiClient {
             original_filename: fileData.fileName || 'source.geojson',
             aoi: fileData.aoi,
             source_srid: fileData.source_srid,
+            assets: fileData.assets,
           }),
         }
       );
@@ -2040,6 +2060,9 @@ class ApiClient {
       }
       if (fileData.source_srid) {
         formData.append('source_srid', String(fileData.source_srid));
+      }
+      if (fileData.assets && fileData.assets.length > 0) {
+        formData.append('assets', JSON.stringify(fileData.assets));
       }
 
       const url = `${this.baseUrl}/chantiers/${chantierId}/reference-alignment/analyze`;
@@ -2074,6 +2097,7 @@ class ApiClient {
       source_srid?: number;
       source_crs_name?: string;
       kml_metadata?: KmlMetadata | null;
+      assets?: Array<{ name: string; data?: string; url?: string }>;
     }
   ): Promise<{ message: string; reference_alignment: ReferenceAlignment }> {
     // 1. If direct GeoJSON object / string / geometry provided, send as JSON body
@@ -2093,6 +2117,7 @@ class ApiClient {
             source_srid: fileData.source_srid,
             source_crs_name: fileData.source_crs_name,
             kml_metadata: fileData.kml_metadata,
+            assets: fileData.assets,
           }),
         }
       );

@@ -4,7 +4,7 @@ import { WebView } from 'react-native-webview';
 import { Text } from '@/components/ui/text';
 import { Ionicons } from '@expo/vector-icons';
 import { Palette } from '@/constants/theme';
-import { KmlMetadata, KmlGroundOverlay, KmlPhotoOverlay } from '@/services/api';
+import { KmlMetadata, KmlGroundOverlay, KmlPhotoOverlay, getMediaUrl } from '@/services/api';
 import {
   GisFeatureGeometry,
   GisTronconSegment,
@@ -320,8 +320,30 @@ export function InteractiveGis3DMap({
 
   // Generate self-contained Three.js 3D HTML
   const threeHtml = useMemo(() => {
-    const rawGroundOverlays = kmlGroundOverlays || (kmlMetadata && kmlMetadata.groundOverlays) || [];
-    const rawPhotoOverlays = kmlPhotoOverlays || (kmlMetadata && kmlMetadata.photoOverlays) || [];
+    const rawGroundOverlays = (kmlGroundOverlays || (kmlMetadata && kmlMetadata.groundOverlays) || []).map((go) => {
+      if (go?.icon?.href) {
+        return {
+          ...go,
+          icon: {
+            ...go.icon,
+            href: getMediaUrl(go.icon.href),
+          },
+        };
+      }
+      return go;
+    });
+    const rawPhotoOverlays = (kmlPhotoOverlays || (kmlMetadata && kmlMetadata.photoOverlays) || []).map((po) => {
+      if (po?.icon?.href) {
+        return {
+          ...po,
+          icon: {
+            ...po.icon,
+            href: getMediaUrl(po.icon.href),
+          },
+        };
+      }
+      return po;
+    });
 
     // ── Level 6B: Apply temporal filtering ────────────────────────────────
     const isHistorical = temporalState && temporalState.mode === 'historical';
@@ -1258,13 +1280,19 @@ export function InteractiveGis3DMap({
       }
 
       // 12. KML 3D GroundOverlays
+      var loadedKmlTextures = [];
       if (CONFIG.kmlGroundOverlays && CONFIG.kmlGroundOverlays.length > 0) {
+        var textureLoader = new THREE.TextureLoader();
+        textureLoader.setCrossOrigin('anonymous');
         for (var go = 0; go < CONFIG.kmlGroundOverlays.length; go++) {
           var gOverlay = CONFIG.kmlGroundOverlays[go];
           if (gOverlay.latLonBox) {
             var b = gOverlay.latLonBox;
-            var sw = toEnu(b.west, b.south, 0.1);
-            var ne = toEnu(b.east, b.north, 0.1);
+            var baseAlt = (gOverlay.altitude !== undefined && gOverlay.altitude !== null && !isNaN(gOverlay.altitude))
+              ? Number(gOverlay.altitude)
+              : 0.15;
+            var sw = toEnu(b.west, b.south, baseAlt);
+            var ne = toEnu(b.east, b.north, baseAlt);
 
             var width = Math.abs(ne.x - sw.x);
             var depth = Math.abs(ne.z - sw.z);
@@ -1272,28 +1300,72 @@ export function InteractiveGis3DMap({
             var centerZ = (sw.z + ne.z) / 2;
 
             var goPlaneGeom = new THREE.PlaneGeometry(width, depth);
+            var overlayOpacity = (typeof gOverlay.opacity === 'number' && !isNaN(gOverlay.opacity))
+              ? gOverlay.opacity
+              : 0.85;
+
             var goPlaneMat = new THREE.MeshBasicMaterial({
               color: 0xF97316,
               transparent: true,
-              opacity: (gOverlay.opacity || 0.7) * 0.45,
+              opacity: overlayOpacity * 0.45,
               side: THREE.DoubleSide
             });
             var goPlane = new THREE.Mesh(goPlaneGeom, goPlaneMat);
             goPlane.rotation.x = -Math.PI / 2;
-            goPlane.position.set(centerX, 0.15, centerZ);
+            if (b.rotation) {
+              goPlane.rotateZ(b.rotation * (Math.PI / 180));
+            }
+            goPlane.position.set(centerX, baseAlt, centerZ);
             goPlane.userData = {
               category: 'kml_image',
               overlay: gOverlay,
               title: gOverlay.name || ('GroundOverlay ' + (go + 1)),
               type: 'GroundOverlay 3D',
-              opacity: gOverlay.opacity || 1.0,
+              opacity: overlayOpacity,
               bounds: 'N:' + b.north.toFixed(4) + ' S:' + b.south.toFixed(4)
             };
+
+            var imageUrl = (gOverlay.icon && gOverlay.icon.href) ? gOverlay.icon.href : null;
+            if (imageUrl && gOverlay.isSafe !== false && gOverlay.isAvailable !== false) {
+              (function(plane, meshMat, imgUrl, opacityVal) {
+                textureLoader.load(
+                  imgUrl,
+                  function(texture) {
+                    texture.generateMipmaps = true;
+                    texture.minFilter = THREE.LinearMipmapLinearFilter;
+                    loadedKmlTextures.push(texture);
+                    var texturedMat = new THREE.MeshBasicMaterial({
+                      map: texture,
+                      transparent: true,
+                      opacity: opacityVal,
+                      side: THREE.DoubleSide,
+                      depthWrite: false
+                    });
+                    plane.material = texturedMat;
+                    meshMat.dispose();
+                    if (CONFIG.isDev) {
+                      console.log('[Three.js Engine] Successfully mapped GroundOverlay texture:', imgUrl);
+                    }
+                  },
+                  undefined,
+                  function(err) {
+                    console.warn('[Three.js Engine] GroundOverlay texture failed to load, keeping fallback plane:', imgUrl);
+                  }
+                );
+              })(goPlane, goPlaneMat, imageUrl, overlayOpacity);
+            }
+
             groupKmlImages.add(goPlane);
             interactiveKml.push(goPlane);
           }
         }
       }
+
+      window.addEventListener('beforeunload', function() {
+        for (var ti = 0; ti < loadedKmlTextures.length; ti++) {
+          try { loadedKmlTextures[ti].dispose(); } catch(e) {}
+        }
+      });
 
       // Compute Scene Bounding Box & Fit Camera Adaptively
       var sceneBox = new THREE.Box3();

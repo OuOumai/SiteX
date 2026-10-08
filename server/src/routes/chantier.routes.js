@@ -34,7 +34,7 @@ router.post(
   '/:chantierId/crs/detect',
   authenticateToken,
   requireResponsableOrAdmin,
-  geojsonUpload.single('geojson'),
+  geojsonUpload.spatialAndAssets,
   chantierController.detectSourceCrs
 );
 
@@ -50,14 +50,14 @@ router.post(
   '/:chantierId/reference-alignment/analyze',
   authenticateToken,
   requireResponsableOrAdmin,
-  geojsonUpload.single('geojson'),
+  geojsonUpload.spatialAndAssets,
   chantierController.analyzeGeoJSONSource
 );
 router.post(
   '/:chantierId/reference-alignment',
   authenticateToken,
   requireResponsableOrAdmin,
-  geojsonUpload.single('geojson'),
+  geojsonUpload.spatialAndAssets,
   chantierController.uploadReferenceAlignment
 );
 

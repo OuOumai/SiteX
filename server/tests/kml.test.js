@@ -1041,6 +1041,274 @@ PK fin: 2+500</description>
     assert(res.features[2].id === 3, 'Feature 2 id is 3');
   });
 
+  // --- Test AG: GroundOverlay with local companion image resolved via assetMap ---
+  test('Test AG (L5) — GroundOverlay with local companion image resolved via assetMap', () => {
+    const kml = `<?xml version="1.0" encoding="UTF-8"?>
+    <kml xmlns="http://www.opengis.net/kml/2.2">
+      <Document>
+        <Placemark>
+          <name>Axe Test</name>
+          <LineString><coordinates>-5.89,35.73 -5.88,35.74</coordinates></LineString>
+        </Placemark>
+        <Folder>
+          <name>Overlays</name>
+          <GroundOverlay>
+            <name>Plan Emprise Tanger</name>
+            <Icon>
+              <href>Test5_GroundOverlay.png</href>
+            </Icon>
+            <LatLonBox>
+              <north>35.7500</north>
+              <south>35.7300</south>
+              <east>-5.8700</east>
+              <west>-5.9000</west>
+            </LatLonBox>
+          </GroundOverlay>
+        </Folder>
+      </Document>
+    </kml>`;
+
+    const assetMap = {
+      'Test5_GroundOverlay.png': '/uploads/geojson/test5_tangier_overlay.png'
+    };
+
+    const res = kmlService.parseKmlToGeoJson(kml, { assetMap });
+    assert(res.metadata.groundOverlays, 'groundOverlays array exists');
+    assert(res.metadata.groundOverlays.length === 1, 'Exactly 1 GroundOverlay parsed');
+    const go = res.metadata.groundOverlays[0];
+    assert(go.name === 'Plan Emprise Tanger', 'Name matches');
+    assert(go.isAvailable === true, 'isAvailable must be true when companion image is in assetMap');
+    assert(go.isSafe === true, 'isSafe must be true for sanitized path');
+    assert(go.icon.href === '/uploads/geojson/test5_tangier_overlay.png', 'icon.href resolved to assetMap URL');
+    assert(go.icon.originalHref === 'Test5_GroundOverlay.png', 'originalHref preserved');
+    assert(go.latLonBox.north === 35.75, 'North bound correct');
+    assert(go.latLonBox.south === 35.73, 'South bound correct');
+  });
+
+  // --- Test AH: GroundOverlay with remote HTTP/HTTPS image ---
+  test('Test AH (L5) — GroundOverlay with remote HTTP/HTTPS image', () => {
+    const kml = `<?xml version="1.0" encoding="UTF-8"?>
+    <kml xmlns="http://www.opengis.net/kml/2.2">
+      <Document>
+        <Placemark>
+          <name>Axe Test</name>
+          <LineString><coordinates>-5.89,35.73 -5.88,35.74</coordinates></LineString>
+        </Placemark>
+        <GroundOverlay>
+          <name>Remote Drone Map</name>
+          <Icon>
+            <href>https://server.domain.com/imagery/tangier_ortho.jpg</href>
+          </Icon>
+          <LatLonBox>
+            <north>35.76</north>
+            <south>35.74</south>
+            <east>-5.85</east>
+            <west>-5.88</west>
+          </LatLonBox>
+        </GroundOverlay>
+      </Document>
+    </kml>`;
+
+    const res = kmlService.parseKmlToGeoJson(kml);
+    assert(res.metadata.groundOverlays.length === 1, '1 GroundOverlay parsed');
+    const go = res.metadata.groundOverlays[0];
+    assert(go.isRemote === true, 'isRemote must be true');
+    assert(go.isAvailable === true, 'isAvailable must be true for valid remote URL');
+    assert(go.isSafe === true, 'isSafe must be true for HTTPS URL');
+    assert(go.icon.href === 'https://server.domain.com/imagery/tangier_ortho.jpg', 'href preserved');
+  });
+
+  // --- Test AI: GroundOverlay with LatLonBox bounds, rotation and altitude ---
+  test('Test AI (L5) — GroundOverlay with LatLonBox bounds, rotation and altitude', () => {
+    const kml = `<?xml version="1.0" encoding="UTF-8"?>
+    <kml xmlns="http://www.opengis.net/kml/2.2">
+      <Document>
+        <Placemark>
+          <name>Axe Test</name>
+          <LineString><coordinates>-5.89,35.73 -5.88,35.74</coordinates></LineString>
+        </Placemark>
+        <GroundOverlay>
+          <name>Rotated Track Section</name>
+          <altitude>25.5</altitude>
+          <altitudeMode>relativeToGround</altitudeMode>
+          <Icon>
+            <href>ortho_track.png</href>
+          </Icon>
+          <LatLonBox>
+            <north>35.7800</north>
+            <south>35.7600</south>
+            <east>-5.8200</east>
+            <west>-5.8500</west>
+            <rotation>-15.5</rotation>
+          </LatLonBox>
+        </GroundOverlay>
+      </Document>
+    </kml>`;
+
+    const assetMap = { 'ortho_track.png': '/uploads/geojson/ortho_track.png' };
+    const res = kmlService.parseKmlToGeoJson(kml, { assetMap });
+    const go = res.metadata.groundOverlays[0];
+    assert(go.altitude === 25.5, 'Altitude parsed');
+    assert(go.altitudeMode === 'relativeToGround', 'altitudeMode parsed');
+    assert(go.latLonBox.rotation === -15.5, 'Rotation parsed as float');
+    assert(go.latLonBox.north === 35.78, 'North bound parsed');
+    assert(go.latLonBox.south === 35.76, 'South bound parsed');
+    assert(go.latLonBox.east === -5.82, 'East bound parsed');
+    assert(go.latLonBox.west === -5.85, 'West bound parsed');
+  });
+
+  // --- Test AJ: GroundOverlay without image / empty href (graceful fallback) ---
+  test('Test AJ (L5) — GroundOverlay without image or unavailable local href', () => {
+    const kml = `<?xml version="1.0" encoding="UTF-8"?>
+    <kml xmlns="http://www.opengis.net/kml/2.2">
+      <Document>
+        <Placemark>
+          <name>Axe Test</name>
+          <LineString><coordinates>-5.89,35.73 -5.88,35.74</coordinates></LineString>
+        </Placemark>
+        <GroundOverlay>
+          <name>Overlay Without Asset</name>
+          <Icon>
+            <href>missing_image.png</href>
+          </Icon>
+          <LatLonBox>
+            <north>35.74</north>
+            <south>35.72</south>
+            <east>-5.86</east>
+            <west>-5.89</west>
+          </LatLonBox>
+        </GroundOverlay>
+      </Document>
+    </kml>`;
+
+    // No assetMap provided
+    const res = kmlService.parseKmlToGeoJson(kml);
+    assert(res.metadata.groundOverlays.length === 1, 'GroundOverlay parsed');
+    const go = res.metadata.groundOverlays[0];
+    assert(go.isAvailable === false, 'isAvailable is false when no companion asset provided');
+    assert(go.latLonBox !== null, 'LatLonBox bounds still available for footprint fallback');
+    assert(res.metadata.warnings.some(w => w.includes('non disponible localement')), 'Warning logged for missing companion asset');
+  });
+
+  // --- Test AK: Path traversal strictly rejected even with assetMap ---
+  test('Test AK (L5) — Path traversal <href>../../etc/passwd</href> is strictly rejected', () => {
+    const kml = `<?xml version="1.0" encoding="UTF-8"?>
+    <kml xmlns="http://www.opengis.net/kml/2.2">
+      <Document>
+        <Placemark>
+          <name>Axe Test</name>
+          <LineString><coordinates>-5.89,35.73 -5.88,35.74</coordinates></LineString>
+        </Placemark>
+        <GroundOverlay>
+          <name>Malicious Overlay</name>
+          <Icon>
+            <href>../../../../etc/passwd</href>
+          </Icon>
+          <LatLonBox>
+            <north>35.74</north>
+            <south>35.72</south>
+            <east>-5.86</east>
+            <west>-5.89</west>
+          </LatLonBox>
+        </GroundOverlay>
+      </Document>
+    </kml>`;
+
+    const assetMap = { '../../../../etc/passwd': '/evil' };
+    const res = kmlService.parseKmlToGeoJson(kml, { assetMap });
+    const go = res.metadata.groundOverlays[0];
+    assert(go.isSafe === false, 'isSafe must be false for path traversal');
+    assert(go.isAvailable === false, 'isAvailable must be false for unsafe asset');
+    assert(go.icon.href === null, 'href must be set to null when rejected');
+  });
+
+  // --- Test AL: Multiple GroundOverlays independently resolved ---
+  test('Test AL (L5) — Multiple GroundOverlays independently resolved', () => {
+    const kml = `<?xml version="1.0" encoding="UTF-8"?>
+    <kml xmlns="http://www.opengis.net/kml/2.2">
+      <Document>
+        <Placemark>
+          <name>Axe Test</name>
+          <LineString><coordinates>-5.89,35.73 -5.88,35.74</coordinates></LineString>
+        </Placemark>
+        <Folder>
+          <GroundOverlay>
+            <name>Sector 1</name>
+            <Icon><href>sector1.png</href></Icon>
+            <LatLonBox><north>35.75</north><south>35.74</south><east>-5.88</east><west>-5.89</west></LatLonBox>
+          </GroundOverlay>
+          <GroundOverlay>
+            <name>Sector 2</name>
+            <Icon><href>sector2.jpg</href></Icon>
+            <LatLonBox><north>35.74</north><south>35.73</south><east>-5.88</east><west>-5.89</west></LatLonBox>
+          </GroundOverlay>
+          <GroundOverlay>
+            <name>Sector 3 (Missing)</name>
+            <Icon><href>sector3.png</href></Icon>
+            <LatLonBox><north>35.73</north><south>35.72</south><east>-5.88</east><west>-5.89</west></LatLonBox>
+          </GroundOverlay>
+        </Folder>
+      </Document>
+    </kml>`;
+
+    const assetMap = {
+      'sector1.png': '/uploads/geojson/sector1.png',
+      'sector2.jpg': '/uploads/geojson/sector2.jpg'
+    };
+
+    const res = kmlService.parseKmlToGeoJson(kml, { assetMap });
+    assert(res.metadata.groundOverlays.length === 3, 'All 3 GroundOverlays parsed');
+    assert(res.metadata.groundOverlays[0].isAvailable === true, 'Sector 1 resolved');
+    assert(res.metadata.groundOverlays[1].isAvailable === true, 'Sector 2 resolved');
+    assert(res.metadata.groundOverlays[2].isAvailable === false, 'Sector 3 marked unavailable');
+  });
+
+  // --- Test AM: 3D coordinates and bounding box dimensions calculation for Three.js plane ---
+  test('Test AM (L5) — 3D coordinates and bounding box dimensions calculation for Three.js plane', () => {
+    const kml = `<?xml version="1.0" encoding="UTF-8"?>
+    <kml xmlns="http://www.opengis.net/kml/2.2">
+      <Document>
+        <Placemark>
+          <name>Axe Test</name>
+          <LineString><coordinates>-5.89,35.73 -5.88,35.74</coordinates></LineString>
+        </Placemark>
+        <GroundOverlay>
+          <name>Plane Sizing Test</name>
+          <Icon><href>plane_test.png</href></Icon>
+          <LatLonBox>
+            <north>35.7500</north>
+            <south>35.7400</south>
+            <east>-5.8800</east>
+            <west>-5.8950</west>
+          </LatLonBox>
+        </GroundOverlay>
+      </Document>
+    </kml>`;
+
+    const res = kmlService.parseKmlToGeoJson(kml);
+    const go = res.metadata.groundOverlays[0];
+    const b = go.latLonBox;
+
+    // Simulation of toEnu conversion at lat0=35.745, lon0=-5.8875
+    const R = 6378137.0;
+    const rad = Math.PI / 180.0;
+    const lat0Rad = 35.745 * rad;
+
+    const toEnuSim = (lon, lat) => ({
+      x: R * (lon - (-5.8875)) * rad * Math.cos(lat0Rad),
+      z: -R * (lat - 35.745) * rad
+    });
+
+    const sw = toEnuSim(b.west, b.south);
+    const ne = toEnuSim(b.east, b.north);
+    const width = Math.abs(ne.x - sw.x);
+    const depth = Math.abs(ne.z - sw.z);
+
+    assert(width > 1000 && width < 2000, `Width in meters should be ~1350m, got ${width.toFixed(1)}m`);
+    assert(depth > 1000 && depth < 1200, `Depth in meters should be ~1110m, got ${depth.toFixed(1)}m`);
+    assert(sw.z > ne.z, 'South has positive Z in ENU, North has negative Z');
+  });
+
   console.log(`\nResults: ${passed} passed, ${failed} failed.`);
   if (failed > 0) process.exit(1);
 }

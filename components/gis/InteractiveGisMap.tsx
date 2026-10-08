@@ -2,7 +2,7 @@ import React, { useMemo, useRef, useEffect, useImperativeHandle, forwardRef } fr
 import { View, StyleSheet, Platform, ActivityIndicator, DimensionValue } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { Palette } from '@/constants/theme';
-import { KmlMetadata, KmlGroundOverlay, KmlPhotoOverlay } from '@/services/api';
+import { KmlMetadata, KmlGroundOverlay, KmlPhotoOverlay, getMediaUrl } from '@/services/api';
 import { LEAFLET_CSS, LEAFLET_JS, PROJ4_JS } from './leafletAssets';
 import type { DerivedTemporalState } from '@/lib/temporal';
 import { applyTemporalProgressToSegments, isKmlElementVisible } from '@/lib/temporal';
@@ -376,9 +376,26 @@ export function InteractiveGisMap({
       kmlGeometry: kmlGeometry || null,
       rawKmlGeom: kmlGeometry || null,
       rawKmlMeta: kmlMetadata || null,
-      showKmlLayer: showKmlLayerTemporal,
-      rawKmlGroundOverlays: kmlGroundOverlays || (kmlMetadata && kmlMetadata.groundOverlays) || [],
-      rawKmlPhotoOverlays: kmlPhotoOverlays || (kmlMetadata && kmlMetadata.photoOverlays) || [],
+      rawKmlGroundOverlays: (kmlGroundOverlays || (kmlMetadata && kmlMetadata.groundOverlays) || []).map((go) => {
+        if (!go || !go.icon || !go.icon.href) return go;
+        return {
+          ...go,
+          icon: {
+            ...go.icon,
+            href: getMediaUrl(go.icon.href),
+          },
+        };
+      }),
+      rawKmlPhotoOverlays: (kmlPhotoOverlays || (kmlMetadata && kmlMetadata.photoOverlays) || []).map((po) => {
+        if (!po || !po.icon || !po.icon.href) return po;
+        return {
+          ...po,
+          icon: {
+            ...po.icon,
+            href: getMediaUrl(po.icon.href),
+          },
+        };
+      }),
       showKmlImages: showKmlImages !== false,
       rawSearchLoc: searchLocation || null,
       rawTroncons: temporalTroncons,
@@ -1473,6 +1490,26 @@ export function InteractiveGisMap({
                   imgOverlay.on("click", function(e) {
                     if (e && e.originalEvent) L.DomEvent.stopPropagation(e);
                     sendToParent({ type: "SELECT_KML_IMAGE", overlay: go });
+                  });
+
+                  imgOverlay.on("error", function() {
+                    console.warn("Leaflet error loading GroundOverlay image:", go.icon.href);
+                    if (kmlImageLayerGroup.hasLayer(imgOverlay)) {
+                      kmlImageLayerGroup.removeLayer(imgOverlay);
+                    }
+                    var fallbackRect = L.rectangle(bounds, {
+                      color: "#F97316",
+                      weight: 1.5,
+                      dashArray: "5, 5",
+                      fillColor: "#F97316",
+                      fillOpacity: Math.min(0.25, opacity * 0.25),
+                      interactive: true
+                    }).addTo(kmlImageLayerGroup);
+                    fallbackRect.bindTooltip('<span class="kml-source-tooltip">🖼️ ' + overlayName + ' (Image non chargée)</span>', { sticky: true, direction: "top" });
+                    fallbackRect.on("click", function(ev) {
+                      if (ev && ev.originalEvent) L.DomEvent.stopPropagation(ev);
+                      sendToParent({ type: "SELECT_KML_IMAGE", overlay: go });
+                    });
                   });
                 } catch(imgErr) {
                   canRenderImage = false;

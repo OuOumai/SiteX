@@ -641,6 +641,59 @@ async function saveChantierAoi(req, res) {
 }
 
 /**
+ * Helper to collect and resolve companion assets (e.g. GroundOverlay images)
+ * uploaded via multipart form-data or passed in request body.
+ *
+ * @param {object} req 
+ * @returns {Record<string, string>} Mapping of original filename/path -> accessible URL
+ */
+function extractCompanionAssetMap(req) {
+  const assetMap = {};
+  if (req.companionFiles && Array.isArray(req.companionFiles)) {
+    for (const f of req.companionFiles) {
+      const publicUrl = `/uploads/geojson/${f.filename}`;
+      assetMap[f.originalname] = publicUrl;
+      assetMap[path.basename(f.originalname)] = publicUrl;
+      assetMap[path.posix.normalize(f.originalname.replace(/\\/g, '/'))] = publicUrl;
+    }
+  }
+  if (req.body && req.body.assets) {
+    let assetsList = req.body.assets;
+    if (typeof assetsList === 'string') {
+      try { assetsList = JSON.parse(assetsList); } catch {}
+    }
+    if (Array.isArray(assetsList)) {
+      const uploadDir = path.join(__dirname, '../../uploads/geojson');
+      if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+
+      for (const a of assetsList) {
+        if (!a || !a.name) continue;
+        if (a.url) {
+          assetMap[a.name] = a.url;
+          assetMap[path.basename(a.name)] = a.url;
+        } else if (a.data || a.base64 || a.content) {
+          try {
+            const raw = a.data || a.base64 || a.content;
+            const matches = typeof raw === 'string' && raw.match(/^data:image\/([a-zA-Z0-9]+);base64,(.+)$/);
+            const ext = matches ? (matches[1] === 'jpeg' ? '.jpg' : `.${matches[1]}`) : (path.extname(a.name) || '.png');
+            const buffer = matches ? Buffer.from(matches[2], 'base64') : Buffer.from(raw, 'base64');
+            const safeBase = path.basename(a.name, ext).replace(/[^a-zA-Z0-9_-]/g, '_');
+            const filename = `kml_asset_${Date.now()}_${safeBase}${ext}`;
+            fs.writeFileSync(path.join(uploadDir, filename), buffer);
+            const publicUrl = `/uploads/geojson/${filename}`;
+            assetMap[a.name] = publicUrl;
+            assetMap[path.basename(a.name)] = publicUrl;
+          } catch (e) {
+            console.warn('Failed to write companion asset from base64:', e.message);
+          }
+        }
+      }
+    }
+  }
+  return assetMap;
+}
+
+/**
  * POST /chantiers/:chantierId/crs/detect
  * Automatically analyzes incoming spatial file data and detects the Source CRS / SRID.
  */
@@ -649,6 +702,7 @@ async function detectSourceCrs(req, res) {
     const { chantierId } = req.params;
     let geojsonData = null;
     let isKmlFile = false;
+    const companionAssetMap = extractCompanionAssetMap(req);
 
     if (req.file) {
       const ext = path.extname(req.file.originalname || '').toLowerCase();
@@ -656,7 +710,10 @@ async function detectSourceCrs(req, res) {
       if (ext === '.kml' || kmlService.isKml(fileContent)) {
         isKmlFile = true;
         try {
-          geojsonData = kmlService.parseKmlToGeoJson(fileContent, { defaultName: req.file.originalname });
+          geojsonData = kmlService.parseKmlToGeoJson(fileContent, {
+            defaultName: req.file.originalname,
+            assetMap: companionAssetMap,
+          });
         } catch (kmlErr) {
           return res.status(400).json({ message: kmlErr.message });
         }
@@ -672,7 +729,10 @@ async function detectSourceCrs(req, res) {
       if (typeof rawData === 'string' && (rawData.trim().endsWith('.kml') || kmlService.isKml(rawData))) {
         isKmlFile = true;
         try {
-          geojsonData = kmlService.parseKmlToGeoJson(rawData, { defaultName: req.body.original_filename });
+          geojsonData = kmlService.parseKmlToGeoJson(rawData, {
+            defaultName: req.body.original_filename,
+            assetMap: companionAssetMap,
+          });
         } catch (kmlErr) {
           return res.status(400).json({ message: kmlErr.message });
         }
@@ -756,6 +816,7 @@ async function analyzeGeoJSONSource(req, res) {
     let originalFilename = 'source.geojson';
     let passedAoi = req.body ? (req.body.aoi || req.body.aoi_geometry) : null;
     let isKmlFile = false;
+    const companionAssetMap = extractCompanionAssetMap(req);
 
     if (req.file) {
       originalFilename = req.file.originalname || req.file.filename;
@@ -764,7 +825,10 @@ async function analyzeGeoJSONSource(req, res) {
       if (ext === '.kml' || kmlService.isKml(fileContent)) {
         isKmlFile = true;
         try {
-          geojsonData = kmlService.parseKmlToGeoJson(fileContent, { defaultName: originalFilename });
+          geojsonData = kmlService.parseKmlToGeoJson(fileContent, {
+            defaultName: originalFilename,
+            assetMap: companionAssetMap,
+          });
         } catch (kmlErr) {
           return res.status(400).json({ message: kmlErr.message });
         }
@@ -780,7 +844,10 @@ async function analyzeGeoJSONSource(req, res) {
       if (typeof rawData === 'string' && (rawData.trim().endsWith('.kml') || kmlService.isKml(rawData))) {
         isKmlFile = true;
         try {
-          geojsonData = kmlService.parseKmlToGeoJson(rawData, { defaultName: req.body.original_filename });
+          geojsonData = kmlService.parseKmlToGeoJson(rawData, {
+            defaultName: req.body.original_filename,
+            assetMap: companionAssetMap,
+          });
         } catch (kmlErr) {
           return res.status(400).json({ message: kmlErr.message });
         }
@@ -1060,6 +1127,7 @@ async function uploadReferenceAlignment(req, res) {
     let geojsonData = null;
     let originalFilename = 'reference_alignment.geojson';
     let isKmlFile = false;
+    const companionAssetMap = extractCompanionAssetMap(req);
 
     // 1. Check if uploaded via Multer or body
     if (req.file) {
@@ -1069,7 +1137,10 @@ async function uploadReferenceAlignment(req, res) {
       if (ext === '.kml' || kmlService.isKml(fileContent)) {
         isKmlFile = true;
         try {
-          geojsonData = kmlService.parseKmlToGeoJson(fileContent, { defaultName: originalFilename });
+          geojsonData = kmlService.parseKmlToGeoJson(fileContent, {
+            defaultName: originalFilename,
+            assetMap: companionAssetMap,
+          });
         } catch (kmlErr) {
           return res.status(400).json({ message: kmlErr.message });
         }
@@ -1085,7 +1156,10 @@ async function uploadReferenceAlignment(req, res) {
       if (typeof rawData === 'string' && (rawData.trim().endsWith('.kml') || kmlService.isKml(rawData))) {
         isKmlFile = true;
         try {
-          geojsonData = kmlService.parseKmlToGeoJson(rawData, { defaultName: req.body.original_filename });
+          geojsonData = kmlService.parseKmlToGeoJson(rawData, {
+            defaultName: req.body.original_filename,
+            assetMap: companionAssetMap,
+          });
         } catch (kmlErr) {
           return res.status(400).json({ message: kmlErr.message });
         }

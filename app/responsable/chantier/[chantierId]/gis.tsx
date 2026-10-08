@@ -214,6 +214,7 @@ export default function GisSetupScreen() {
   const [saveSuccess, setSaveSuccess] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [companionAssets, setCompanionAssets] = useState<Array<{ name: string; data?: string; url?: string }>>([]);
 
   // Load existing chantier and any existing GIS alignment/troncons
   const loadChantierData = useCallback(async () => {
@@ -292,15 +293,23 @@ export default function GisSetupScreen() {
 
   // Automatic CRS Detection
   // Automatic CRS Detection
-  const runCrsDetection = async (data: any, fileName?: string, explicitSrid?: number, kmlText?: string) => {
+  const runCrsDetection = async (
+    data: any,
+    fileName?: string,
+    explicitSrid?: number,
+    kmlText?: string,
+    assetsToPass?: Array<{ name: string; data?: string; url?: string }>
+  ) => {
     if (!token || !chantierId || (!data && !kmlText)) return;
     setIsDetectingCrs(true);
     try {
+      const activeAssets = assetsToPass !== undefined ? assetsToPass : companionAssets;
       const res = await api.detectCrs(token, chantierId, {
         geojson: data,
         kmlText: kmlText,
         fileName: fileName || selectedFileName || (kmlText ? 'source.kml' : 'source.geojson'),
         source_srid: explicitSrid,
+        assets: activeAssets.length > 0 ? activeAssets : undefined,
       });
       setCrsDetection(res);
       setSelectedCrsSrid(res.detected_srid);
@@ -399,8 +408,10 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
           'application/vnd.google-earth.kml+xml',
           'application/xml',
           'text/xml',
+          'image/*',
           '*/*',
         ],
+        multiple: true,
         copyToCacheDirectory: true,
       });
 
@@ -408,19 +419,75 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
         return;
       }
 
-      const asset = result.assets[0];
-      const fileName = asset.name || 'document.geojson';
+      // Distinguish primary spatial file and companion images
+      const isImg = (name?: string, mime?: string) => {
+        const n = (name || '').toLowerCase();
+        return (
+          n.endsWith('.png') ||
+          n.endsWith('.jpg') ||
+          n.endsWith('.jpeg') ||
+          n.endsWith('.webp') ||
+          n.endsWith('.tif') ||
+          n.endsWith('.tiff') ||
+          n.endsWith('.bmp') ||
+          mime?.startsWith('image/')
+        );
+      };
+
+      const imageAssets = result.assets.filter((a) => isImg(a.name, a.mimeType));
+      const spatialAsset = result.assets.find((a) => !isImg(a.name, a.mimeType)) || result.assets[0];
+      const fileName = spatialAsset.name || 'document.geojson';
+
+      // Load companion assets into memory
+      const loadedAssets: Array<{ name: string; data: string }> = [];
+      for (const img of imageAssets) {
+        try {
+          let base64Data = '';
+          if (Platform.OS === 'web') {
+            const webFile = img.file;
+            if (webFile) {
+              base64Data = await new Promise<string>((res, rej) => {
+                const r = new FileReader();
+                r.onload = (ev) => res(ev.target?.result as string);
+                r.onerror = rej;
+                r.readAsDataURL(webFile);
+              });
+            } else if (img.uri) {
+              const res = await fetch(img.uri);
+              const blob = await res.blob();
+              base64Data = await new Promise<string>((res, rej) => {
+                const r = new FileReader();
+                r.onload = (ev) => res(ev.target?.result as string);
+                r.onerror = rej;
+                r.readAsDataURL(blob);
+              });
+            }
+          } else {
+            const b64 = await FileSystem.readAsStringAsync(img.uri, {
+              encoding: FileSystem.EncodingType.Base64,
+            });
+            const mime = img.mimeType || 'image/png';
+            base64Data = `data:${mime};base64,${b64}`;
+          }
+          if (base64Data) {
+            loadedAssets.push({ name: img.name || 'image.png', data: base64Data });
+          }
+        } catch (imgErr) {
+          console.warn('Erreur chargement asset compagnon:', img.name, imgErr);
+        }
+      }
+      setCompanionAssets(loadedAssets);
 
       let content = '';
       if (Platform.OS === 'web') {
-        if (asset.file) {
-          content = await asset.file.text();
+        if (spatialAsset.file) {
+          content = await spatialAsset.file.text();
         } else {
-          const res = await fetch(asset.uri);
+          const res = await fetch(spatialAsset.uri);
           content = await res.text();
         }
       } else {
-        content = await FileSystem.readAsStringAsync(asset.uri, {
+        content = await FileSystem.readAsStringAsync(spatialAsset.uri, {
           encoding: FileSystem.EncodingType.UTF8,
         });
       }
@@ -430,7 +497,7 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
       if (isKmlFile) {
         setSelectedFileName(fileName);
         setAnalysisResult(null);
-        await runCrsDetection(null, fileName, undefined, content);
+        await runCrsDetection(null, fileName, undefined, content, loadedAssets);
       } else {
         const parsed = JSON.parse(content);
         setSelectedFileName(fileName);
@@ -444,7 +511,7 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
           setSelectedLocation(null);
         }
 
-        runCrsDetection(parsed, fileName);
+        runCrsDetection(parsed, fileName, undefined, undefined, loadedAssets);
       }
     } catch (err: any) {
       if (err?.message?.includes('User cancelled') || err?.code === 'DOCUMENT_PICKER_CANCELED') {
@@ -461,38 +528,77 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
   // Web input change handler
   const handleFileSelect = (event: any) => {
     if (Platform.OS === 'web') {
-      const file = event.target.files?.[0];
-      if (!file) return;
+      const fileList: FileList = event.target.files;
+      if (!fileList || fileList.length === 0) return;
 
-      setSelectedFileName(file.name);
-      const reader = new FileReader();
-      reader.onload = async (e) => {
-        try {
-          const content = e.target?.result as string;
-          const isKmlFile = file.name.toLowerCase().endsWith('.kml') || content.trim().startsWith('<') || content.includes('<kml');
-
-          if (isKmlFile) {
-            setAnalysisResult(null);
-            await runCrsDetection(null, file.name, undefined, content);
-          } else {
-            const parsed = JSON.parse(content);
-            setGeojsonData(parsed);
-            setAnalysisResult(null);
-
-            const centerCoord = extractCenterFromGeoJson(parsed);
-            if (centerCoord) {
-              setMapCenter(centerCoord);
-              setMapZoom(12);
-              setSelectedLocation(null);
-            }
-
-            runCrsDetection(parsed, file.name);
-          }
-        } catch (err: any) {
-          Alert.alert('Fichier invalide', err.message || "Le fichier sélectionné n'est pas un fichier spatial (GeoJSON/KML) valide.");
-        }
+      const files = Array.from(fileList);
+      const isImg = (f: File) => {
+        const n = f.name.toLowerCase();
+        return (
+          n.endsWith('.png') ||
+          n.endsWith('.jpg') ||
+          n.endsWith('.jpeg') ||
+          n.endsWith('.webp') ||
+          n.endsWith('.tif') ||
+          n.endsWith('.tiff') ||
+          n.endsWith('.bmp') ||
+          f.type.startsWith('image/')
+        );
       };
-      reader.readAsText(file);
+
+      const imageFiles = files.filter(isImg);
+      const spatialFile = files.find((f) => !isImg(f)) || files[0];
+
+      // Read companion images as base64
+      Promise.all(
+        imageFiles.map(async (img) => {
+          try {
+            const b64 = await new Promise<string>((res, rej) => {
+              const r = new FileReader();
+              r.onload = (e) => res(e.target?.result as string);
+              r.onerror = rej;
+              r.readAsDataURL(img);
+            });
+            return { name: img.name, data: b64 };
+          } catch {
+            return null;
+          }
+        })
+      ).then((loaded) => {
+        const validLoaded = loaded.filter(Boolean) as Array<{ name: string; data: string }>;
+        setCompanionAssets(validLoaded);
+
+        setSelectedFileName(spatialFile.name);
+        const reader = new FileReader();
+        reader.onload = async (e) => {
+          try {
+            const content = e.target?.result as string;
+            const isKmlFile = spatialFile.name.toLowerCase().endsWith('.kml') || content.trim().startsWith('<') || content.includes('<kml');
+
+            if (isKmlFile) {
+              setAnalysisResult(null);
+              await runCrsDetection(null, spatialFile.name, undefined, content, validLoaded);
+            } else {
+              const parsed = JSON.parse(content);
+              setGeojsonData(parsed);
+              setAnalysisResult(null);
+
+              const centerCoord = extractCenterFromGeoJson(parsed);
+              if (centerCoord) {
+                setMapCenter(centerCoord);
+                setMapZoom(12);
+                setSelectedLocation(null);
+              }
+
+              runCrsDetection(parsed, spatialFile.name, undefined, undefined, validLoaded);
+            }
+          } catch (err: any) {
+            Alert.alert('Fichier invalide', err.message || "Le fichier sélectionné n'est pas un fichier spatial (GeoJSON/KML) valide.");
+          }
+        };
+        reader.readAsText(spatialFile);
+      });
+
       // Reset input value so selecting the same file again triggers change
       event.target.value = '';
     }
@@ -500,6 +606,7 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
 
   const handleUseSampleGeoJSON = () => {
     setSelectedFileName('infrastructure_trace.geojson');
+    setCompanionAssets([]);
     setGeojsonData(SAMPLE_INFRASTRUCTURE_GEOJSON);
     setAnalysisResult(null);
     setKmlMetadata(null);
@@ -697,6 +804,7 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
         fileName: selectedFileName || 'source.geojson',
         aoi: aoiCoordinates,
         source_srid: selectedCrsSrid || crsDetection?.detected_srid || undefined,
+        assets: companionAssets.length > 0 ? companionAssets : undefined,
       });
 
       setAnalysisResult(analysis);
@@ -820,6 +928,7 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
         fileName: selectedFileName || 'source.geojson',
         aoi: aoiCoordinates,
         source_srid: selectedCrsSrid || crsDetection?.detected_srid || undefined,
+        assets: companionAssets.length > 0 ? companionAssets : undefined,
       });
 
       setAnalysisResult(analysis);
@@ -867,6 +976,7 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
         source_srid: selectedCrsSrid || crsDetection?.detected_srid || undefined,
         source_crs_name: crsDetection?.crs_name,
         kml_metadata: kmlMetadata || crsDetection?.kml_metadata || null,
+        assets: companionAssets.length > 0 ? companionAssets : undefined,
       });
 
       setReferenceAlignment(alignRes.reference_alignment);
@@ -1161,7 +1271,8 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
           type="file"
           ref={fileInputRef as any}
           onChange={handleFileSelect}
-          accept=".geojson,.json,.kml"
+          accept=".geojson,.json,.kml,.png,.jpg,.jpeg,.webp"
+          multiple
           style={{ display: 'none' }}
         />
       )}

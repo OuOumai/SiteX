@@ -357,7 +357,7 @@ function resolveStyle(styleUrl, stylesRegistry) {
  * @param {string|any} rawHref 
  * @returns {{ href: string, isRemote: boolean, isSafe: boolean, isAvailable: boolean, warning: string|null }}
  */
-function validateAndSanitizeAssetHref(rawHref) {
+function validateAndSanitizeAssetHref(rawHref, options = {}) {
   if (!rawHref || typeof rawHref !== 'string') {
     return {
       href: '',
@@ -379,7 +379,8 @@ function validateAndSanitizeAssetHref(rawHref) {
     lower.startsWith('file:')
   ) {
     return {
-      href: trimmed,
+      href: null,
+      originalHref: trimmed,
       isRemote: false,
       isSafe: false,
       isAvailable: false,
@@ -393,7 +394,8 @@ function validateAndSanitizeAssetHref(rawHref) {
       const parsed = new URL(trimmed);
       if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
         return {
-          href: trimmed,
+          href: null,
+          originalHref: trimmed,
           isRemote: true,
           isSafe: false,
           isAvailable: false,
@@ -402,6 +404,7 @@ function validateAndSanitizeAssetHref(rawHref) {
       }
       return {
         href: trimmed,
+        originalHref: trimmed,
         isRemote: true,
         isSafe: true,
         isAvailable: true, // Safe for client-side display in Leaflet; server does NOT fetch
@@ -409,7 +412,8 @@ function validateAndSanitizeAssetHref(rawHref) {
       };
     } catch {
       return {
-        href: trimmed,
+        href: null,
+        originalHref: trimmed,
         isRemote: true,
         isSafe: false,
         isAvailable: false,
@@ -426,7 +430,8 @@ function validateAndSanitizeAssetHref(rawHref) {
     /^[a-zA-Z]:/.test(trimmed)
   ) {
     return {
-      href: trimmed,
+      href: null,
+      originalHref: trimmed,
       isRemote: false,
       isSafe: false,
       isAvailable: false,
@@ -438,7 +443,8 @@ function validateAndSanitizeAssetHref(rawHref) {
   const normalized = path.posix.normalize(trimmed.replace(/\\/g, '/')).replace(/^\/+/, '');
   if (normalized.startsWith('..') || normalized.includes('/../')) {
     return {
-      href: trimmed,
+      href: null,
+      originalHref: trimmed,
       isRemote: false,
       isSafe: false,
       isAvailable: false,
@@ -446,13 +452,77 @@ function validateAndSanitizeAssetHref(rawHref) {
     };
   }
 
+  // 4. Resolve against local companion assets if provided
+  const assetMap = options.assetMap || null;
+  const baseName = path.basename(normalized);
+
+  if (assetMap && typeof assetMap === 'object') {
+    let resolvedUrl = null;
+    if (assetMap[normalized]) {
+      resolvedUrl = assetMap[normalized];
+    } else if (assetMap[baseName]) {
+      resolvedUrl = assetMap[baseName];
+    } else {
+      // Case-insensitive lookup across mapped keys
+      const lowerNorm = normalized.toLowerCase();
+      const lowerBase = baseName.toLowerCase();
+      for (const k of Object.keys(assetMap)) {
+        const lowerK = k.toLowerCase();
+        if (lowerK === lowerNorm || lowerK === lowerBase || path.basename(lowerK) === lowerBase) {
+          resolvedUrl = assetMap[k];
+          break;
+        }
+      }
+    }
+
+    if (resolvedUrl) {
+      return {
+        href: resolvedUrl,
+        originalHref: trimmed,
+        isRemote: false,
+        isSafe: true,
+        isAvailable: true,
+        warning: null,
+      };
+    }
+  }
+
+  if (typeof options.assetResolver === 'function') {
+    try {
+      const customRes = options.assetResolver(normalized);
+      if (customRes && customRes.href) {
+        return {
+          href: customRes.href,
+          originalHref: trimmed,
+          isRemote: !!customRes.isRemote,
+          isSafe: true,
+          isAvailable: customRes.isAvailable !== false,
+          warning: customRes.warning || null,
+        };
+      }
+    } catch {}
+  }
+
+  if (options.assetBaseUrl) {
+    const combined = options.assetBaseUrl.replace(/\/+$/, '') + '/' + normalized;
+    return {
+      href: combined,
+      originalHref: trimmed,
+      isRemote: false,
+      isSafe: true,
+      isAvailable: true,
+      warning: null,
+    };
+  }
+
   return {
     href: normalized,
+    originalHref: trimmed,
     isRemote: false,
     isSafe: true,
     // Standalone KML uploads do not bundle companion local assets yet; mark as unavailable cleanly
     isAvailable: false,
-    warning: "Ressource image locale référencée dans le KML (fichier compagnon non présent sur le serveur).",
+    warning: "Ressource image locale référencée dans le KML (fichier compagnon non disponible localement / non présent sur le serveur).",
   };
 }
 
@@ -596,7 +666,7 @@ function parseViewVolume(vNode) {
  * @param {object} collector 
  * @param {Array<string>} currentFolderStack 
  */
-function processGroundOverlay(goNode, collector, currentFolderStack) {
+function processGroundOverlay(goNode, collector, currentFolderStack, options = {}) {
   const index = collector.groundOverlays.length + 1;
   const rawId = goNode['@_id'] || goNode.id || `ground-overlay-${index}`;
   const name = goNode.name ? String(goNode.name).trim() : `GroundOverlay ${index}`;
@@ -607,7 +677,7 @@ function processGroundOverlay(goNode, collector, currentFolderStack) {
   // Icon / Href extraction
   const iconNode = goNode.Icon || goNode.icon || {};
   const rawHref = typeof iconNode === 'object' ? iconNode.href : (typeof iconNode === 'string' ? iconNode : '');
-  const assetInfo = validateAndSanitizeAssetHref(rawHref);
+  const assetInfo = validateAndSanitizeAssetHref(rawHref, options);
 
   const refreshMode = iconNode.refreshMode ? String(iconNode.refreshMode).trim() : null;
   const refreshInterval = !isNaN(parseFloat(iconNode.refreshInterval)) ? parseFloat(iconNode.refreshInterval) : null;
@@ -616,12 +686,18 @@ function processGroundOverlay(goNode, collector, currentFolderStack) {
   // LatLonBox
   const latLonBox = parseLatLonBox(goNode.LatLonBox || goNode.latLonBox);
   const time = extractTimeInfo(goNode);
+  const altitude = !isNaN(parseFloat(goNode.altitude)) ? parseFloat(goNode.altitude) : null;
+  const altitudeMode = goNode.altitudeMode ? String(goNode.altitudeMode).trim() : null;
 
   // Opacity derived from AABBGGRR color or default 1.0
   let opacity = 1.0;
   if (color) {
     const conv = convertKmlColorToLeaflet(color, '#FFFFFF', 1.0);
     opacity = conv.opacity;
+  }
+
+  if (assetInfo.warning && collector.warnings) {
+    collector.warnings.push(assetInfo.warning);
   }
 
   collector.groundOverlays.push({
@@ -632,11 +708,14 @@ function processGroundOverlay(goNode, collector, currentFolderStack) {
     folders: [...currentFolderStack],
     icon: {
       href: assetInfo.href,
+      originalHref: assetInfo.originalHref || (rawHref ? String(rawHref).trim() : null),
       refreshMode,
       refreshInterval,
       viewBoundScale,
     },
     latLonBox,
+    altitude,
+    altitudeMode,
     time,
     color,
     opacity,
@@ -655,7 +734,7 @@ function processGroundOverlay(goNode, collector, currentFolderStack) {
  * @param {object} collector 
  * @param {Array<string>} currentFolderStack 
  */
-function processPhotoOverlay(poNode, collector, currentFolderStack) {
+function processPhotoOverlay(poNode, collector, currentFolderStack, options = {}) {
   const index = collector.photoOverlays.length + 1;
   const rawId = poNode['@_id'] || poNode.id || `photo-overlay-${index}`;
   const name = poNode.name ? String(poNode.name).trim() : `PhotoOverlay ${index}`;
@@ -664,7 +743,11 @@ function processPhotoOverlay(poNode, collector, currentFolderStack) {
   // Icon / Href extraction
   const iconNode = poNode.Icon || poNode.icon || {};
   const rawHref = typeof iconNode === 'object' ? iconNode.href : (typeof iconNode === 'string' ? iconNode : '');
-  const assetInfo = validateAndSanitizeAssetHref(rawHref);
+  const assetInfo = validateAndSanitizeAssetHref(rawHref, options);
+
+  if (assetInfo.warning && collector.warnings) {
+    collector.warnings.push(assetInfo.warning);
+  }
 
   // Spatial & Orientation extraction
   const spatial = extractPhotoOverlayPosition(poNode);
@@ -739,12 +822,12 @@ function isKmlTimeActiveAtDate(timeObj, targetDate) {
  * @param {object} collector 
  * @param {Array<string>} currentFolderStack 
  */
-function traverseKmlTree(node, collector, currentFolderStack = []) {
+function traverseKmlTree(node, collector, currentFolderStack = [], options = {}) {
   if (!node || typeof node !== 'object') return;
 
   if (Array.isArray(node)) {
     for (const item of node) {
-      traverseKmlTree(item, collector, currentFolderStack);
+      traverseKmlTree(item, collector, currentFolderStack, options);
     }
     return;
   }
@@ -758,25 +841,25 @@ function traverseKmlTree(node, collector, currentFolderStack = []) {
         if (!f || typeof f !== 'object') continue;
         const folderName = f.name ? String(f.name).trim() : 'Folder';
         const nextFolderStack = [...currentFolderStack, folderName];
-        traverseKmlTree(f, collector, nextFolderStack);
+        traverseKmlTree(f, collector, nextFolderStack, options);
       }
     } else if (key === 'Placemark') {
       const placemarks = Array.isArray(val) ? val : [val];
       for (const p of placemarks) {
         if (!p || typeof p !== 'object') continue;
-        processPlacemark(p, collector, currentFolderStack);
+        processPlacemark(p, collector, currentFolderStack, options);
       }
     } else if (key === 'GroundOverlay') {
       const overlays = Array.isArray(val) ? val : [val];
       for (const go of overlays) {
         if (!go || typeof go !== 'object') continue;
-        processGroundOverlay(go, collector, currentFolderStack);
+        processGroundOverlay(go, collector, currentFolderStack, options);
       }
     } else if (key === 'PhotoOverlay') {
       const photos = Array.isArray(val) ? val : [val];
       for (const po of photos) {
         if (!po || typeof po !== 'object') continue;
-        processPhotoOverlay(po, collector, currentFolderStack);
+        processPhotoOverlay(po, collector, currentFolderStack, options);
       }
     } else if (
       key !== 'Style' &&
@@ -787,7 +870,7 @@ function traverseKmlTree(node, collector, currentFolderStack = []) {
       key !== 'PhotoOverlay' &&
       typeof val === 'object'
     ) {
-      traverseKmlTree(val, collector, currentFolderStack);
+      traverseKmlTree(val, collector, currentFolderStack, options);
     }
   }
 }
@@ -798,8 +881,9 @@ function traverseKmlTree(node, collector, currentFolderStack = []) {
  * @param {any} pNode 
  * @param {object} collector 
  * @param {Array<string>} currentFolderStack 
+ * @param {object} options
  */
-function processPlacemark(pNode, collector, currentFolderStack) {
+function processPlacemark(pNode, collector, currentFolderStack, options = {}) {
   const pExtendedData = extractExtendedData(pNode.ExtendedData);
   let pName = pNode.name ? String(pNode.name).trim() : null;
   // Fallbacks: if no direct <name>, check SimpleData / ExtendedData fields
@@ -847,11 +931,11 @@ function processPlacemark(pNode, collector, currentFolderStack) {
   // Check if GroundOverlay or PhotoOverlay was nested inside Placemark
   if (pNode.GroundOverlay) {
     const gos = Array.isArray(pNode.GroundOverlay) ? pNode.GroundOverlay : [pNode.GroundOverlay];
-    for (const go of gos) processGroundOverlay(go, collector, currentFolderStack);
+    for (const go of gos) processGroundOverlay(go, collector, currentFolderStack, options);
   }
   if (pNode.PhotoOverlay) {
     const pos = Array.isArray(pNode.PhotoOverlay) ? pNode.PhotoOverlay : [pNode.PhotoOverlay];
-    for (const po of pos) processPhotoOverlay(po, collector, currentFolderStack);
+    for (const po of pos) processPhotoOverlay(po, collector, currentFolderStack, options);
   }
 
   // Scan geometries inside Placemark
@@ -944,9 +1028,10 @@ function parseKmlToGeoJson(kmlXmlString, options = {}) {
     unsupportedGeometries: [],
     groundOverlays: [],
     photoOverlays: [],
+    warnings: [],
   };
 
-  traverseKmlTree(parsedXml, collector, []);
+  traverseKmlTree(parsedXml, collector, [], options);
 
   // Also check if any LineString was defined outside standard Document/Folder tree
   if (collector.lineStrings.length === 0) {
@@ -1002,6 +1087,7 @@ function parseKmlToGeoJson(kmlXmlString, options = {}) {
       generator: pMeta.generator || null,
       groundOverlays: collector.groundOverlays || [],
       photoOverlays: collector.photoOverlays || [],
+      warnings: collector.warnings || [],
       altitudeCoordinates: parsedSpatial.hasAltitude ? parsedSpatial.coordinates3D : null,
       hasAltitude: parsedSpatial.hasAltitude,
       altitudeRange: parsedSpatial.altitudeRange,
@@ -1087,6 +1173,7 @@ function parseKmlToGeoJson(kmlXmlString, options = {}) {
     featureCount: features.length,
     groundOverlays: collector.groundOverlays || [],
     photoOverlays: collector.photoOverlays || [],
+    warnings: collector.warnings || [],
     isMultiFeature: true,
   };
 

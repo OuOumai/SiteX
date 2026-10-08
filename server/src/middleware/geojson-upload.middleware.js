@@ -28,7 +28,10 @@ const storage = multer.diskStorage({
 });
 
 const fileFilter = (req, file, cb) => {
-  const allowedExts = ['.geojson', '.json', '.kml'];
+  const allowedExts = [
+    '.geojson', '.json', '.kml',
+    '.png', '.jpg', '.jpeg', '.webp', '.tif', '.tiff', '.bmp'
+  ];
   const ext = path.extname(file.originalname || '').toLowerCase();
   const mimetype = (file.mimetype || '').toLowerCase();
   
@@ -36,16 +39,18 @@ const fileFilter = (req, file, cb) => {
     mimetype.includes('kml') ||
     mimetype.includes('xml') ||
     mimetype === 'application/vnd.google-earth.kml+xml';
+  const isImageMime = mimetype.startsWith('image/');
 
   if (
     allowedExts.includes(ext) ||
     mimetype.includes('json') ||
     isKmlMime ||
+    isImageMime ||
     mimetype === 'application/octet-stream'
   ) {
     cb(null, true);
   } else {
-    cb(new Error('Format de fichier non supporté. Veuillez sélectionner un fichier .geojson, .json ou .kml.'), false);
+    cb(new Error('Format de fichier non supporté. Veuillez sélectionner un fichier spatial (.geojson, .json, .kml) ou une image compagnon (.png, .jpg).'), false);
   }
 };
 
@@ -56,5 +61,29 @@ const geojsonUpload = multer({
   },
   fileFilter: fileFilter,
 });
+
+/**
+ * Middleware handling both single spatial file uploads and multi-file uploads
+ * containing a primary spatial file (.kml, .geojson) alongside companion assets (e.g. .png images).
+ */
+const spatialAndAssets = (req, res, next) => {
+  geojsonUpload.any()(req, res, (err) => {
+    if (err) return next(err);
+    if (req.files && Array.isArray(req.files) && req.files.length > 0) {
+      const spatialFile = req.files.find((f) => {
+        const ext = path.extname(f.originalname || '').toLowerCase();
+        return ['.kml', '.geojson', '.json'].includes(ext);
+      }) || req.files[0];
+
+      req.file = spatialFile;
+      req.companionFiles = req.files.filter((f) => f !== spatialFile);
+    } else {
+      req.companionFiles = [];
+    }
+    next();
+  });
+};
+
+geojsonUpload.spatialAndAssets = spatialAndAssets;
 
 module.exports = geojsonUpload;
