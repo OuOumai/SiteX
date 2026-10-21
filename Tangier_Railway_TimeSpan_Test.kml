@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <name>Tangier_Railway_TimeSpan_Test.kml</name>
+    <description>SiteX Test 05 - Dedicated KML TimeSpan Verification</description>
+    <Style id="railway-timespan-style">
+      <LineStyle>
+        <color>ff10b981</color>
+        <width>4</width>
+      </LineStyle>
+    </Style>
+    <Folder>
+      <name>Railway Temporal Test</name>
+      <Placemark>
+        <name>Railway Section - TimeSpan Test</name>
+        <description>Section ferroviaire de Tanger avec intervalle temporel contextuel KML</description>
+        <styleUrl>#railway-timespan-style</styleUrl>
+        <TimeSpan>
+          <begin>2026-06-01T00:00:00Z</begin>
+          <end>2026-08-31T23:59:59Z</end>
+        </TimeSpan>
+        <LineString>
+          <tessellate>1</tessellate>
+          <coordinates>
+            -5.7828806,35.7588929,0 -5.7825699,35.7593622,0 -5.7821761,35.7599674,0 -5.7820296,35.7601839,0 -5.7818558,35.7604691,0 -5.7816881,35.7607487,0 -5.7815833,35.7609720,0 -5.7814819,35.7612089,0 -5.7813852,35.7614847,0 -5.7813035,35.7617740,0 -5.7812471,35.7620466,0 -5.7812071,35.7623326,0 -5.7811828,35.7626432,0
+          </coordinates>
+        </LineString>
+      </Placemark>
+    </Folder>
+  </Document>
+</kml>

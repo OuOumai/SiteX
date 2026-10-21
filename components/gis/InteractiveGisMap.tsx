@@ -1,8 +1,9 @@
+import { isKmlSource } from '@/lib/kmlPanorama';
 import React, { useMemo, useRef, useEffect, useImperativeHandle, forwardRef } from 'react';
 import { View, StyleSheet, Platform, ActivityIndicator, DimensionValue } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { Palette } from '@/constants/theme';
-import { KmlMetadata, KmlGroundOverlay, KmlPhotoOverlay, getMediaUrl } from '@/services/api';
+import { KmlMetadata, KmlGroundOverlay, KmlPhotoOverlay, getMediaUrl, API_URL } from '@/services/api';
 import { LEAFLET_CSS, LEAFLET_JS, PROJ4_JS } from './leafletAssets';
 import type { DerivedTemporalState } from '@/lib/temporal';
 import { applyTemporalProgressToSegments, isKmlElementVisible } from '@/lib/temporal';
@@ -137,6 +138,7 @@ export interface InteractiveGisMapProps {
   // Level 3 — KML 2D Visualization
   kmlGeometry?: GisFeatureGeometry | null;
   kmlMetadata?: KmlMetadata | null;
+  kmlSourceFormat?: string;
   showKmlLayer?: boolean;
   onToggleKmlVisibility?: (visible: boolean) => void;
   onSelectKml?: (metadata: KmlMetadata) => void;
@@ -144,6 +146,7 @@ export interface InteractiveGisMapProps {
   kmlGroundOverlays?: KmlGroundOverlay[] | null;
   kmlPhotoOverlays?: KmlPhotoOverlay[] | null;
   showKmlImages?: boolean;
+  showKmlImagesControl?: boolean;
   onToggleKmlImagesVisibility?: (visible: boolean) => void;
   onSelectKmlImage?: (overlay: KmlGroundOverlay | KmlPhotoOverlay) => void;
   // Level 6B — Temporal synchronization
@@ -203,12 +206,14 @@ export function InteractiveGisMap({
   onInteractionChange,
   kmlGeometry = null,
   kmlMetadata = null,
+  kmlSourceFormat,
   showKmlLayer = true,
   onToggleKmlVisibility,
   onSelectKml,
   kmlGroundOverlays = null,
   kmlPhotoOverlays = null,
-  showKmlImages = true,
+  showKmlImages = false,
+  showKmlImagesControl = true,
   onToggleKmlImagesVisibility,
   onSelectKmlImage,
   temporalState = null,
@@ -376,7 +381,8 @@ export function InteractiveGisMap({
       kmlGeometry: kmlGeometry || null,
       rawKmlGeom: kmlGeometry || null,
       rawKmlMeta: kmlMetadata || null,
-      rawKmlGroundOverlays: (kmlGroundOverlays || (kmlMetadata && kmlMetadata.groundOverlays) || []).map((go) => {
+      showKmlLayer: showKmlLayerTemporal,
+      rawKmlGroundOverlays: (isKmlSource(kmlSourceFormat) ? (kmlGroundOverlays || kmlMetadata?.groundOverlays || []) : []).map((go) => {
         if (!go || !go.icon || !go.icon.href) return go;
         return {
           ...go,
@@ -386,7 +392,7 @@ export function InteractiveGisMap({
           },
         };
       }),
-      rawKmlPhotoOverlays: (kmlPhotoOverlays || (kmlMetadata && kmlMetadata.photoOverlays) || []).map((po) => {
+      rawKmlPhotoOverlays: (isKmlSource(kmlSourceFormat) ? (kmlPhotoOverlays || kmlMetadata?.photoOverlays || []) : []).map((po) => {
         if (!po || !po.icon || !po.icon.href) return po;
         return {
           ...po,
@@ -397,6 +403,7 @@ export function InteractiveGisMap({
         };
       }),
       showKmlImages: showKmlImages !== false,
+      showKmlImagesControl,
       rawSearchLoc: searchLocation || null,
       rawTroncons: temporalTroncons,
       rawCorridors: corridors && corridors.length > 0 ? corridors : [],
@@ -1046,6 +1053,11 @@ export function InteractiveGisMap({
         inertiaDeceleration: 3000
       }).setView(initCenter, initZoom);
 
+      // Ensure Leaflet default image path is explicitly set to CDN
+      if (typeof L !== 'undefined' && L.Icon && L.Icon.Default) {
+        L.Icon.Default.imagePath = "https://unpkg.com/leaflet@1.9.4/dist/images/";
+      }
+
       // Nav Toolbar and Zoom / Overview Buttons with robust event handling
       var navToolbar = document.querySelector(".map-nav-toolbar");
       if (navToolbar && typeof L.DomEvent !== "undefined") {
@@ -1148,7 +1160,7 @@ export function InteractiveGisMap({
       var kmlImageLayerGroup = L.layerGroup();
       var hasKmlImages = (rawKmlGroundOverlays && rawKmlGroundOverlays.length > 0) || (rawKmlPhotoOverlays && rawKmlPhotoOverlays.length > 0);
 
-      if (hasKmlImages) {
+      if (hasKmlImages && config.showKmlImagesControl) {
         overlayLayers["🖼️ Images KML"] = kmlImageLayerGroup;
       }
       if (showKmlImages && hasKmlImages) {
@@ -1475,17 +1487,31 @@ export function InteractiveGisMap({
               var opacity = typeof go.opacity === "number" ? Math.max(0, Math.min(1, go.opacity)) : 1.0;
               var zIndex = typeof go.drawOrder === "number" ? go.drawOrder : 1;
 
-              var canRenderImage = Boolean(go.isSafe && go.isAvailable && go.icon && go.icon.href);
+              var hasValidUrl = Boolean(go.icon && go.icon.href && (go.icon.href.indexOf('/') !== -1 || go.icon.href.indexOf('http') === 0 || go.isAvailable !== false));
+              var canRenderImage = Boolean(go.isSafe !== false && hasValidUrl);
               if (canRenderImage) {
                 try {
                   var imgOverlay = L.imageOverlay(go.icon.href, bounds, {
                     opacity: opacity,
                     zIndex: zIndex,
-                    interactive: true
+                    interactive: true,
+                    crossOrigin: 'anonymous'
                   }).addTo(kmlImageLayerGroup);
 
                   var rotNotice = (box.rotation && box.rotation !== 0) ? ' <span style="color:#F59E0B;">(Rot: ' + box.rotation + '°)</span>' : '';
                   imgOverlay.bindTooltip('<span class="kml-source-tooltip">🖼️ ' + overlayName + ' (GroundOverlay)' + rotNotice + '</span>', { sticky: true, direction: "top" });
+
+                  if (box.rotation && typeof box.rotation === 'number' && box.rotation !== 0) {
+                    imgOverlay.on('load', function() {
+                      try {
+                        var el = imgOverlay.getElement();
+                        if (el) {
+                          el.style.transformOrigin = 'center center';
+                          el.style.transform += ' rotate(' + box.rotation + 'deg)';
+                        }
+                      } catch(rotErr) {}
+                    });
+                  }
 
                   imgOverlay.on("click", function(e) {
                     if (e && e.originalEvent) L.DomEvent.stopPropagation(e);
@@ -1600,7 +1626,7 @@ export function InteractiveGisMap({
             L.DomEvent.disableScrollPropagation(kmlTogglesContainer);
             document.body.appendChild(kmlTogglesContainer);
           }
-          kmlTogglesContainer.appendChild(imgToggleBadge);
+          if (config.showKmlImagesControl) kmlTogglesContainer.appendChild(imgToggleBadge);
         } catch(imgErr) {
           console.warn("KML images layer render warning:", imgErr);
         }
@@ -2425,6 +2451,7 @@ export function InteractiveGisMap({
     rawGeoJson,
     kmlGeometry,
     kmlMetadata,
+    kmlSourceFormat,
     showKmlLayer,
     searchLocation,
     troncons,
@@ -2443,6 +2470,10 @@ export function InteractiveGisMap({
     customMarkers,
     customLines,
     temporalState,
+    kmlGroundOverlays,
+    kmlPhotoOverlays,
+    showKmlImages,
+    showKmlImagesControl,
   ]);
 
   if (Platform.OS === 'web') {
@@ -2484,7 +2515,7 @@ export function InteractiveGisMap({
         originWhitelist={['*']}
         source={{
           html: leafletHtml,
-          baseUrl: 'https://unpkg.com',
+          baseUrl: API_URL || undefined,
         }}
         onMessage={handleWebViewMessage}
         style={styles.webview}

@@ -2094,6 +2094,7 @@ class ApiClient {
       geojson?: any;
       geometry?: any;
       nom?: string;
+      source?: 'KML';
       source_srid?: number;
       source_crs_name?: string;
       kml_metadata?: KmlMetadata | null;
@@ -2114,6 +2115,7 @@ class ApiClient {
             geometry: fileData.geometry,
             original_filename: fileData.fileName || 'alignment.geojson',
             nom: fileData.nom,
+            source: fileData.source,
             source_srid: fileData.source_srid,
             source_crs_name: fileData.source_crs_name,
             kml_metadata: fileData.kml_metadata,

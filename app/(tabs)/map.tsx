@@ -1,3 +1,4 @@
+import { kmlMetadataForSource } from '@/lib/kmlPanorama';
 import React, { useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import {
   ActivityIndicator,
@@ -12,6 +13,7 @@ import { Ionicons } from '@expo/vector-icons';
 
 import { InteractiveGisMap, GisChantierAlignment, GisTronconSegment } from '@/components/gis/InteractiveGisMap';
 import { InteractiveGis3DMap } from '@/components/gis/InteractiveGis3DMap';
+import { KmlImageModal } from '@/components/gis/KmlImageModal';
 import { MapDesktopPanel } from '@/components/map/MapDesktopPanel';
 import { MapMonitoringSheet } from '@/components/map/MapMonitoringSheet';
 import { StationDetailModal } from '@/components/map/StationDetailModal';
@@ -30,6 +32,9 @@ import {
   TronconItem,
   TerrainObservationItem,
   getMediaUrl,
+  KmlGroundOverlay,
+  KmlPhotoOverlay,
+  KmlMetadata,
 } from '@/services/api';
 
 function chooseDefaultChantier(chantiers: ResponsableChantierItem[]) {
@@ -62,7 +67,7 @@ export default function MapScreen() {
   const [selectedChantierId, setSelectedChantierId] = useState<number | null>(null);
   const [selectedTronconId, setSelectedTronconId] = useState<number | null>(params.tronconId ? Number(params.tronconId) : null);
   const [activeReference, setActiveReference] = useState<ReferenceAlignment | null>(null);
-  const [projectAlignments, setProjectAlignments] = useState<GisChantierAlignment[]>([]);
+  const [projectAlignments, setProjectAlignments] = useState<(GisChantierAlignment & { kml_metadata?: KmlMetadata | null; source?: string; original_filename?: string })[]>([]);
   const [activeTroncons, setActiveTroncons] = useState<TronconItem[]>([]);
   const [isLoadingDashboard, setIsLoadingDashboard] = useState(true);
   const [isLoadingGis, setIsLoadingGis] = useState(false);
@@ -72,6 +77,12 @@ export default function MapScreen() {
   const [selectedObservation, setSelectedObservation] = useState<TerrainObservationItem | null>(null);
   const [focusedStationId, setFocusedStationId] = useState<number | null>(null);
   const [mapMode, setMapMode] = useState<'2d' | '3d'>('2d');
+  const [selectedKmlImage, setSelectedKmlImage] = useState<KmlGroundOverlay | KmlPhotoOverlay | null>(null);
+  const [isKmlImagesVisible, setIsKmlImagesVisible] = useState(false);
+
+  useEffect(() => {
+    setSelectedKmlImage(null);
+  }, [selectedChantierId, selectedProjectId]);
 
   // Helper to apply navigation params to project/chantier selection
   const applyRequestedSelection = useCallback((data: ResponsableDashboardData) => {
@@ -356,9 +367,10 @@ export default function MapScreen() {
           geometry: alignment.geometry,
           chantier_id: chantier.id,
           projet_id: chantier.projet_id,
-          source: alignment.source || 'KML',
+          source: alignment.source,
           original_filename: alignment.original_filename || alignment.nom,
           ref_id: alignment.id,
+          kml_metadata: alignment.kml_metadata,
         } : null;
       }));
       if (!active) return;
@@ -408,6 +420,16 @@ export default function MapScreen() {
   const assignedTronconId = isAgent ? agentAssignments.find((item) => item.chantier_id === selectedChantierId)?.troncon_id : undefined;
   const selectedTroncon = activeTroncons.find((item) => Number(item.id) === Number(selectedTronconId)) || null;
 
+  const kmlImages = useMemo(() => {
+    const metadata = isAgent || selectedChantierId
+      ? [kmlMetadataForSource(activeReference)]
+      : projectAlignments.map((alignment) => kmlMetadataForSource({ ...alignment, source: alignment.source || '' }));
+    return {
+      photoOverlays: metadata.flatMap((item) => item?.photoOverlays || []),
+      groundOverlays: metadata.flatMap((item) => item?.groundOverlays || []),
+    };
+  }, [isAgent, selectedChantierId, activeReference, projectAlignments]);
+
   const mapTroncons: GisTronconSegment[] = useMemo(
     () =>
       activeTroncons.map((troncon, index) => ({
@@ -426,7 +448,7 @@ export default function MapScreen() {
     [activeTroncons, assignedTronconId]
   );
 
-  const mapStations: NonNullable<React.ComponentProps<typeof InteractiveGisMap>['customMarkers']> = stationObservations
+  const mapStations: NonNullable<React.ComponentProps<typeof InteractiveGisMap>['customMarkers']> = useMemo(() => stationObservations
     .filter((obs) => Number.isFinite(Number(obs.projected_lat)) && Number.isFinite(Number(obs.projected_lng)))
     .map((obs) => ({
       id: obs.id,
@@ -439,7 +461,7 @@ export default function MapScreen() {
       dailyMeters: Number(obs.daily_progress_meters || 0), dailyPercentage: Number(obs.daily_progress_percentage || 0),
       totalPercentage: Number(obs.authoritative_progress_percentage ?? obs.progress_percentage),
       validationStatus: obs.validation_status,
-    }));
+    })), [stationObservations]);
 
   const handleSelectObservation = useCallback((observation: TerrainObservationItem) => {
     setFocusedStationId(observation.id);
@@ -565,7 +587,7 @@ export default function MapScreen() {
         rightContent={
           <View style={styles.headerModeToggle}>
             <TouchableOpacity
-              style={[styles.headerModeBtn, mapMode === '2d' && styles.headerModeBtnActive]}
+              style={[styles.headerModeBtn, width < 420 && styles.headerModeBtnCompact, mapMode === '2d' && styles.headerModeBtnActive]}
               onPress={() => setMapMode('2d')}
               activeOpacity={0.8}
             >
@@ -583,7 +605,7 @@ export default function MapScreen() {
             </TouchableOpacity>
 
             <TouchableOpacity
-              style={[styles.headerModeBtn, mapMode === '3d' && styles.headerModeBtnActive]}
+              style={[styles.headerModeBtn, width < 420 && styles.headerModeBtnCompact, mapMode === '3d' && styles.headerModeBtnActive]}
               onPress={() => setMapMode('3d')}
               activeOpacity={0.8}
             >
@@ -599,6 +621,19 @@ export default function MapScreen() {
                 3D
               </Text>
             </TouchableOpacity>
+            {(kmlImages.photoOverlays.length > 0 || kmlImages.groundOverlays.length > 0) && <TouchableOpacity
+              accessibilityRole="switch"
+              accessibilityLabel="KML"
+              accessibilityState={{ checked: isKmlImagesVisible }}
+              onPress={() => setIsKmlImagesVisible((visible) => !visible)}
+              style={[styles.headerModeBtn, width < 420 && styles.headerModeBtnCompact, isKmlImagesVisible && styles.headerModeBtnActive]}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="camera-outline" size={13} color={isKmlImagesVisible ? '#FFFFFF' : '#64748B'} />
+              <Text style={[styles.headerModeText, isKmlImagesVisible && styles.headerModeTextActive]} weight="bold">
+                KML
+              </Text>
+            </TouchableOpacity>}
           </View>
         }
       />
@@ -625,6 +660,7 @@ export default function MapScreen() {
         )}
 
         <View style={styles.mapArea}>
+
           {mapMode === '2d' ? (
             <InteractiveGisMap
               referenceGeometry={isAgent ? activeReference?.geometry : undefined}
@@ -641,6 +677,14 @@ export default function MapScreen() {
               fitPaddingBottom={!isDesktop ? (isSheetExpanded ? mobileSheetHeight : 145) : 35}
               optimizePkLabels
               customMarkers={mapStations}
+              kmlSourceFormat="KML"
+              kmlMetadata={kmlMetadataForSource(activeReference)}
+              kmlPhotoOverlays={kmlImages.photoOverlays}
+              kmlGroundOverlays={kmlImages.groundOverlays}
+              showKmlImages={isKmlImagesVisible}
+              showKmlImagesControl={false}
+              onToggleKmlImagesVisibility={setIsKmlImagesVisible}
+              onSelectKmlImage={setSelectedKmlImage}
               selectedMarkerId={focusedStationId}
               onSelectMarker={(id) => {
                 const observation = stationObservations.find((item) => String(item.id) === String(id));
@@ -651,6 +695,13 @@ export default function MapScreen() {
             <InteractiveGis3DMap
               referenceGeometry={isAgent ? activeReference?.geometry : (activeReference?.geometry || null)}
               kmlGeometry={activeReference?.original_geometry || undefined}
+              kmlSourceFormat="KML"
+              kmlMetadata={kmlMetadataForSource(activeReference)}
+              kmlPhotoOverlays={kmlImages.photoOverlays}
+              kmlGroundOverlays={kmlImages.groundOverlays}
+              showKmlImages={isKmlImagesVisible}
+              showKmlImagesControl={false}
+              onSelectKmlImage={setSelectedKmlImage}
               chantierAlignments={isAgent ? null : projectAlignments}
               selectedChantierId={selectedChantierId}
               onSelectChantierAlignment={(id) => {
@@ -742,6 +793,14 @@ export default function MapScreen() {
         onClose={() => setSelectedObservation(null)}
         onLocate={() => setSelectedObservation(null)}
       />
+      <KmlImageModal
+        sourceFormat="KML"
+        selectedKmlImage={selectedKmlImage}
+        visible={!!selectedKmlImage}
+        isKmlImagesVisible={isKmlImagesVisible}
+        onClose={() => setSelectedKmlImage(null)}
+        onToggleImages={() => setIsKmlImagesVisible((visible) => !visible)}
+      />
     </SafeAreaView>
   );
 }
@@ -786,6 +845,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 16,
+  },
+  headerModeBtnCompact: {
+    paddingHorizontal: 6,
   },
   headerModeBtnActive: {
     backgroundColor: Palette.primary,

@@ -1,3 +1,5 @@
+import { isKmlSource } from '@/lib/kmlPanorama';
+import { KmlImageModal } from '@/components/gis/KmlImageModal';
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   View,
@@ -38,6 +40,7 @@ import {
   KmlMetadata,
   KmlGroundOverlay,
   KmlPhotoOverlay,
+  getMediaUrl,
 } from '@/services/api';
 import { InteractiveGisMap, InteractiveGisMapRef, GisTronconSegment, GisCandidateCorridor } from '@/components/gis/InteractiveGisMap';
 import { InteractiveGis3DMap } from '@/components/gis/InteractiveGis3DMap';
@@ -975,6 +978,7 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
         nom: `Axe Référence - ${chantier?.nom || 'Chantier'} (${selectedCorridor.nom})`,
         source_srid: selectedCrsSrid || crsDetection?.detected_srid || undefined,
         source_crs_name: crsDetection?.crs_name,
+        source: isKmlSource(crsDetection?.source_format, selectedFileName) ? 'KML' : undefined,
         kml_metadata: kmlMetadata || crsDetection?.kml_metadata || null,
         assets: companionAssets.length > 0 ? companionAssets : undefined,
       });
@@ -1389,6 +1393,7 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
               selectedTronconId={selectedTronconId}
               onSelectTroncon={(id) => setSelectedTronconId(id)}
               kmlGeometry={kmlSourceGeometry}
+              kmlSourceFormat={crsDetection?.source_format || referenceAlignment?.source || (isKmlSource(null, selectedFileName) ? 'KML' : undefined)}
               kmlMetadata={kmlMetadata}
               kmlGroundOverlays={kmlMetadata?.groundOverlays || null}
               kmlPhotoOverlays={kmlMetadata?.photoOverlays || null}
@@ -1916,6 +1921,7 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
                   mapRef={mapRef}
                   rawGeoJson={geojsonData}
                   kmlGeometry={kmlSourceGeometry}
+                  kmlSourceFormat={crsDetection?.source_format || referenceAlignment?.source || (isKmlSource(null, selectedFileName) ? 'KML' : undefined)}
                   kmlMetadata={kmlMetadata}
                   showKmlLayer={isKmlLayerVisible}
                   onToggleKmlVisibility={setIsKmlLayerVisible}
@@ -2420,6 +2426,7 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
               <InteractiveGisMap
                 aoiGeometry={analysisResult.aoi_geometry}
                 kmlGeometry={kmlSourceGeometry}
+                kmlSourceFormat={crsDetection?.source_format || referenceAlignment?.source || (isKmlSource(null, selectedFileName) ? 'KML' : undefined)}
                 kmlMetadata={kmlMetadata}
                 showKmlLayer={isKmlLayerVisible}
                 onToggleKmlVisibility={setIsKmlLayerVisible}
@@ -2760,6 +2767,7 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
                 aoiGeometry={savedAoiGeometry}
                 referenceGeometry={referenceAlignment.geometry}
                 kmlGeometry={kmlSourceGeometry}
+                kmlSourceFormat={crsDetection?.source_format || referenceAlignment?.source || (isKmlSource(null, selectedFileName) ? 'KML' : undefined)}
                 kmlMetadata={kmlMetadata}
                 showKmlLayer={isKmlLayerVisible}
                 onToggleKmlVisibility={setIsKmlLayerVisible}
@@ -3036,6 +3044,7 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
                 aoiGeometry={savedAoiGeometry}
                 referenceGeometry={referenceAlignment?.geometry}
                 kmlGeometry={kmlSourceGeometry}
+                kmlSourceFormat={crsDetection?.source_format || referenceAlignment?.source || (isKmlSource(null, selectedFileName) ? 'KML' : undefined)}
                 kmlMetadata={kmlMetadata}
                 showKmlLayer={isKmlLayerVisible}
                 onToggleKmlVisibility={setIsKmlLayerVisible}
@@ -3656,239 +3665,14 @@ function extractCenterFromGeoJson(geojson: any): [number, number] | null {
         </View>
       </Modal>
 
-      {/* ── LEVEL 4 KML IMAGE DETAILS & PREVIEW MODAL ── */}
-      <Modal
-        visible={showKmlImageModal && !!selectedKmlImage}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setShowKmlImageModal(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.kmlModalContainer}>
-            {/* Header */}
-            <View style={styles.kmlModalHeader}>
-              <View style={[styles.kmlModalIconWrap, { backgroundColor: 'rgba(249, 115, 22, 0.15)' }]}>
-                <Ionicons
-                  name={selectedKmlImage?.type === 'PhotoOverlay' ? "camera" : "image"}
-                  size={22}
-                  color="#F97316"
-                />
-              </View>
-              <View style={{ flex: 1 }}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                  <Text style={styles.kmlModalBadgeText}>
-                    {selectedKmlImage?.type === 'PhotoOverlay' ? 'PHOTO KML (2D)' : 'IMAGE GÉORÉFÉRENCÉE KML'}
-                  </Text>
-                  <View style={styles.kmlSourceTag}>
-                    <Text style={styles.kmlSourceTagText}>Niveau 4 — 2D</Text>
-                  </View>
-                </View>
-                <Text variant="h2" style={styles.kmlModalTitle} weight="bold" numberOfLines={1}>
-                  {selectedKmlImage?.name || (selectedKmlImage?.type === 'PhotoOverlay' ? 'Photo KML' : 'Image KML')}
-                </Text>
-                <Text style={styles.kmlModalSubtitle}>
-                  {selectedKmlImage?.type === 'PhotoOverlay'
-                    ? 'Photo contextuelle 2D avec positionnement et orientation'
-                    : 'Superposition 2D d\'image sur emprise géographique (GroundOverlay)'}
-                </Text>
-              </View>
-              <TouchableOpacity
-                onPress={() => setShowKmlImageModal(false)}
-                style={styles.crsModalCloseBtn}
-              >
-                <Ionicons name="close" size={22} color={Palette.text} />
-              </TouchableOpacity>
-            </View>
-
-            {/* Scrollable Content */}
-            <ScrollView style={{ maxHeight: 440 }} showsVerticalScrollIndicator={false}>
-              {/* Image Preview / Availability Box */}
-              <View style={styles.kmlSection}>
-                <Text style={styles.kmlSectionTitle}>APERÇU DE L'IMAGE</Text>
-                {selectedKmlImage?.isSafe && selectedKmlImage.isAvailable && selectedKmlImage.icon?.href ? (
-                  <View style={styles.kmlImagePreviewWrap}>
-                    <Image
-                      source={{ uri: selectedKmlImage.icon.href }}
-                      style={styles.kmlImagePreview}
-                      resizeMode="contain"
-                    />
-                    <Text style={styles.kmlImageHrefCaption} numberOfLines={1}>
-                      Source : {selectedKmlImage.icon.href}
-                    </Text>
-                  </View>
-                ) : (
-                  <View style={styles.kmlImageUnavailableBox}>
-                    <Ionicons name="image-outline" size={32} color={Palette.textMuted} />
-                    <Text style={styles.kmlImageUnavailableTitle} weight="bold">
-                      Ressource image non disponible
-                    </Text>
-                    <Text style={styles.kmlImageUnavailableDesc}>
-                      {selectedKmlImage?.securityWarning ||
-                        (selectedKmlImage?.icon?.href
-                          ? `Le fichier image référencé ("${selectedKmlImage.icon.href}") n'a pas été fourni avec le KML.`
-                          : 'Aucune référence d\'image <href> valide n\'est spécifiée.')}
-                    </Text>
-                    <Text style={styles.kmlImageUnavailableFootnote}>
-                      L'emprise et les métadonnées spatiales restent exploitables en 2D sur la carte.
-                    </Text>
-                  </View>
-                )}
-              </View>
-
-              {/* Identification & Spatial Attributes */}
-              <View style={styles.kmlSection}>
-                <Text style={styles.kmlSectionTitle}>ATTRIBUTS SPATIAUX & GÉOMÉTRIE</Text>
-                
-                <View style={styles.kmlInfoRow}>
-                  <Text style={styles.kmlInfoLabel}>Nom :</Text>
-                  <Text style={styles.kmlInfoValue} weight="bold">
-                    {selectedKmlImage?.name || '—'}
-                  </Text>
-                </View>
-
-                <View style={styles.kmlInfoRow}>
-                  <Text style={styles.kmlInfoLabel}>Type KML :</Text>
-                  <Text style={styles.kmlInfoValue}>
-                    {selectedKmlImage?.type === 'PhotoOverlay' ? 'PhotoOverlay' : 'GroundOverlay'}
-                  </Text>
-                </View>
-
-                <View style={styles.kmlInfoRow}>
-                  <Text style={styles.kmlInfoLabel}>Référence (href) :</Text>
-                  <Text style={[styles.kmlInfoValue, { fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' }]}>
-                    {selectedKmlImage?.icon?.href || '—'}
-                  </Text>
-                </View>
-
-                {selectedKmlImage?.type === 'GroundOverlay' && selectedKmlImage.latLonBox && (
-                  <>
-                    <View style={styles.kmlInfoRow}>
-                      <Text style={styles.kmlInfoLabel}>Emprise Nord :</Text>
-                      <Text style={styles.kmlInfoValue}>{selectedKmlImage.latLonBox.north.toFixed(6)}°</Text>
-                    </View>
-                    <View style={styles.kmlInfoRow}>
-                      <Text style={styles.kmlInfoLabel}>Emprise Sud :</Text>
-                      <Text style={styles.kmlInfoValue}>{selectedKmlImage.latLonBox.south.toFixed(6)}°</Text>
-                    </View>
-                    <View style={styles.kmlInfoRow}>
-                      <Text style={styles.kmlInfoLabel}>Emprise Est :</Text>
-                      <Text style={styles.kmlInfoValue}>{selectedKmlImage.latLonBox.east.toFixed(6)}°</Text>
-                    </View>
-                    <View style={styles.kmlInfoRow}>
-                      <Text style={styles.kmlInfoLabel}>Emprise Ouest :</Text>
-                      <Text style={styles.kmlInfoValue}>{selectedKmlImage.latLonBox.west.toFixed(6)}°</Text>
-                    </View>
-                    <View style={styles.kmlInfoRow}>
-                      <Text style={styles.kmlInfoLabel}>Opacité :</Text>
-                      <Text style={styles.kmlInfoValue}>
-                        {Math.round((selectedKmlImage.opacity || 1) * 100)}%
-                        {selectedKmlImage.color ? ` (${selectedKmlImage.color})` : ''}
-                      </Text>
-                    </View>
-                    <View style={styles.kmlInfoRow}>
-                      <Text style={styles.kmlInfoLabel}>Rotation :</Text>
-                      <Text style={styles.kmlInfoValue}>
-                        {selectedKmlImage.latLonBox.rotation !== undefined ? `${selectedKmlImage.latLonBox.rotation}°` : '0°'}
-                        {Boolean(selectedKmlImage.latLonBox.rotation && selectedKmlImage.latLonBox.rotation !== 0) && (
-                          <Text style={{ color: '#F59E0B', fontSize: 11 }}> (Visualisé sans rotation 2D)</Text>
-                        )}
-                      </Text>
-                    </View>
-                    {selectedKmlImage.drawOrder !== undefined && (
-                      <View style={styles.kmlInfoRow}>
-                        <Text style={styles.kmlInfoLabel}>Ordre d'affichage (drawOrder) :</Text>
-                        <Text style={styles.kmlInfoValue}>{selectedKmlImage.drawOrder}</Text>
-                      </View>
-                    )}
-                  </>
-                )}
-
-                {selectedKmlImage?.type === 'PhotoOverlay' && (
-                  <>
-                    <View style={styles.kmlInfoRow}>
-                      <Text style={styles.kmlInfoLabel}>Position 2D :</Text>
-                      <Text style={styles.kmlInfoValue}>
-                        {selectedKmlImage.position
-                          ? `${selectedKmlImage.position[1].toFixed(6)}° N, ${selectedKmlImage.position[0].toFixed(6)}° E`
-                          : '—'}
-                      </Text>
-                    </View>
-                    {selectedKmlImage.altitude !== null && selectedKmlImage.altitude !== undefined && (
-                      <View style={styles.kmlInfoRow}>
-                        <Text style={styles.kmlInfoLabel}>Altitude :</Text>
-                        <Text style={styles.kmlInfoValue}>{selectedKmlImage.altitude} m (non interprétée en 3D)</Text>
-                      </View>
-                    )}
-                    {selectedKmlImage.heading !== null && selectedKmlImage.heading !== undefined && (
-                      <View style={styles.kmlInfoRow}>
-                        <Text style={styles.kmlInfoLabel}>Cap (Heading) :</Text>
-                        <Text style={styles.kmlInfoValue}>{selectedKmlImage.heading}°</Text>
-                      </View>
-                    )}
-                    {selectedKmlImage.tilt !== null && selectedKmlImage.tilt !== undefined && (
-                      <View style={styles.kmlInfoRow}>
-                        <Text style={styles.kmlInfoLabel}>Inclinaison (Tilt) :</Text>
-                        <Text style={styles.kmlInfoValue}>{selectedKmlImage.tilt}°</Text>
-                      </View>
-                    )}
-                    {selectedKmlImage.roll !== null && selectedKmlImage.roll !== undefined && (
-                      <View style={styles.kmlInfoRow}>
-                        <Text style={styles.kmlInfoLabel}>Roulis (Roll) :</Text>
-                        <Text style={styles.kmlInfoValue}>{selectedKmlImage.roll}°</Text>
-                      </View>
-                    )}
-                    {selectedKmlImage.shape && (
-                      <View style={styles.kmlInfoRow}>
-                        <Text style={styles.kmlInfoLabel}>Forme :</Text>
-                        <Text style={styles.kmlInfoValue}>{selectedKmlImage.shape}</Text>
-                      </View>
-                    )}
-                  </>
-                )}
-
-                {Boolean(selectedKmlImage?.folders && selectedKmlImage.folders.length > 0) && (
-                  <View style={styles.kmlInfoRow}>
-                    <Text style={styles.kmlInfoLabel}>Dossier :</Text>
-                    <Text style={styles.kmlInfoValue}>{selectedKmlImage?.folders?.join(' ❯ ')}</Text>
-                  </View>
-                )}
-
-                {Boolean(selectedKmlImage?.description) && (
-                  <View style={styles.kmlInfoRowColumn}>
-                    <Text style={styles.kmlInfoLabel}>Description :</Text>
-                    <Text style={styles.kmlDescriptionBox}>{selectedKmlImage?.description}</Text>
-                  </View>
-                )}
-              </View>
-            </ScrollView>
-
-            {/* Modal Actions */}
-            <View style={styles.kmlModalFooter}>
-              <TouchableOpacity
-                style={[styles.kmlModalToggleBtn, !isKmlImagesVisible && styles.kmlModalToggleBtnOff]}
-                onPress={() => setIsKmlImagesVisible(!isKmlImagesVisible)}
-                activeOpacity={0.7}
-              >
-                <Ionicons
-                  name={isKmlImagesVisible ? "eye-off-outline" : "eye-outline"}
-                  size={16}
-                  color={isKmlImagesVisible ? "#DC2626" : "#15803D"}
-                />
-                <Text style={[styles.kmlModalToggleText, !isKmlImagesVisible && { color: "#15803D" }]} weight="semibold">
-                  {isKmlImagesVisible ? "Masquer calque Images" : "Afficher calque Images"}
-                </Text>
-              </TouchableOpacity>
-
-              <Button
-                title="Fermer"
-                variant="primary"
-                size="md"
-                onPress={() => setShowKmlImageModal(false)}
-              />
-            </View>
-          </View>
-        </View>
-      </Modal>
+      <KmlImageModal
+        sourceFormat={crsDetection?.source_format || referenceAlignment?.source || (isKmlSource(null, selectedFileName) ? 'KML' : undefined)}
+        selectedKmlImage={selectedKmlImage}
+        visible={showKmlImageModal}
+        isKmlImagesVisible={isKmlImagesVisible}
+        onClose={() => setShowKmlImageModal(false)}
+        onToggleImages={() => setIsKmlImagesVisible(!isKmlImagesVisible)}
+      />
     </SafeAreaView>
   );
 }

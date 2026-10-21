@@ -1,10 +1,11 @@
-import React, { useMemo, useRef, useEffect, useState } from 'react';
+import { isKmlSource } from '@/lib/kmlPanorama';
+import React, { useMemo, useRef, useEffect, useState, useCallback } from 'react';
 import { View, StyleSheet, Platform, ActivityIndicator, DimensionValue, TouchableOpacity, TouchableWithoutFeedback } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { Text } from '@/components/ui/text';
 import { Ionicons } from '@expo/vector-icons';
 import { Palette } from '@/constants/theme';
-import { KmlMetadata, KmlGroundOverlay, KmlPhotoOverlay, getMediaUrl } from '@/services/api';
+import { KmlMetadata, KmlGroundOverlay, KmlPhotoOverlay, getMediaUrl, API_URL } from '@/services/api';
 import {
   GisFeatureGeometry,
   GisTronconSegment,
@@ -31,6 +32,7 @@ const DEFAULT_LAYER_VISIBILITY: LayerVisibilityState = {
   kml: true,
   kmlImages: true,
 };
+const DEFAULT_3D_CENTER: [number, number] = [35.73, -5.89];
 
 // Global cache to preserve layer toggles across 3D -> 2D -> 3D view changes
 let cached3DLayerVisibility: LayerVisibilityState = { ...DEFAULT_LAYER_VISIBILITY };
@@ -75,10 +77,12 @@ export interface InteractiveGis3DMapProps {
   }> | null;
   kmlGeometry?: GisFeatureGeometry | null;
   kmlMetadata?: KmlMetadata | null;
+  kmlSourceFormat?: string;
   kmlGroundOverlays?: KmlGroundOverlay[] | null;
   kmlPhotoOverlays?: KmlPhotoOverlay[] | null;
   showKmlLayer?: boolean;
   showKmlImages?: boolean;
+  showKmlImagesControl?: boolean;
   customMarkers?: Array<{
     id?: number | string;
     lat: number;
@@ -122,17 +126,19 @@ export function InteractiveGis3DMap({
   existingAois = null,
   kmlGeometry = null,
   kmlMetadata = null,
+  kmlSourceFormat,
   kmlGroundOverlays = null,
   kmlPhotoOverlays = null,
   showKmlLayer = true,
-  showKmlImages = true,
+  showKmlImages = false,
+  showKmlImagesControl = true,
   customMarkers = null,
   selectedMarkerId = null,
   onSelectMarker,
   onSelectAlignment,
   onSelectKml,
   onSelectKmlImage,
-  center = [35.73, -5.89],
+  center = DEFAULT_3D_CENTER,
   height = 500,
   style,
   temporalState = null,
@@ -142,6 +148,7 @@ export function InteractiveGis3DMap({
 }: InteractiveGis3DMapProps) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const webViewRef = useRef<WebView | null>(null);
+  const initialSelectedTronconId = useRef(selectedTronconId).current;
   const [selectedHudInfo, setSelectedHudInfo] = useState<any | null>(null);
   const prevLoggedSigRef = useRef<string>('');
 
@@ -162,7 +169,7 @@ export function InteractiveGis3DMap({
     }
   }, [propsLayerVisibility]);
 
-  const send3DMessage = (msg: any) => {
+  const send3DMessage = useCallback((msg: any) => {
     if (Platform.OS === 'web') {
       try {
         iframeRef.current?.contentWindow?.postMessage(msg, '*');
@@ -176,7 +183,11 @@ export function InteractiveGis3DMap({
         console.warn('[InteractiveGis3DMap] Failed to dispatch message to webview:', err);
       }
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    send3DMessage({ type: 'SET_TRONCON_SELECTION', id: selectedTronconId });
+  }, [selectedTronconId, send3DMessage]);
 
   const toggleLayer = (layerKey: keyof LayerVisibilityState) => {
     setLayerVisibility((prev) => {
@@ -320,7 +331,7 @@ export function InteractiveGis3DMap({
 
   // Generate self-contained Three.js 3D HTML
   const threeHtml = useMemo(() => {
-    const rawGroundOverlays = (kmlGroundOverlays || (kmlMetadata && kmlMetadata.groundOverlays) || []).map((go) => {
+    const rawGroundOverlays = (isKmlSource(kmlSourceFormat) ? (kmlGroundOverlays || kmlMetadata?.groundOverlays || []) : []).map((go) => {
       if (go?.icon?.href) {
         return {
           ...go,
@@ -332,7 +343,7 @@ export function InteractiveGis3DMap({
       }
       return go;
     });
-    const rawPhotoOverlays = (kmlPhotoOverlays || (kmlMetadata && kmlMetadata.photoOverlays) || []).map((po) => {
+    const rawPhotoOverlays = (isKmlSource(kmlSourceFormat) ? (kmlPhotoOverlays || kmlMetadata?.photoOverlays || []) : []).map((po) => {
       if (po?.icon?.href) {
         return {
           ...po,
@@ -393,7 +404,7 @@ export function InteractiveGis3DMap({
       chantierAlignments: chantierAlignments || [],
       selectedChantierId: selectedChantierId ?? null,
       troncons: tronconsWithObs,
-      selectedTronconId: selectedTronconId ?? null,
+      selectedTronconId: initialSelectedTronconId ?? null,
       aoiGeometry: aoiGeometry || null,
       existingAois: existingAois || [],
       kmlGeometry: kmlGeometry || null,
@@ -402,6 +413,7 @@ export function InteractiveGis3DMap({
       kmlPhotoOverlays: rawPhotoOverlays,
       showKmlLayer: showKmlLayerTemporal,
       showKmlImages: showKmlImages !== false,
+      showKmlImagesControl,
       customMarkers: temporalMarkers,
       selectedMarkerId: selectedMarkerId ?? null,
       center: center || [35.73, -5.89],
@@ -621,6 +633,10 @@ export function InteractiveGis3DMap({
       transform: translate(-50%, -100%) scale(1.08);
     }
 
+    .map-nav-toolbar { position:absolute; top:76px; left:12px; z-index:1000; display:flex; flex-direction:column; gap:6px; background:rgba(15,23,42,0.88); padding:4px; border-radius:12px; border:1px solid rgba(255,255,255,0.15); box-shadow:0 4px 15px rgba(0,0,0,0.35); }
+    .map-nav-btn { width:34px; height:34px; border-radius:8px; border:none; background:#334155; color:#FFFFFF; font-size:16px; font-weight:bold; cursor:pointer; }
+    .map-nav-btn:hover { background:#475569; }
+
     /* Level 6B — Temporal mode indicator badge */
     #temporal-badge-3d {
       position: absolute;
@@ -677,6 +693,11 @@ export function InteractiveGis3DMap({
     <div id="loading-text">Initialisation du moteur 3D SiteX...</div>
   </div>
 
+  <div class="map-nav-toolbar">
+    <button class="map-nav-btn" id="btn-zoom-in" title="Zoomer" aria-label="Zoomer">+</button>
+    <button class="map-nav-btn" id="btn-zoom-out" title="Dézoomer" aria-label="Dézoomer">−</button>
+    <button class="map-nav-btn" id="btn-fit-bounds" title="Recadrer la vue sur le chantier" aria-label="Recadrer la vue">⛶</button>
+  </div>
   <div id="canvas-container"></div>
   <div id="pk-labels-layer"></div>
 
@@ -833,6 +854,42 @@ export function InteractiveGis3DMap({
         return new THREE.Vector3(x, y, z);
       }
 
+      // A GIS LineString is piecewise linear. Independent splines make clipped
+      // segments diverge from the original alignment between shared vertices.
+      function gisLineCurve(points) {
+        var path = new THREE.CurvePath();
+        for (var i = 1; i < points.length; i++) {
+          path.add(new THREE.LineCurve3(points[i - 1], points[i]));
+        }
+        return path;
+      }
+
+      // Reuse the source line's display elevation; never lift a tronçon for emphasis.
+      function tronconLineAltitude(lon, lat) {
+        var coords = extractCoords(CONFIG.kmlGeometry);
+        if (!coords || coords.length < 2) return 0.8;
+        var metadata = CONFIG.kmlMetadata;
+        if (!metadata || !metadata.hasAltitude || !metadata.altitudeCoordinates) return 1.4;
+        var altitudes = metadata.altitudeCoordinates;
+        var point = toEnu(lon, lat, 0);
+        var bestDistance = Infinity, altitude = 1.4;
+        for (var i = 1; i < coords.length; i++) {
+          var a = toEnu(coords[i - 1][0], coords[i - 1][1], 0);
+          var b = toEnu(coords[i][0], coords[i][1], 0);
+          var dx = b.x - a.x, dz = b.z - a.z;
+          var lengthSq = dx * dx + dz * dz;
+          var fraction = lengthSq ? Math.max(0, Math.min(1, ((point.x - a.x) * dx + (point.z - a.z) * dz) / lengthSq)) : 0;
+          var distance = Math.pow(point.x - a.x - fraction * dx, 2) + Math.pow(point.z - a.z - fraction * dz, 2);
+          if (distance < bestDistance) {
+            bestDistance = distance;
+            var startAlt = altitudes[i - 1] && altitudes[i - 1][2] !== undefined ? altitudes[i - 1][2] : 1.4;
+            var endAlt = altitudes[i] && altitudes[i][2] !== undefined ? altitudes[i][2] : 1.4;
+            altitude = startAlt + fraction * (endAlt - startAlt);
+          }
+        }
+        return altitude;
+      }
+
       // 2. Setup Three.js Scene, Camera, Renderer
       var scene = new THREE.Scene();
       scene.background = new THREE.Color(0x070D1E);
@@ -885,8 +942,8 @@ export function InteractiveGis3DMap({
       if (initVis.ref !== undefined) groupRef.visible = !!initVis.ref;
       if (initVis.troncons !== undefined) groupTroncons.visible = !!initVis.troncons;
       if (initVis.obs !== undefined) groupObs.visible = !!initVis.obs;
-      if (initVis.kml !== undefined) groupKml.visible = !!initVis.kml;
-      if (initVis.kmlImages !== undefined) groupKmlImages.visible = !!initVis.kmlImages;
+      groupKml.visible = (CONFIG.showKmlLayer !== false) && (initVis.kml !== undefined ? !!initVis.kml : true);
+      groupKmlImages.visible = (CONFIG.showKmlImages !== false) && (!CONFIG.showKmlImagesControl || initVis.kmlImages !== false);
 
       // Stratified Interactive Target Lists (Raycasting Priority)
       var interactiveTroncons = []; // Priority 1
@@ -954,9 +1011,7 @@ export function InteractiveGis3DMap({
           refCurvePts.push(toEnu(refCoords[k][0], refCoords[k][1], 0.8));
         }
 
-        var refCurve = refCurvePts.length === 2
-          ? new THREE.LineCurve3(refCurvePts[0], refCurvePts[1])
-          : new THREE.CatmullRomCurve3(refCurvePts, false, 'chordal', 0.2);
+        var refCurve = gisLineCurve(refCurvePts);
 
         var refTubeGeom = new THREE.TubeGeometry(refCurve, Math.min(refCurvePts.length * 8, 200), 1.0, 8, false);
         var refTubeMat = new THREE.MeshStandardMaterial({
@@ -1005,9 +1060,7 @@ export function InteractiveGis3DMap({
             for (var cap = 0; cap < caCoords.length; cap++) {
               caCurvePts.push(toEnu(caCoords[cap][0], caCoords[cap][1], 0.8));
             }
-            var caCurve = caCurvePts.length === 2
-              ? new THREE.LineCurve3(caCurvePts[0], caCurvePts[1])
-              : new THREE.CatmullRomCurve3(caCurvePts, false, 'chordal', 0.2);
+            var caCurve = gisLineCurve(caCurvePts);
             var isSel = String(ca.id) === String(CONFIG.selectedChantierId);
             var caTubeGeom = new THREE.TubeGeometry(caCurve, Math.min(caCurvePts.length * 8, 200), isSel ? 2.5 : 1.8, 8, false);
             var caColor = isSel ? 0x10B981 : 0x38BDF8;
@@ -1075,7 +1128,7 @@ export function InteractiveGis3DMap({
         }
       }
 
-      // 8. Tronçons Découpés (Hierarchy: PRIMARY Dominant Linear Meshes at y = 3.2, Radius 3.2)
+      // 8. Tronçons Découpés (source-line elevation, radius 3.2; material-only selection)
       if (hasTroncons) {
         for (var t = 0; t < CONFIG.troncons.length; t++) {
           var tr = CONFIG.troncons[t];
@@ -1084,12 +1137,10 @@ export function InteractiveGis3DMap({
           if (trCoords && trCoords.length >= 2) {
             var trPts = [];
             for (var tp = 0; tp < trCoords.length; tp++) {
-              trPts.push(toEnu(trCoords[tp][0], trCoords[tp][1], 3.2));
+              trPts.push(toEnu(trCoords[tp][0], trCoords[tp][1], tronconLineAltitude(trCoords[tp][0], trCoords[tp][1])));
             }
 
-            var trCurve = trPts.length === 2
-              ? new THREE.LineCurve3(trPts[0], trPts[1])
-              : new THREE.CatmullRomCurve3(trPts, false, 'chordal', 0.2);
+            var trCurve = gisLineCurve(trPts);
 
             // Deterministic high-contrast palette
             var trColorHex = tr.color || CONFIG.palette[t % CONFIG.palette.length] || '#2563EB';
@@ -1109,9 +1160,6 @@ export function InteractiveGis3DMap({
               opacity: 1.0
             });
             var trMesh = new THREE.Mesh(trTubeGeom, trTubeMat);
-            if (isSelected) {
-              trMesh.scale.set(1.15, 1.15, 1.15);
-            }
             trMesh.userData = {
               category: 'troncon',
               id: tr.id,
@@ -1134,7 +1182,7 @@ export function InteractiveGis3DMap({
               var tanStart = trPts.length > 1
                 ? new THREE.Vector3().subVectors(trPts[1], trPts[0]).normalize()
                 : new THREE.Vector3(0, 0, 1);
-              createBoundarySeparator(trPts[0], tanStart, formatPkDisplay(tr.pk_debut), [tr.id]);
+              createBoundarySeparator(new THREE.Vector3(trPts[0].x, 3.2, trPts[0].z), tanStart, formatPkDisplay(tr.pk_debut), [tr.id]);
             }
 
             var nextTrId = (!isLastTroncon && CONFIG.troncons[t + 1]) ? CONFIG.troncons[t + 1].id : null;
@@ -1142,7 +1190,7 @@ export function InteractiveGis3DMap({
               ? new THREE.Vector3().subVectors(trPts[trPts.length - 1], trPts[trPts.length - 2]).normalize()
               : new THREE.Vector3(0, 0, 1);
             var attachedIds = nextTrId ? [tr.id, nextTrId] : [tr.id];
-            createBoundarySeparator(trPts[trPts.length - 1], tanEnd, formatPkDisplay(tr.pk_fin), attachedIds);
+            createBoundarySeparator(new THREE.Vector3(trPts[trPts.length - 1].x, 3.2, trPts[trPts.length - 1].z), tanEnd, formatPkDisplay(tr.pk_fin), attachedIds);
           }
         }
       }
@@ -1202,9 +1250,7 @@ export function InteractiveGis3DMap({
           kmlCurvePts.push(toEnu(kmlCoords[kp][0], kmlCoords[kp][1], zAlt));
         }
 
-        var kmlCurve = kmlCurvePts.length === 2
-          ? new THREE.LineCurve3(kmlCurvePts[0], kmlCurvePts[1])
-          : new THREE.CatmullRomCurve3(kmlCurvePts, false, 'chordal', 0.2);
+        var kmlCurve = gisLineCurve(kmlCurvePts);
 
         var kmlColorHex = (CONFIG.kmlMetadata && CONFIG.kmlMetadata.styles && CONFIG.kmlMetadata.styles.line && CONFIG.kmlMetadata.styles.line.color)
           ? ('#' + (CONFIG.kmlMetadata.styles.line.color.length === 8 ? CONFIG.kmlMetadata.styles.line.color.slice(6, 8) + CONFIG.kmlMetadata.styles.line.color.slice(4, 6) + CONFIG.kmlMetadata.styles.line.color.slice(2, 4) : 'F97316'))
@@ -1237,33 +1283,50 @@ export function InteractiveGis3DMap({
 
       // 11. KML 3D PhotoOverlays
       if (CONFIG.kmlPhotoOverlays && CONFIG.kmlPhotoOverlays.length > 0) {
+        // A small billboard icon shares the existing KML image layer and picking path.
+        var photoCanvas = document.createElement('canvas');
+        photoCanvas.width = photoCanvas.height = 64;
+        var photoContext = photoCanvas.getContext('2d');
+        photoContext.fillStyle = '#F97316';
+        photoContext.beginPath();
+        photoContext.arc(32, 32, 29, 0, Math.PI * 2);
+        photoContext.fill();
+        photoContext.strokeStyle = '#FFFFFF';
+        photoContext.lineWidth = 3;
+        photoContext.stroke();
+        photoContext.fillStyle = '#FFFFFF';
+        photoContext.fillRect(14, 23, 36, 25);
+        photoContext.fillRect(22, 18, 15, 8);
+        photoContext.fillStyle = '#F97316';
+        photoContext.beginPath();
+        photoContext.arc(32, 35, 9, 0, Math.PI * 2);
+        photoContext.fill();
+        var photoMarkerTexture = new THREE.CanvasTexture(photoCanvas);
+        var photoMarkerMaterial = new THREE.SpriteMaterial({
+          map: photoMarkerTexture,
+          transparent: true,
+          sizeAttenuation: false,
+          depthTest: false,
+          depthWrite: false
+        });
+        window.addEventListener('beforeunload', function() {
+          photoMarkerTexture.dispose();
+          photoMarkerMaterial.dispose();
+        });
         for (var po = 0; po < CONFIG.kmlPhotoOverlays.length; po++) {
           var pOverlay = CONFIG.kmlPhotoOverlays[po];
           if (pOverlay.position && pOverlay.position.length >= 2) {
             var poAlt = (pOverlay.altitude !== undefined && pOverlay.altitude !== null) ? pOverlay.altitude : 15;
             var poPos = toEnu(pOverlay.position[0], pOverlay.position[1], poAlt);
 
-            var camGroup = new THREE.Group();
-            camGroup.position.copy(poPos);
-
-            var camBoxGeom = new THREE.BoxGeometry(6, 4, 5);
-            var camBoxMat = new THREE.MeshStandardMaterial({ color: 0x06B6D4, emissive: 0x0891B2 });
-            var camBox = new THREE.Mesh(camBoxGeom, camBoxMat);
-            camGroup.add(camBox);
-
+            var photoMarker = new THREE.Sprite(photoMarkerMaterial);
+            photoMarker.position.copy(poPos);
+            // Constant screen size; bottom anchor keeps the icon above its location.
+            photoMarker.scale.set(0.035, 0.035, 1);
+            photoMarker.center.set(0.5, 0);
             var heading = pOverlay.heading || 0;
             var tilt = pOverlay.tilt || 0;
-            var fovLength = 25;
-
-            var frustumGeom = new THREE.ConeGeometry(12, fovLength, 4, 1, true);
-            var frustumMat = new THREE.MeshBasicMaterial({ color: 0x06B6D4, wireframe: true, transparent: true, opacity: 0.6 });
-            var frustumMesh = new THREE.Mesh(frustumGeom, frustumMat);
-            frustumMesh.rotation.y = -heading * rad;
-            frustumMesh.rotation.x = Math.PI / 2 + (tilt * rad);
-            frustumMesh.position.set(0, 0, -fovLength / 2);
-            camGroup.add(frustumMesh);
-
-            camGroup.userData = {
+            photoMarker.userData = {
               category: 'kml_image',
               overlay: pOverlay,
               title: pOverlay.name || ('PhotoOverlay ' + (po + 1)),
@@ -1272,9 +1335,8 @@ export function InteractiveGis3DMap({
               tilt: tilt + '°',
               altitude: poAlt + ' m'
             };
-            camBox.userData = camGroup.userData;
-            groupKmlImages.add(camGroup);
-            interactiveKml.push(camBox);
+            groupKmlImages.add(photoMarker);
+            interactiveKml.push(photoMarker);
           }
         }
       }
@@ -1326,13 +1388,19 @@ export function InteractiveGis3DMap({
             };
 
             var imageUrl = (gOverlay.icon && gOverlay.icon.href) ? gOverlay.icon.href : null;
-            if (imageUrl && gOverlay.isSafe !== false && gOverlay.isAvailable !== false) {
+            var canLoadTexture = Boolean(imageUrl && gOverlay.isSafe !== false && (gOverlay.isAvailable !== false || imageUrl.indexOf('/') !== -1 || imageUrl.indexOf('http') === 0));
+            if (canLoadTexture) {
               (function(plane, meshMat, imgUrl, opacityVal) {
                 textureLoader.load(
                   imgUrl,
                   function(texture) {
-                    texture.generateMipmaps = true;
-                    texture.minFilter = THREE.LinearMipmapLinearFilter;
+                    // Safe WebGL NPOT (Non-Power-of-Two) texture configuration
+                    texture.generateMipmaps = false;
+                    texture.minFilter = THREE.LinearFilter;
+                    texture.magFilter = THREE.LinearFilter;
+                    texture.wrapS = THREE.ClampToEdgeWrapping;
+                    texture.wrapT = THREE.ClampToEdgeWrapping;
+                    texture.needsUpdate = true;
                     loadedKmlTextures.push(texture);
                     var texturedMat = new THREE.MeshBasicMaterial({
                       map: texture,
@@ -1418,11 +1486,9 @@ export function InteractiveGis3DMap({
           var isMatch = currentSelectedTronconId && String(m.userData.id) === currentSelectedTronconId;
           if (isMatch) {
             m.material.emissiveIntensity = 0.85;
-            m.scale.set(1.15, 1.15, 1.15);
             selectedMesh = m;
           } else {
             m.material.emissiveIntensity = 0.35;
-            m.scale.set(1.0, 1.0, 1.0);
           }
         }
 
@@ -1440,6 +1506,7 @@ export function InteractiveGis3DMap({
       var mouse = new THREE.Vector2();
 
       function onPointerClick(e) {
+        if (e.type === 'click' && Date.now() - lastPhotoTouch < 500) return;
         var rect = renderer.domElement.getBoundingClientRect();
         var clientX = e.clientX !== undefined ? e.clientX : (e.touches && e.touches[0] ? e.touches[0].clientX : 0);
         var clientY = e.clientY !== undefined ? e.clientY : (e.touches && e.touches[0] ? e.touches[0].clientY : 0);
@@ -1448,6 +1515,39 @@ export function InteractiveGis3DMap({
         mouse.y = -((clientY - rect.top) / rect.height) * 2 + 1;
 
         raycaster.setFromCamera(mouse, camera);
+
+        // Photo markers open their fiche even where a railway tube overlaps them.
+        if (groupKmlImages.visible) {
+          var photoTargets = interactiveKml.filter(function(object) {
+            return object.userData && object.userData.overlay && object.userData.overlay.type === 'PhotoOverlay';
+          });
+          // Pick the visible billboard footprint as well as its Three.js raycast.
+          var nearestPhoto = null;
+          var nearestDepth = Infinity;
+          for (var pi = 0; pi < photoTargets.length; pi++) {
+            var photoTarget = photoTargets[pi];
+            var screenPoint = photoTarget.getWorldPosition(new THREE.Vector3()).project(camera);
+            if (screenPoint.z < -1 || screenPoint.z > 1) continue;
+            var iconHeight = photoTarget.scale.y * rect.height / (2 * Math.tan(camera.fov * Math.PI / 360));
+            var iconWidth = iconHeight * photoTarget.scale.x / photoTarget.scale.y;
+            var screenX = rect.left + (screenPoint.x + 1) * rect.width / 2;
+            var screenY = rect.top + (1 - screenPoint.y) * rect.height / 2;
+            if (clientX >= screenX - iconWidth / 2 - 6 && clientX <= screenX + iconWidth / 2 + 6 &&
+                clientY >= screenY - iconHeight - 6 && clientY <= screenY + 6 && screenPoint.z < nearestDepth) {
+              nearestPhoto = photoTarget;
+              nearestDepth = screenPoint.z;
+            }
+          }
+          if (nearestPhoto) {
+            dispatchSelection(nearestPhoto.userData);
+            return;
+          }
+          var photoHits = raycaster.intersectObjects(photoTargets, true);
+          if (photoHits.length > 0) {
+            dispatchSelection(photoHits[0].object.userData);
+            return;
+          }
+        }
 
         // PRIORITY 1: Tronçon Meshes
         if (groupTroncons.visible && interactiveTroncons.length > 0) {
@@ -1475,7 +1575,9 @@ export function InteractiveGis3DMap({
 
         // PRIORITY 3: KML Elements
         if ((groupKml.visible || groupKmlImages.visible) && interactiveKml.length > 0) {
-          var kmlHits = raycaster.intersectObjects(interactiveKml, true);
+          var kmlHits = raycaster.intersectObjects(interactiveKml.filter(function(object) {
+            return object.userData && object.userData.category === 'kml_image' ? groupKmlImages.visible : groupKml.visible;
+          }), true);
           if (kmlHits.length > 0) {
             var kmlObj = kmlHits[0].object;
             if (kmlObj.userData && kmlObj.userData.title) {
@@ -1502,6 +1604,22 @@ export function InteractiveGis3DMap({
       }
       renderer.domElement.addEventListener('click', onPointerClick);
 
+      // Touch taps use the same selection path; dragging continues to orbit.
+      var touchStart = null;
+      var lastPhotoTouch = 0;
+      renderer.domElement.addEventListener('touchstart', function(e) {
+        touchStart = e.touches.length === 1 ? { x: e.touches[0].clientX, y: e.touches[0].clientY } : null;
+      }, { passive: true });
+      renderer.domElement.addEventListener('touchend', function(e) {
+        var touch = e.changedTouches[0];
+        if (touchStart && touch && Math.hypot(touch.clientX - touchStart.x, touch.clientY - touchStart.y) < 8) {
+          lastPhotoTouch = Date.now();
+          onPointerClick({ clientX: touch.clientX, clientY: touch.clientY });
+        }
+        touchStart = null;
+      }, { passive: true });
+      renderer.domElement.addEventListener('touchcancel', function() { touchStart = null; });
+
       // 14. Camera Control Buttons & Aperçu Collapse Toggle
       var apercuCard = document.getElementById('hud-apercu-card');
       var apercuHeader = document.getElementById('hud-apercu-header');
@@ -1512,6 +1630,20 @@ export function InteractiveGis3DMap({
         };
       }
 
+      // Navigation buttons reuse the OrbitControls target and existing fitted view.
+      function zoomMap(factor) {
+        var offset = camera.position.clone().sub(controls.target);
+        var distance = offset.length();
+        if (!distance) return;
+        var nextDistance = Math.min(controls.maxDistance, Math.max(controls.minDistance, distance * factor));
+        camera.position.copy(controls.target).add(offset.multiplyScalar(nextDistance / distance));
+        controls.update();
+      }
+      document.getElementById('btn-zoom-in').onclick = function() { zoomMap(0.8); };
+      document.getElementById('btn-zoom-out').onclick = function() { zoomMap(1.25); };
+      document.getElementById('btn-fit-bounds').onclick = function() {
+        document.getElementById('btn-reset').onclick();
+      };
       document.getElementById('btn-reset').onclick = function() {
         camera.position.set(sceneCenter.x + initDistance * 0.7, sceneCenter.y + initDistance * 0.65, sceneCenter.z + initDistance * 0.7);
         controls.target.copy(sceneCenter);
@@ -1539,6 +1671,10 @@ export function InteractiveGis3DMap({
           try { data = JSON.parse(data); } catch(e) { return; }
         }
         if (!data || typeof data !== 'object') return;
+        if (data.type === 'SET_TRONCON_SELECTION') {
+          setTronconSelected(data.id, false);
+          return;
+        }
         if (data.type === 'SET_LAYER_VISIBILITY') {
           var layer = data.layer;
           var visible = !!data.visible;
@@ -1642,20 +1778,24 @@ export function InteractiveGis3DMap({
     chantierAlignments,
     selectedChantierId,
     troncons,
-    selectedTronconId,
+    initialSelectedTronconId,
     aoiGeometry,
     existingAois,
     kmlGeometry,
     kmlMetadata,
+    kmlSourceFormat,
     kmlGroundOverlays,
     kmlPhotoOverlays,
     showKmlLayer,
     showKmlImages,
+    showKmlImagesControl,
     customMarkers,
     selectedMarkerId,
     center,
     temporalState,
   ]);
+
+  const webViewSource = useMemo(() => ({ html: threeHtml, baseUrl: API_URL || undefined }), [threeHtml]);
 
   return (
     <View style={[styles.container, { height }, style]} collapsable={false}>
@@ -1663,17 +1803,22 @@ export function InteractiveGis3DMap({
         <iframe
           ref={iframeRef}
           srcDoc={threeHtml}
+          onLoad={() => send3DMessage({ type: 'SET_TRONCON_SELECTION', id: selectedTronconId })}
           style={{ width: '100%', height: '100%', border: 'none', backgroundColor: '#070D1E' }}
         />
       ) : (
         <WebView
           ref={webViewRef}
           originWhitelist={['*']}
-          source={{ html: threeHtml }}
+          source={webViewSource}
           style={styles.webView}
           onMessage={handleWebViewMessage}
+          onLoadEnd={() => send3DMessage({ type: 'SET_TRONCON_SELECTION', id: selectedTronconId })}
           javaScriptEnabled={true}
           domStorageEnabled={true}
+          mixedContentMode="always"
+          allowFileAccess={true}
+          allowUniversalAccessFromFileURLs={true}
           startInLoadingState={true}
           renderLoading={() => (
             <View style={styles.loadingContainer}>
@@ -1799,20 +1944,20 @@ export function InteractiveGis3DMap({
               </View>
             </TouchableOpacity>
 
-            {/* 6. Images KML 3D */}
-            <TouchableOpacity
+            {/* 6. Images KML */}
+            {showKmlImagesControl && <TouchableOpacity
               style={styles.layerItem}
               onPress={() => toggleLayer('kmlImages')}
               activeOpacity={0.7}
             >
               <View style={styles.layerLabelRow}>
                 <Text style={styles.layerEmoji}>🖼️</Text>
-                <Text style={styles.layerLabelText}>Images KML 3D</Text>
+                <Text style={styles.layerLabelText}>Images KML</Text>
               </View>
               <View style={[styles.checkboxBox, layerVisibility.kmlImages && styles.checkboxBoxChecked]}>
                 {layerVisibility.kmlImages && <Ionicons name="checkmark" size={13} color="#FFFFFF" />}
               </View>
-            </TouchableOpacity>
+            </TouchableOpacity>}
           </View>
         </View>
       )}

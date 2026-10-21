@@ -601,6 +601,11 @@ export default function ChantierDetailResponsableScreen() {
                 height={240}
                 aoiGeometry={chantier?.localisation}
                 referenceGeometry={chantier?.reference_alignment?.geometry}
+                kmlGeometry={chantier?.reference_alignment?.geometry}
+                kmlSourceFormat={chantier?.reference_alignment?.source}
+                kmlMetadata={chantier?.reference_alignment?.kml_metadata}
+                kmlGroundOverlays={chantier?.reference_alignment?.kml_metadata?.groundOverlays || null}
+                kmlPhotoOverlays={chantier?.reference_alignment?.kml_metadata?.photoOverlays || null}
                 troncons={mapSegments}
                 temporalState={derivedTemporal}
               />
@@ -612,6 +617,11 @@ export default function ChantierDetailResponsableScreen() {
                 height={280}
                 aoiGeometry={chantier?.localisation}
                 referenceGeometry={chantier?.reference_alignment?.geometry}
+                kmlGeometry={chantier?.reference_alignment?.geometry}
+                kmlSourceFormat={chantier?.reference_alignment?.source}
+                kmlMetadata={chantier?.reference_alignment?.kml_metadata}
+                kmlGroundOverlays={chantier?.reference_alignment?.kml_metadata?.groundOverlays || null}
+                kmlPhotoOverlays={chantier?.reference_alignment?.kml_metadata?.photoOverlays || null}
                 troncons={mapSegments}
                 temporalState={derivedTemporal}
               />

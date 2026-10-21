@@ -500,7 +500,7 @@ function validateAndSanitizeAssetHref(rawHref, options = {}) {
           warning: customRes.warning || null,
         };
       }
-    } catch {}
+    } catch { }
   }
 
   if (options.assetBaseUrl) {
