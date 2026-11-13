@@ -8,6 +8,8 @@
     "tunnel": "node scripts/start-dev.js --tunnel",
     "clear": "node scripts/start-dev.js --clear",
     "tunnel-backend": "node scripts/tunnel-backend.js",
+    "server": "node server/src/server.js",
+    "backend": "node server/src/server.js",
     "oumaima": "node scripts/start-dev.js",
     "reset-project": "node ./scripts/reset-project.js",
     "android": "expo start --android",

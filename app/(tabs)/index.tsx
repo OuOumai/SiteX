@@ -56,9 +56,42 @@ export default function HomeScreen() {
       if (isAgentTerrain) {
         const res = await api.getAgentDashboard(token);
         setAgentDashboardData(res);
-      } else {
+      } else if (isResponsable) {
         const res = await api.getResponsableDashboard(token);
         setDashboardData(res);
+      } else {
+        // Client or standard user: load project list safely
+        const projectsRes = await api.getProjects(token, { limit: 10 });
+        setDashboardData({
+          stats: {
+            totalProjects: projectsRes.pagination?.total || projectsRes.projects?.length || 0,
+            projectsEnCours: projectsRes.statusCounts?.['En cours'] || 0,
+            projectsTermines: projectsRes.statusCounts?.['Terminés'] || 0,
+            totalChantiers: 0,
+            chantiersEnCours: 0,
+            chantiersEnAttente: 0,
+            chantiersTermines: 0,
+            chantiersPrets: 0,
+            avancementMoyen: 0,
+            totalObservations: 0,
+            totalReclamations: 0,
+            totalAlerts: 0,
+            chantiersDistribution: [],
+            equipeTerrain: {
+              totalAvailable: 0,
+              totalAssigned: 0,
+              totalAssignments: 0,
+              totalUnassigned: 0,
+            },
+          },
+          projects: (projectsRes.projects as any) || [],
+          chantiers: [],
+          observations: [],
+          reclamations: [],
+          explications: [],
+          clients: [],
+          alerts: [],
+        });
       }
     } catch (err: any) {
       console.warn('Dashboard fetch notice:', err.message);
@@ -67,7 +100,7 @@ export default function HomeScreen() {
       setIsLoadingData(false);
       setIsRefreshing(false);
     }
-  }, [token, isAgentTerrain]);
+  }, [token, isAgentTerrain, isResponsable]);
 
   useFocusEffect(
     useCallback(() => {

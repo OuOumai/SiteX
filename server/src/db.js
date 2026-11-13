@@ -13,6 +13,22 @@
 
 'use strict';
 
+const path = require('path');
+const fs   = require('fs');
+
+// Ensure environment variables are loaded
+const serverEnvPath = path.join(__dirname, '../.env');
+const rootEnvPath   = path.join(__dirname, '../../.env');
+if (!process.env.DB_PASSWORD) {
+  if (fs.existsSync(serverEnvPath)) {
+    require('dotenv').config({ path: serverEnvPath });
+  } else if (fs.existsSync(rootEnvPath)) {
+    require('dotenv').config({ path: rootEnvPath });
+  } else {
+    require('dotenv').config();
+  }
+}
+
 const { Pool } = require('pg');
 
 // ─── Pool Configuration ──────────────────────────────────────────────────────

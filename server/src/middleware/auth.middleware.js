@@ -26,19 +26,34 @@ const db = require('../db');
 /**
  * Express middleware that validates a Bearer JWT token.
  * On success, attaches the decoded payload to req.user and calls next().
- * On failure, returns 401 (missing token) or 403 (invalid/expired token).
+ * On failure, returns 401 (missing token or invalid/expired token).
  */
 function authenticateToken(req, res, next) {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
 
   if (!token) {
-    return res.status(401).json({ message: 'Accès non autorisé. Token manquant.' });
+    return res.status(401).json({
+      message: 'Accès non autorisé. Token manquant.',
+      code: 'TOKEN_MISSING',
+    });
   }
 
   jwt.verify(token, JWT_SECRET, (err, user) => {
     if (err) {
-      return res.status(403).json({ message: 'Token invalide ou expiré.' });
+      if (err.name === 'TokenExpiredError') {
+        return res.status(401).json({
+          message: 'Token invalide ou expiré.',
+          error: 'jwt expired',
+          code: 'TOKEN_EXPIRED',
+          expiredAt: err.expiredAt,
+        });
+      }
+      return res.status(401).json({
+        message: 'Token invalide ou expiré.',
+        error: err.message,
+        code: 'TOKEN_INVALID',
+      });
     }
     req.user = user;
     next();

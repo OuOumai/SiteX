@@ -59,10 +59,16 @@ const BCRYPT_ROUNDS = 10;
 /** JWT expiry — 7 days, matching the original contract expected by AuthContext */
 const JWT_EXPIRES_IN = '7d';
 
+/** Refresh token expiry — 30 days */
+const JWT_REFRESH_EXPIRES_IN = '30d';
+
+/** Dedicated signing secret for refresh tokens */
+const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || (process.env.JWT_SECRET + '_refresh_v1');
+
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
 /**
- * Signs a JWT for the given user.
+ * Signs an access JWT for the given user.
  * Payload: { id, email, role_id, role_nom } — minimal, no sensitive data.
  *
  * @param {{ id: number, email: string, role_id: number, role_nom?: string }} user
@@ -70,9 +76,23 @@ const JWT_EXPIRES_IN = '7d';
  */
 function generateToken(user) {
   return jwt.sign(
-    { id: user.id, email: user.email, role_id: user.role_id, role_nom: user.role_nom },
+    { id: user.id, email: user.email, role_id: user.role_id, role_nom: user.role_nom, type: 'access' },
     process.env.JWT_SECRET,
     { expiresIn: JWT_EXPIRES_IN }
+  );
+}
+
+/**
+ * Signs a refresh JWT for the given user.
+ *
+ * @param {{ id: number, email: string }} user
+ * @returns {string} signed refresh JWT
+ */
+function generateRefreshToken(user) {
+  return jwt.sign(
+    { id: user.id, email: user.email, type: 'refresh' },
+    JWT_REFRESH_SECRET,
+    { expiresIn: JWT_REFRESH_EXPIRES_IN }
   );
 }
 
@@ -157,12 +177,14 @@ async function register(req, res) {
       role_nom: provisionalRoleNom,
     };
 
-    // 6. Generate JWT
+    // 6. Generate JWT and Refresh Token
     const token = generateToken(newUser);
+    const refreshToken = generateRefreshToken(newUser);
 
-    // 7. Return { token, user } — matching the contract expected by AuthContext
+    // 7. Return { token, refreshToken, user } — matching the contract expected by AuthContext
     return res.status(201).json({
       token,
+      refreshToken,
       user: formatUserResponse(newUser),
     });
   } catch (error) {
@@ -244,12 +266,14 @@ async function login(req, res) {
     );
     user.role_request = roleReqResult.rows[0] || null;
 
-    // 7. Generate JWT (includes role_nom)
+    // 7. Generate JWT & Refresh Token (includes role_nom)
     const token = generateToken(user);
+    const refreshToken = generateRefreshToken(user);
 
-    // 8. Return { token, user } — password hash stripped via formatUserResponse
+    // 8. Return { token, refreshToken, user } — password hash stripped via formatUserResponse
     return res.status(200).json({
       token,
+      refreshToken,
       user: formatUserResponse(user),
     });
   } catch (error) {
@@ -304,6 +328,114 @@ async function getMe(req, res) {
   }
 }
 
+/**
+ * POST /auth/refresh
+ *
+ * Refreshes an access token using a refresh token or an authentically signed access token.
+ * Supports:
+ *   - body.refreshToken: Dedicated refresh token
+ *   - body.token: Access token (including recently expired token with valid signature for grace-period recovery)
+ *   - Authorization header: Bearer <token>
+ * Returns:
+ *   { token, refreshToken, user }
+ */
+async function refreshToken(req, res) {
+  try {
+    const body = req.body || {};
+    const authHeader = req.headers['authorization'];
+    const headerToken = authHeader && authHeader.split(' ')[1];
+    const incomingToken = body.refreshToken || body.token || headerToken;
+
+    if (!incomingToken) {
+      return res.status(401).json({
+        message: 'Token de rafraîchissement manquant.',
+        code: 'REFRESH_TOKEN_MISSING',
+      });
+    }
+
+    let decoded = null;
+
+    // 1. Verify with JWT_REFRESH_SECRET (active refresh token)
+    try {
+      decoded = jwt.verify(incomingToken, JWT_REFRESH_SECRET);
+    } catch (errRefresh) {
+      // 2. Verify with JWT_SECRET (active access token)
+      try {
+        decoded = jwt.verify(incomingToken, process.env.JWT_SECRET);
+      } catch (errAccess) {
+        // 3. Authentic token signed by JWT_SECRET or JWT_REFRESH_SECRET
+        // but expired (grace-period session recovery for existing devices)
+        try {
+          decoded = jwt.verify(incomingToken, process.env.JWT_SECRET, { ignoreExpiration: true });
+        } catch (errSecret) {
+          try {
+            decoded = jwt.verify(incomingToken, JWT_REFRESH_SECRET, { ignoreExpiration: true });
+          } catch (errAll) {
+            return res.status(401).json({
+              message: 'Token de rafraîchissement invalide ou corrompu.',
+              code: 'REFRESH_TOKEN_INVALID',
+            });
+          }
+        }
+      }
+    }
+
+    if (!decoded || !decoded.id) {
+      return res.status(401).json({
+        message: 'Token de rafraîchissement invalide ou corrompu.',
+        code: 'REFRESH_TOKEN_INVALID',
+      });
+    }
+
+    // Verify user in PostgreSQL and confirm account is active
+    const userResult = await db.query(
+      `SELECT u.id, u.role_id, u.nom, u.prenom, u.email, u.actif, u.date_creation,
+              r.nom AS role_nom, r.description AS role_description
+       FROM public.utilisateur u
+       LEFT JOIN public.role r ON u.role_id = r.id
+       WHERE u.id = $1`,
+      [decoded.id]
+    );
+
+    if (userResult.rows.length === 0 || !userResult.rows[0].actif) {
+      return res.status(401).json({
+        message: 'Compte inactif ou utilisateur introuvable.',
+        code: 'USER_INACTIVE',
+      });
+    }
+
+    const user = userResult.rows[0];
+
+    // Fetch active role request if exists
+    const roleReqResult = await db.query(
+      `SELECT dr.*, r.nom AS role_nom, r.description AS role_description
+         FROM public.demande_role dr
+         JOIN public.role r ON dr.requested_role_id = r.id
+        WHERE dr.utilisateur_id = $1
+        ORDER BY dr.date_demande DESC
+        LIMIT 1`,
+      [user.id]
+    );
+    user.role_request = roleReqResult.rows[0] || null;
+
+    // Issue new access and refresh tokens
+    const newAccessToken = generateToken(user);
+    const newRefreshToken = generateRefreshToken(user);
+
+    return res.status(200).json({
+      token: newAccessToken,
+      refreshToken: newRefreshToken,
+      user: formatUserResponse(user),
+    });
+  } catch (error) {
+    console.error('❌ Refresh token error:', error.message);
+    return res.status(500).json({
+      message: 'Erreur lors du rafraîchissement du token.',
+      code: 'REFRESH_ERROR',
+    });
+  }
+}
+
 // ─── Exports ─────────────────────────────────────────────────────────────────
 
-module.exports = { register, login, getMe };
+module.exports = { register, login, getMe, refreshToken };

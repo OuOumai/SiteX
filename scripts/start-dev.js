@@ -1,5 +1,6 @@
 const os = require('os');
 const path = require('path');
+const net = require('net');
 const { spawn } = require('child_process');
 
 function getLanIp() {
@@ -68,6 +69,31 @@ if (isTunnel) {
 
 console.log('==================================================\n');
 
+// Auto-launch backend server if not already listening on port 5000
+const serverScript = path.join(__dirname, '..', 'server', 'src', 'server.js');
+let backendProcess = null;
+
+function ensureBackendRunning() {
+  const socket = net.createConnection({ port: 5000, host: '127.0.0.1' }, () => {
+    socket.destroy();
+    console.log('✅ SiteX Backend already active on port 5000\n');
+  });
+
+  socket.on('error', () => {
+    console.log('🚀 Auto-starting SiteX Backend (server/src/server.js on port 5000)...');
+    backendProcess = spawn(process.execPath, [serverScript], {
+      cwd: path.join(__dirname, '..', 'server'),
+      stdio: 'inherit',
+      env: process.env,
+    });
+    backendProcess.on('error', (err) => {
+      console.error('❌ Failed to launch backend:', err.message);
+    });
+  });
+}
+
+ensureBackendRunning();
+
 const expoCli = path.join(__dirname, '..', 'node_modules', 'expo', 'bin', 'cli');
 
 const expoProcess = spawn(process.execPath, [expoCli, 'start', ...passArgs], {
@@ -76,5 +102,8 @@ const expoProcess = spawn(process.execPath, [expoCli, 'start', ...passArgs], {
 });
 
 expoProcess.on('exit', (code) => {
+  if (backendProcess) {
+    try { backendProcess.kill(); } catch (_) {}
+  }
   process.exit(code ?? 0);
 });

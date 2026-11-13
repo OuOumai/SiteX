@@ -13,10 +13,10 @@ import * as FileSystem from 'expo-file-system/legacy';
  * NOTE: When using --tunnel, hostUri is a public ngrok hostname — we intentionally
  * SKIP that and fall through to DEV_LAN_IP so the backend is still reachable over LAN.
  *
- * YOUR MACHINE'S WI-FI IP: 192.168.2.153
+ * YOUR MACHINE'S WI-FI IP: 10.61.129.155
  * Update DEV_LAN_IP below if your router assigns a different IP.
  */
-const DEV_LAN_IP = '192.168.3.118';
+const DEV_LAN_IP = '10.61.129.155';
 const BACKEND_PORT = 5000;
 
 /** Returns true only for reachable RFC-1918 private LAN addresses (excluding VirtualBox host-only network) */
@@ -532,6 +532,7 @@ export interface AdminStats {
 
 export interface AuthResponse {
   token: string;
+  refreshToken?: string;
   user: User;
 }
 
@@ -1299,6 +1300,11 @@ export interface ChantierTimelineResponse {
 // ─── End Level 6 Types ───────────────────────────────────────────────────────
 
 class ApiClient {
+  private currentToken: string | null = null;
+  private currentRefreshToken: string | null = null;
+  private refreshPromise: Promise<AuthResponse | null> | null = null;
+  private onTokenRefreshedListeners: Array<(token: string, refreshToken?: string, user?: User) => void> = [];
+  private onSessionExpiredListeners: Array<() => void> = [];
 
   get baseUrl(): string {
     return getApiUrl();
@@ -1306,7 +1312,109 @@ class ApiClient {
 
   constructor(initialBaseUrl?: string) {}
 
-  private async request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
+  public setTokens(token: string | null, refreshToken: string | null): void {
+    this.currentToken = token;
+    this.currentRefreshToken = refreshToken;
+  }
+
+  public addTokenRefreshedListener(cb: (token: string, refreshToken?: string, user?: User) => void): () => void {
+    this.onTokenRefreshedListeners.push(cb);
+    return () => {
+      this.onTokenRefreshedListeners = this.onTokenRefreshedListeners.filter((l) => l !== cb);
+    };
+  }
+
+  public addSessionExpiredListener(cb: () => void): () => void {
+    this.onSessionExpiredListeners.push(cb);
+    return () => {
+      this.onSessionExpiredListeners = this.onSessionExpiredListeners.filter((l) => l !== cb);
+    };
+  }
+
+  private notifyTokenRefreshed(token: string, refreshToken?: string, user?: User): void {
+    this.onTokenRefreshedListeners.forEach((listener) => {
+      try {
+        listener(token, refreshToken, user);
+      } catch (e) {
+        console.warn('[API] Listener error on token refreshed:', e);
+      }
+    });
+  }
+
+  private notifySessionExpired(): void {
+    this.onSessionExpiredListeners.forEach((listener) => {
+      try {
+        listener();
+      } catch (e) {
+        console.warn('[API] Listener error on session expired:', e);
+      }
+    });
+  }
+
+  public async refreshAuthSession(refreshToken?: string, oldToken?: string): Promise<AuthResponse> {
+    const candidateRefresh = refreshToken || this.currentRefreshToken;
+    const candidateAccess = oldToken || this.currentToken;
+
+    const url = `${this.baseUrl}/auth/refresh`;
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'bypass-tunnel-reminder': 'true',
+        'ngrok-skip-browser-warning': 'true',
+        ...(candidateAccess ? { Authorization: `Bearer ${candidateAccess}` } : {}),
+      },
+      body: JSON.stringify({
+        refreshToken: candidateRefresh || undefined,
+        token: candidateAccess || undefined,
+      }),
+    });
+
+    const text = await response.text();
+    let data: any;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      throw new Error(`Réponse inattendue lors du rafraîchissement (${response.status})`);
+    }
+
+    if (!response.ok) {
+      const err: any = new Error(data.message || 'Impossible de rafraîchir la session');
+      err.status = response.status;
+      err.code = data?.code;
+      throw err;
+    }
+
+    this.currentToken = data.token;
+    if (data.refreshToken) {
+      this.currentRefreshToken = data.refreshToken;
+    }
+    this.notifyTokenRefreshed(data.token, data.refreshToken, data.user);
+    return data as AuthResponse;
+  }
+
+  private async performTokenRefresh(): Promise<AuthResponse | null> {
+    if (this.refreshPromise) {
+      return this.refreshPromise;
+    }
+
+    this.refreshPromise = (async () => {
+      try {
+        if (__DEV__) console.log('[API] Auto-refreshing session token...');
+        const res = await this.refreshAuthSession();
+        return res;
+      } catch (err: any) {
+        if (__DEV__) console.log('[API] Token auto-refresh failed:', err?.message);
+        return null;
+      } finally {
+        this.refreshPromise = null;
+      }
+    })();
+
+    return this.refreshPromise;
+  }
+
+  private async request<T>(endpoint: string, options: RequestInit = {}, retryCount = 0): Promise<T> {
     const url = `${this.baseUrl}${endpoint}`;
 
     const headers: Record<string, string> = {
@@ -1316,6 +1424,11 @@ class ApiClient {
       'ngrok-skip-browser-warning': 'true',
       ...(options.headers as Record<string, string>),
     };
+
+    // If Authorization header was not explicitly set but ApiClient has an active token, provide it
+    if (!headers.Authorization && !headers.authorization && this.currentToken) {
+      headers.Authorization = `Bearer ${this.currentToken}`;
+    }
 
     const timeoutMs = (options as any).timeoutMs ?? 10000;
     const controller = new AbortController();
@@ -1357,6 +1470,30 @@ class ApiClient {
       }
 
       if (!response.ok) {
+        // Intercept expired / invalid token errors (HTTP 401 or HTTP 403 with expired message)
+        const isAuthExpired =
+          (response.status === 401 && (data?.code === 'TOKEN_EXPIRED' || data?.code === 'TOKEN_INVALID' || data?.message?.includes('expiré') || data?.message?.includes('invalide'))) ||
+          (response.status === 403 && (data?.message?.includes('Token invalide ou expiré') || data?.message?.includes('expiré')));
+
+        if (
+          isAuthExpired &&
+          !endpoint.startsWith('/auth/login') &&
+          !endpoint.startsWith('/auth/refresh') &&
+          retryCount === 0
+        ) {
+          const refreshed = await this.performTokenRefresh();
+          if (refreshed && refreshed.token) {
+            // Update Authorization header with the fresh token and retry the exact same request
+            const retryHeaders = {
+              ...headers,
+              Authorization: `Bearer ${refreshed.token}`,
+            };
+            return this.request<T>(endpoint, { ...options, headers: retryHeaders }, retryCount + 1);
+          } else {
+            this.notifySessionExpired();
+          }
+        }
+
         const error: any = new Error(data.message || data.error || `Erreur HTTP ${response.status}`);
         error.status = response.status;
         error.data = data;
@@ -1386,17 +1523,21 @@ class ApiClient {
   }
 
   async login(payload: LoginPayload): Promise<AuthResponse> {
-    return this.request<AuthResponse>('/auth/login', {
+    const res = await this.request<AuthResponse>('/auth/login', {
       method: 'POST',
       body: JSON.stringify(payload),
     });
+    this.setTokens(res.token, res.refreshToken || null);
+    return res;
   }
 
   async register(payload: RegisterPayload): Promise<AuthResponse> {
-    return this.request<AuthResponse>('/auth/register', {
+    const res = await this.request<AuthResponse>('/auth/register', {
       method: 'POST',
       body: JSON.stringify(payload),
     });
+    this.setTokens(res.token, res.refreshToken || null);
+    return res;
   }
 
   async getCurrentUser(token: string): Promise<User> {

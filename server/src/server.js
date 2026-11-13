@@ -11,10 +11,19 @@
 
 'use strict';
 
-require('dotenv').config();
-
 const path       = require('path');
 const fs         = require('fs');
+
+// Load environment variables reliably regardless of working directory
+const serverEnvPath = path.join(__dirname, '../.env');
+const rootEnvPath   = path.join(__dirname, '../../.env');
+if (fs.existsSync(serverEnvPath)) {
+  require('dotenv').config({ path: serverEnvPath });
+} else if (fs.existsSync(rootEnvPath)) {
+  require('dotenv').config({ path: rootEnvPath });
+} else {
+  require('dotenv').config();
+}
 const express    = require('express');
 const cors       = require('cors');
 const authRoutes      = require('./routes/auth.routes');

@@ -12,7 +12,41 @@ import {
 } from '@/services/api';
 
 const TOKEN_KEY = 'sitex_auth_token';
+const REFRESH_TOKEN_KEY = 'sitex_auth_refresh_token';
 const USER_KEY = 'sitex_auth_user';
+
+function decodeBase64(input: string): string {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
+  let str = input.replace(/=+$/, '');
+  let output = '';
+  if (str.length % 4 === 1) return '';
+  for (let bc = 0, bs = 0, buffer, idx = 0; (buffer = str.charAt(idx++)); ) {
+    const charIndex = chars.indexOf(buffer);
+    if (~charIndex) {
+      bs = bc % 4 ? bs * 64 + charIndex : charIndex;
+      if (bc++ % 4) {
+        output += String.fromCharCode(255 & (bs >> ((-2 * bc) & 6)));
+      }
+    }
+  }
+  return output;
+}
+
+function isTokenExpired(token: string, bufferSeconds = 30): boolean {
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return true;
+    const base64Url = parts[1];
+    const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+    const decoded = typeof atob === 'function' ? atob(base64) : decodeBase64(base64);
+    if (!decoded) return true;
+    const jsonPayload = JSON.parse(decoded);
+    if (!jsonPayload || !jsonPayload.exp) return false;
+    return Date.now() >= (jsonPayload.exp * 1000) - (bufferSeconds * 1000);
+  } catch {
+    return true;
+  }
+}
 
 async function getStoredItem(key: string): Promise<string | null> {
   try {
@@ -79,6 +113,36 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setToken] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
 
+  // Subscribe to API client token refresh and session expiration events
+  useEffect(() => {
+    const unsubRefresh = api.addTokenRefreshedListener(async (newToken, newRefreshToken, freshUser) => {
+      setToken(newToken);
+      await setStoredItem(TOKEN_KEY, newToken);
+      if (newRefreshToken) {
+        await setStoredItem(REFRESH_TOKEN_KEY, newRefreshToken);
+      }
+      if (freshUser) {
+        setUser(freshUser);
+        await setStoredItem(USER_KEY, JSON.stringify(freshUser));
+      }
+    });
+
+    const unsubExpired = api.addSessionExpiredListener(async () => {
+      if (__DEV__) console.log('[AuthContext] Session expired, clearing credentials');
+      setToken(null);
+      setUser(null);
+      api.setTokens(null, null);
+      await removeStoredItem(TOKEN_KEY);
+      await removeStoredItem(REFRESH_TOKEN_KEY);
+      await removeStoredItem(USER_KEY);
+    });
+
+    return () => {
+      unsubRefresh();
+      unsubExpired();
+    };
+  }, []);
+
   useEffect(() => {
     let isMounted = true;
 
@@ -90,11 +154,51 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     async function loadStoredAuth() {
       try {
         const storedToken = await getStoredItem(TOKEN_KEY);
+        const storedRefreshToken = await getStoredItem(REFRESH_TOKEN_KEY);
         const storedUserJson = await getStoredItem(USER_KEY);
 
         if (!isMounted) return;
 
         if (storedToken && storedUserJson) {
+          api.setTokens(storedToken, storedRefreshToken);
+
+          // Check if stored access token is expired
+          if (isTokenExpired(storedToken)) {
+            if (__DEV__) console.log('[Auth] Stored access token expired, recovering session via refresh...');
+            try {
+              const refreshed = await api.refreshAuthSession(storedRefreshToken || undefined, storedToken);
+              if (refreshed && refreshed.token && isMounted) {
+                if (__DEV__) console.log('[Auth] Session restored successfully');
+                setToken(refreshed.token);
+                setUser(refreshed.user);
+                await setStoredItem(TOKEN_KEY, refreshed.token);
+                if (refreshed.refreshToken) {
+                  await setStoredItem(REFRESH_TOKEN_KEY, refreshed.refreshToken);
+                }
+                await setStoredItem(USER_KEY, JSON.stringify(refreshed.user));
+                api.setTokens(refreshed.token, refreshed.refreshToken || null);
+                clearTimeout(safetyTimer);
+                setIsLoading(false);
+                return;
+              }
+            } catch (refErr: any) {
+              if (__DEV__) console.log('[Auth] Startup session recovery failed:', refErr?.message);
+              // Clean up unrecoverable session so user sees clean login screen
+              await removeStoredItem(TOKEN_KEY);
+              await removeStoredItem(REFRESH_TOKEN_KEY);
+              await removeStoredItem(USER_KEY);
+              api.setTokens(null, null);
+              if (isMounted) {
+                setToken(null);
+                setUser(null);
+                clearTimeout(safetyTimer);
+                setIsLoading(false);
+              }
+              return;
+            }
+          }
+
+          // Valid token
           setToken(storedToken);
           setUser(JSON.parse(storedUserJson));
 
@@ -138,6 +242,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const response = await api.login(payload);
       setToken(response.token);
+      api.setTokens(response.token, response.refreshToken || null);
+      await setStoredItem(TOKEN_KEY, response.token);
+      if (response.refreshToken) {
+        await setStoredItem(REFRESH_TOKEN_KEY, response.refreshToken);
+      }
 
       // Fetch complete user profile including role requests
       try {
@@ -148,8 +257,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setUser(response.user);
         await setStoredItem(USER_KEY, JSON.stringify(response.user));
       }
-
-      await setStoredItem(TOKEN_KEY, response.token);
     } catch (err: any) {
       // Re-throw so login screen can display the error message
       if (__DEV__) {
@@ -167,8 +274,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const response = await api.register(payload);
       setToken(response.token);
       setUser(response.user);
+      api.setTokens(response.token, response.refreshToken || null);
 
       await setStoredItem(TOKEN_KEY, response.token);
+      if (response.refreshToken) {
+        await setStoredItem(REFRESH_TOKEN_KEY, response.refreshToken);
+      }
       await setStoredItem(USER_KEY, JSON.stringify(response.user));
     } catch (err: any) {
       // Re-throw so register screen can display the error message
@@ -186,7 +297,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       setToken(null);
       setUser(null);
+      api.setTokens(null, null);
       await removeStoredItem(TOKEN_KEY);
+      await removeStoredItem(REFRESH_TOKEN_KEY);
       await removeStoredItem(USER_KEY);
     } finally {
       setIsLoading(false);
